@@ -12,6 +12,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.nio.file.FileVisitResult
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -84,6 +89,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             log("No permission to read files. Tap \"Allow access to all files\".")
             return
         }
+        log("Starting sync. Checking the Notion page…")
         client = NotionClient(p.token)
         db = Db.get(ctx)
         rootId = p.rootPageId
@@ -106,31 +112,53 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val excluded = p.excludedList()
         val known = db.loadAll()
         val now = System.currentTimeMillis()
-        val todo = ArrayList<File>()
-        val stack = ArrayList<Pair<File, Int>>()
-        stack.add(storage to 0)
-        while (stack.isNotEmpty()) {
-            if (isStopped) return
-            val (dir, depth) = stack.removeAt(stack.size - 1)
-            val kids = dir.listFiles() ?: continue
-            for (f in kids) {
-                if (p.skipHidden && f.name.startsWith(".")) continue
-                val rel = relPath(rootPath, f)
-                if (f.isDirectory) {
-                    val skip = excluded.any { rel.equals(it, true) || rel.startsWith("$it/", true) }
-                    if (!skip && depth < 40) stack.add(f to depth + 1)
-                } else if (f.isFile) {
-                    val size = f.length()
-                    val mtime = f.lastModified()
-                    // Skip empty files and files still being written.
-                    if (size == 0L || now - mtime < 60_000) continue
-                    val r = known[rel]
-                    if (r == null || r.status == "retry" || r.size != size || r.mtime != mtime) todo.add(f)
-                }
-            }
-        }
+        val found = ArrayList<Pair<File, Long>>()
+        var checked = 0
+        log("Scanning your phone for files…")
+        Notif.update(ctx, "Scanning your phone…", 0, 0)
 
-        todo.sortByDescending { it.lastModified() }
+        // walkFileTree reads each file's details in one call, which is much
+        // faster than asking the phone separately for size, date and type.
+        Files.walkFileTree(storage.toPath(), object : SimpleFileVisitor<Path>() {
+            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                if (isStopped) return FileVisitResult.TERMINATE
+                val rel = relPath(rootPath, dir.toFile())
+                if (rel.isEmpty()) return FileVisitResult.CONTINUE
+                val name = dir.fileName?.toString() ?: ""
+                if (p.skipHidden && name.startsWith(".")) return FileVisitResult.SKIP_SUBTREE
+                if (excluded.any { rel.equals(it, true) || rel.startsWith("$it/", true) }) {
+                    return FileVisitResult.SKIP_SUBTREE
+                }
+                if (rel.count { it == '/' } >= 40) return FileVisitResult.SKIP_SUBTREE
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                if (!attrs.isRegularFile) return FileVisitResult.CONTINUE
+                val name = file.fileName?.toString() ?: return FileVisitResult.CONTINUE
+                if (p.skipHidden && name.startsWith(".")) return FileVisitResult.CONTINUE
+                checked++
+                if (checked % 2000 == 0) {
+                    Notif.update(ctx, "Scanning… $checked files checked", 0, 0)
+                    if (checked % 20000 == 0) log("Checked $checked files so far…")
+                    if (isStopped) return FileVisitResult.TERMINATE
+                }
+                val size = attrs.size()
+                val mtime = attrs.lastModifiedTime().toMillis()
+                // Skip empty files and files still being written.
+                if (size == 0L || now - mtime < 60_000) return FileVisitResult.CONTINUE
+                val f = file.toFile()
+                val r = known[relPath(rootPath, f)]
+                if (r == null || r.status == "retry" || r.size != size || r.mtime != mtime) found.add(f to mtime)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+        })
+        if (isStopped) return
+        log("Scan done: checked $checked files.")
+
+        val todo = ArrayList(found.sortedByDescending { it.second }.map { it.first })
         p.lastPending = todo.size
         if (todo.isEmpty()) {
             log("Everything is up to date.")
