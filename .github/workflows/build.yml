@@ -1,0 +1,46 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Get Gradle
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.14.3-bin.zip
+          unzip -q gradle-8.14.3-bin.zip -d "$HOME/gradle"
+
+      - name: Build the app
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$HOME/gradle/gradle-8.14.3/bin/gradle" assembleRelease --no-daemon --stacktrace
+
+      - name: Name the APK
+        run: cp app/build/outputs/apk/release/app-release.apk NotionPhoneSync.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NotionPhoneSync
+          path: NotionPhoneSync.apk
+
+      - name: Publish a download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" NotionPhoneSync.apk \
+            --title "Notion Phone Sync (build ${{ github.run_number }})" \
+            --notes "Download NotionPhoneSync.apk below and open it on your phone to install."
