@@ -1,5 +1,6 @@
 package com.sakib.notionsync
 
+import okhttp3.Call
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -57,6 +58,15 @@ class NotionClient(private val token: String) {
         }
     }
 
+    @Volatile private var inFlight: Call? = null
+    @Volatile private var cancelled = false
+
+    /** Aborts the request in progress and refuses new ones (used when the sync is stopped). */
+    fun cancel() {
+        cancelled = true
+        inFlight?.cancel()
+    }
+
     private fun req(path: String): Request.Builder = Request.Builder()
         .url(BASE + path)
         .header("Authorization", "Bearer $token")
@@ -66,18 +76,22 @@ class NotionClient(private val token: String) {
         var attempt = 0
         while (true) {
             attempt++
+            if (cancelled) throw IOException("Sync stopped")
             throttle()
             var status = 0
             var body = ""
             var retryAfter: String? = null
             try {
-                http.newCall(build()).execute().use { r ->
+                val c = http.newCall(build())
+                inFlight = c
+                if (cancelled) c.cancel()
+                c.execute().use { r ->
                     status = r.code
                     body = r.body?.string() ?: ""
                     retryAfter = r.header("Retry-After")
                 }
             } catch (e: IOException) {
-                if (attempt >= 4) throw e
+                if (cancelled || attempt >= 4) throw e
                 Thread.sleep((2000L shl attempt).coerceAtMost(30_000L))
                 continue
             }

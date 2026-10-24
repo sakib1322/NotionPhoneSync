@@ -87,9 +87,15 @@ class MainActivity : Activity() {
 
         // 3. Options
         col.addView(header("3. Options"))
-        col.addView(checkbox("Auto-sync only on Wi-Fi", prefs.wifiOnly) {
+        col.addView(checkbox("Upload only on Wi-Fi (all syncs)", prefs.wifiOnly) {
             prefs.wifiOnly = it
-            Scheduler.apply(this)
+            if (it && Perms.onMeteredNetwork(this)) {
+                // On mobile data right now: stop the current upload too.
+                Scheduler.stop(this)
+                toast("Paused until the phone is on Wi-Fi.")
+            } else {
+                Scheduler.apply(this)
+            }
         })
         col.addView(checkbox("Auto-sync only while charging", prefs.chargingOnly) {
             prefs.chargingOnly = it
@@ -112,18 +118,32 @@ class MainActivity : Activity() {
             }
             prefs.excluded = excludedEt.text.toString()
             prefs.autoSync = on
-            Scheduler.apply(this)
-            if (on) Scheduler.syncNow(this)
+            if (on) {
+                Scheduler.apply(this)
+                Scheduler.syncNow(this)
+            } else {
+                // Turning auto-sync off also stops a sync that is already running.
+                Scheduler.stop(this)
+                toast("Auto-sync off. Any running sync is stopping.")
+            }
         }
         col.addView(autoCb)
-        col.addView(button("Sync now (uses any internet connection)") {
+        col.addView(button("Sync now") {
             if (!ready()) {
                 toast("Finish steps 1 and 2 first.")
             } else {
                 prefs.excluded = excludedEt.text.toString()
                 Scheduler.syncNow(this)
-                toast("Sync started.")
+                if (prefs.wifiOnly && Perms.onMeteredNetwork(this)) {
+                    toast("Waiting for Wi-Fi (\"Upload only on Wi-Fi\" is on).")
+                } else {
+                    toast("Sync started.")
+                }
             }
+        })
+        col.addView(button("Stop syncing") {
+            Scheduler.stop(this)
+            toast(if (prefs.autoSync) "Stopped. Auto-sync will try again in 15 minutes." else "Stopped.")
         })
         col.addView(button("Show skipped & failed files") { showProblems() })
         col.addView(button("Try skipped & failed files again") {

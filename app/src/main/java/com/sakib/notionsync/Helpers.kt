@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
@@ -84,6 +85,10 @@ object Perms {
             ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         else true
 
+    /** True when on mobile data or another paid connection (or no connection). */
+    fun onMeteredNetwork(ctx: Context): Boolean =
+        (ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
+
     fun battery(ctx: Context): Boolean =
         (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(ctx.packageName)
 }
@@ -156,7 +161,10 @@ object Scheduler {
     private const val AUTO = "auto-sync"
     private const val NOW = "sync-now"
 
-    fun apply(ctx: Context) {
+    private fun network(p: Prefs) = if (p.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
+
+    /** (Re)schedules the 15-minute auto-sync, or removes it when auto-sync is off. */
+    fun apply(ctx: Context, delayFirstRun: Boolean = false) {
         val p = Prefs(ctx)
         val wm = WorkManager.getInstance(ctx)
         if (!p.autoSync) {
@@ -164,20 +172,30 @@ object Scheduler {
             return
         }
         val constraints = Constraints.Builder()
-            .setRequiredNetworkType(if (p.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+            .setRequiredNetworkType(network(p))
             .setRequiresCharging(p.chargingOnly)
             .build()
-        val req = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
+        val builder = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(constraints)
-            .build()
-        wm.enqueueUniquePeriodicWork(AUTO, ExistingPeriodicWorkPolicy.UPDATE, req)
+        if (delayFirstRun) builder.setInitialDelay(15, TimeUnit.MINUTES)
+        wm.enqueueUniquePeriodicWork(AUTO, ExistingPeriodicWorkPolicy.UPDATE, builder.build())
     }
 
+    /** Starts a sync right away (still respecting "Wi-Fi only"). */
     fun syncNow(ctx: Context) {
         val req = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(network(Prefs(ctx))).build())
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
         WorkManager.getInstance(ctx).enqueueUniqueWork(NOW, ExistingWorkPolicy.KEEP, req)
+    }
+
+    /** Stops any sync that is running or waiting. Auto-sync, if on, comes back in 15 minutes. */
+    fun stop(ctx: Context) {
+        val wm = WorkManager.getInstance(ctx)
+        wm.cancelUniqueWork(NOW)
+        wm.cancelUniqueWork(AUTO)
+        Prefs(ctx).running = false
+        apply(ctx, delayFirstRun = true)
     }
 }

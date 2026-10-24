@@ -8,6 +8,9 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -38,6 +41,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     private val childCache = HashMap<String, MutableMap<String, String>>()
     private val dateFmt = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.US)
     private lateinit var client: NotionClient
+    @Volatile private var activeClient: NotionClient? = null
     private lateinit var db: Db
     private lateinit var rootId: String
     private lateinit var prefs: Prefs
@@ -79,8 +83,21 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             } catch (e: Exception) {
                 log("Running without a progress notification. Tap \"Let it run in the background\" for long uploads.")
             }
-            withContext(Dispatchers.IO) { sync(prefs) }
+            coroutineScope {
+                // When the sync is stopped, abort the upload in progress right away
+                // instead of waiting for the current file to finish.
+                val watcher = launch {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        activeClient?.cancel()
+                    }
+                }
+                withContext(Dispatchers.IO) { sync(prefs) }
+                watcher.cancel()
+            }
         } catch (e: CancellationException) {
+            log("Sync stopped.")
             throw e
         } catch (e: Exception) {
             log("Sync stopped: ${e.message ?: e.javaClass.simpleName}")
@@ -106,6 +123,8 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         }
         log("Starting sync. Checking the Notion page…")
         client = NotionClient(p.token)
+        activeClient = client
+        if (isStopped) client.cancel()
         db = Db.get(ctx)
         rootId = p.rootPageId
         try {
@@ -188,8 +207,9 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         // 2. Upload them, newest first.
         var networkFailures = 0
         for ((i, f) in todo.withIndex()) {
-            if (isStopped) {
-                log("Paused by Android. It will continue on the next run.")
+            if (isStopped) return
+            if (p.wifiOnly && Perms.onMeteredNetwork(ctx)) {
+                log("Paused: \"Upload only on Wi-Fi\" is on and the phone isn't on Wi-Fi.")
                 return
             }
             val rel = relPath(rootPath, f)
@@ -223,6 +243,8 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                     retryLater(rel, size, mtime, old, e.message)
                 }
             } catch (e: IOException) {
+                // Stopped by you or by Android: not the file's fault, so don't count it as a failure.
+                if (isStopped) return
                 if (!f.exists()) continue
                 retryLater(rel, size, mtime, old, e.message)
                 networkFailures++
