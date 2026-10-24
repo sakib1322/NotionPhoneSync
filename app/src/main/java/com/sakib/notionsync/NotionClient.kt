@@ -136,6 +136,30 @@ class NotionClient(private val token: String) {
         return out
     }
 
+    /** Captions of the files already on a page, as caption -> block ID. */
+    fun mediaCaptions(pageId: String): Map<String, String> {
+        val types = setOf("image", "video", "audio", "pdf", "file")
+        val out = HashMap<String, String>()
+        var cursor: String? = null
+        do {
+            val q = "/blocks/$pageId/children?page_size=100" + (cursor?.let { "&start_cursor=$it" } ?: "")
+            val res = get(q)
+            val arr = res.getJSONArray("results")
+            for (i in 0 until arr.length()) {
+                val b = arr.getJSONObject(i)
+                val type = b.optString("type")
+                if (type !in types) continue
+                val cap = b.optJSONObject(type)?.optJSONArray("caption") ?: continue
+                val text = (0 until cap.length()).joinToString("") { cap.getJSONObject(it).optString("plain_text") }
+                if (text.isNotEmpty()) out.putIfAbsent(text, b.getString("id"))
+            }
+            cursor = if (res.optBoolean("has_more")) {
+                res.optString("next_cursor").takeIf { it.isNotEmpty() && it != "null" }
+            } else null
+        } while (cursor != null)
+        return out
+    }
+
     fun createPage(parentId: String, title: String): String {
         val titleArr = JSONArray().put(JSONObject().put("text", JSONObject().put("content", title.take(1900))))
         val body = JSONObject()
@@ -145,7 +169,7 @@ class NotionClient(private val token: String) {
     }
 
     /** Uploads a file (in 10 MB parts when it is over 20 MB) and returns the upload ID. */
-    fun uploadFile(file: File, uploadName: String, mime: String, size: Long): String {
+    fun uploadFile(file: File, uploadName: String, mime: String, size: Long, onPart: () -> Unit = {}): String {
         return if (size <= SINGLE_PART_MAX) {
             val id = post(
                 "/file_uploads",
@@ -163,6 +187,7 @@ class NotionClient(private val token: String) {
             for (i in 0 until parts) {
                 val offset = i * PART_SIZE
                 sendPart(id, file, uploadName, offset, minOf(PART_SIZE, size - offset), mime, i + 1)
+                onPart()
             }
             post("/file_uploads/$id/complete", JSONObject())
             id

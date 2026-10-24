@@ -40,8 +40,22 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     private lateinit var client: NotionClient
     private lateinit var db: Db
     private lateinit var rootId: String
+    private lateinit var prefs: Prefs
+    private val captionCache = HashMap<String, Map<String, String>>()
 
-    private fun log(msg: String) = Logger.log(ctx, msg)
+    private fun beat() {
+        if (::prefs.isInitialized) prefs.heartbeat = System.currentTimeMillis()
+    }
+
+    private fun log(msg: String) {
+        Logger.log(ctx, msg)
+        beat()
+    }
+
+    private fun progress(text: String, done: Int, total: Int) {
+        Notif.update(ctx, text, done, total)
+        beat()
+    }
 
     override suspend fun getForegroundInfo(): ForegroundInfo = fgInfo("Getting ready…")
 
@@ -56,8 +70,9 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
 
     override suspend fun doWork(): Result {
         if (!oneAtATime.tryLock()) return Result.success()
-        val prefs = Prefs(ctx)
+        prefs = Prefs(ctx)
         prefs.running = true
+        beat()
         try {
             try {
                 setForeground(fgInfo("Scanning your phone…"))
@@ -111,11 +126,14 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val rootPath = storage.absolutePath
         val excluded = p.excludedList()
         val known = db.loadAll()
+        // Nothing recorded yet (fresh install or reinstall): check Notion for
+        // files that are already there, so nothing is uploaded twice.
+        if (known.isEmpty()) p.checkNotion = true
         val now = System.currentTimeMillis()
         val found = ArrayList<Pair<File, Long>>()
         var checked = 0
         log("Scanning your phone for files…")
-        Notif.update(ctx, "Scanning your phone…", 0, 0)
+        progress("Scanning your phone…", 0, 0)
 
         // walkFileTree reads each file's details in one call, which is much
         // faster than asking the phone separately for size, date and type.
@@ -139,7 +157,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                 if (p.skipHidden && name.startsWith(".")) return FileVisitResult.CONTINUE
                 checked++
                 if (checked % 2000 == 0) {
-                    Notif.update(ctx, "Scanning… $checked files checked", 0, 0)
+                    progress("Scanning… $checked files checked", 0, 0)
                     if (checked % 20000 == 0) log("Checked $checked files so far…")
                     if (isStopped) return FileVisitResult.TERMINATE
                 }
@@ -161,6 +179,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val todo = ArrayList(found.sortedByDescending { it.second }.map { it.first })
         p.lastPending = todo.size
         if (todo.isEmpty()) {
+            p.checkNotion = false
             log("Everything is up to date.")
             return
         }
@@ -178,7 +197,16 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             val size = f.length()
             val mtime = f.lastModified()
             val old = known[rel]
-            Notif.update(ctx, "${i + 1} of ${todo.size}: ${f.name}", i, todo.size)
+            progress("${i + 1} of ${todo.size}: ${f.name}", i, todo.size)
+            if (old == null && p.checkNotion) {
+                val existing = try { alreadyInNotion(rel, f.name, mtime) } catch (e: Exception) { null }
+                if (existing != null) {
+                    db.save(rel, size, mtime, "done", existing, null, 0)
+                    log("Already in Notion: $rel")
+                    p.lastPending = todo.size - i - 1
+                    continue
+                }
+            }
             try {
                 uploadOne(f, rel, size, mtime, old)
                 networkFailures = 0
@@ -205,7 +233,31 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             }
             p.lastPending = todo.size - i - 1
         }
+        p.checkNotion = false
         log("Sync finished.")
+    }
+
+    /** If this file is already on its Notion folder page, returns that block's ID. */
+    private fun alreadyInNotion(rel: String, name: String, mtime: Long): String? {
+        val pageId = existingFolderPage(rel.substringBeforeLast('/', "")) ?: return null
+        val captions = captionCache.getOrPut(pageId) { client.mediaCaptions(pageId) }
+        return captions["$name · ${dateFmt.format(Date(mtime))}"]
+    }
+
+    /** Like folderPage(), but only finds pages; never creates them. */
+    private fun existingFolderPage(relDir: String): String? {
+        if (relDir.isEmpty()) return rootId
+        folderCache[relDir]?.let { return it }
+        db.folderPage(relDir)?.let {
+            folderCache[relDir] = it
+            return it
+        }
+        val parentId = existingFolderPage(relDir.substringBeforeLast('/', "")) ?: return null
+        val kids = childCache.getOrPut(parentId) { client.childPages(parentId) }
+        val id = kids[relDir.substringAfterLast('/')] ?: return null
+        db.setFolderPage(relDir, id)
+        folderCache[relDir] = id
+        return id
     }
 
     private fun retryLater(rel: String, size: Long, mtime: Long, old: Db.Rec?, msg: String?) {
@@ -221,7 +273,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val upName = FileTypes.uploadName(f.name)
         val mime = FileTypes.mime(upName)
         val type = FileTypes.blockType(upName)
-        val uploadId = client.uploadFile(f, upName, mime, size)
+        val uploadId = client.uploadFile(f, upName, mime, size) { beat() }
         val caption = "${f.name} · ${dateFmt.format(Date(mtime))}"
         val blockId = attach(relDir, uploadId, type, caption)
         // If this file was uploaded before and has since changed, remove the old copy.

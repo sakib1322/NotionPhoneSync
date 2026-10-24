@@ -19,19 +19,23 @@ android {
         versionName = "1.0.$buildNumber"
     }
 
+    // The key file itself is never stored in this repository: the build
+    // recreates it from the KEYSTORE_B64 GitHub secret. Its password is
+    // useless without that file.
+    val keystore = file("release.keystore")
     signingConfigs {
         create("release") {
-            storeFile = file("release.keystore")
-            storePassword = "5135ef3dbb3871d384028ad9"
+            storeFile = keystore
+            storePassword = "e11bd4b016ff00f53c9b0a20bde21606"
             keyAlias = "notionsync"
-            keyPassword = "5135ef3dbb3871d384028ad9"
+            keyPassword = "e11bd4b016ff00f53c9b0a20bde21606"
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            if (keystore.exists()) signingConfig = signingConfigs.getByName("release")
         }
     }
 

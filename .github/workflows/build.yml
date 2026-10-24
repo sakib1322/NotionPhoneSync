@@ -19,6 +19,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Restore the signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::The KEYSTORE_B64 secret is missing. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > app/release.keystore
+
       - name: Get Gradle
         run: |
           wget -q https://services.gradle.org/distributions/gradle-8.14.3-bin.zip
@@ -42,5 +52,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "build-${{ github.run_number }}" NotionPhoneSync.apk \
+            --latest \
             --title "Notion Phone Sync (build ${{ github.run_number }})" \
-            --notes "Download NotionPhoneSync.apk below and open it on your phone to install."
+            --notes "Install from the app's Update button, or download NotionPhoneSync.apk below."

@@ -45,6 +45,16 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("last_run", 0L)
         set(v) { sp.edit().putLong("last_run", v).apply() }
 
+    /** Last moment the sync showed signs of life; used to tell a real run from a stale flag. */
+    var heartbeat: Long
+        get() = sp.getLong("heartbeat", 0L)
+        set(v) { sp.edit().putLong("heartbeat", v).apply() }
+
+    /** True after a fresh install: check Notion for files that are already uploaded. */
+    var checkNotion: Boolean
+        get() = sp.getBoolean("check_notion", false)
+        set(v) { sp.edit().putBoolean("check_notion", v).apply() }
+
     var lastPending: Int
         get() = sp.getInt("last_pending", 0)
         set(v) { sp.edit().putInt("last_pending", v).apply() }

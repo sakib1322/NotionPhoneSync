@@ -31,6 +31,8 @@ class MainActivity : Activity() {
     private lateinit var logText: TextView
     private lateinit var excludedEt: EditText
     private lateinit var autoCb: CheckBox
+    private lateinit var updateText: TextView
+    private var updating = false
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -133,6 +135,14 @@ class MainActivity : Activity() {
         statusText.setPadding(0, dp(12), 0, dp(8))
         col.addView(statusText)
 
+        // 5. Updates
+        col.addView(header("5. App updates"))
+        updateText = body("Version: build ${Updater.currentBuild(this)}")
+        col.addView(updateText)
+        col.addView(button("Check for update & install") { checkUpdate(install = true) })
+        col.addView(body("Updating keeps your backup progress. The sync picks up where it left off."))
+        checkUpdate(install = false)
+
         col.addView(header("Activity"))
         logText = TextView(this).apply {
             typeface = Typeface.MONOSPACE
@@ -163,7 +173,8 @@ class MainActivity : Activity() {
         val c = Db.get(this).counts()
         val last = if (prefs.lastRun == 0L) "never"
         else DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(prefs.lastRun))
-        statusText.text = (if (prefs.running) "● Syncing now" else "○ Idle") +
+        val active = prefs.running && System.currentTimeMillis() - prefs.heartbeat < 10 * 60_000
+        statusText.text = (if (active) "● Syncing now" else "○ Idle") +
             "\nUploaded: ${c["done"] ?: 0}    Waiting: ${prefs.lastPending}" +
             "\nSkipped: ${c["skipped"] ?: 0}    Failed: ${c["failed"] ?: 0}    Will retry: ${c["retry"] ?: 0}" +
             "\nLast run: $last"
@@ -199,6 +210,37 @@ class MainActivity : Activity() {
                 "Couldn't reach Notion: ${e.message}"
             }
             runOnUiThread { notionText.text = msg }
+        }.start()
+    }
+
+    private fun checkUpdate(install: Boolean) {
+        if (updating) return
+        updating = true
+        updateText.text = "Checking for updates…"
+        fun show(t: String) = runOnUiThread { updateText.text = t }
+        Thread {
+            try {
+                val current = Updater.currentBuild(this)
+                val rel = Updater.latest()
+                if (rel == null || rel.build <= current) {
+                    show("Version: build $current. You have the latest version.")
+                } else if (!install) {
+                    show("Version: build $current. Update available: build ${rel.build}. Tap the button below to install it.")
+                } else if (!packageManager.canRequestPackageInstalls()) {
+                    show("Allow \"Install unknown apps\" for this app, come back, and tap the button again.")
+                    runOnUiThread {
+                        startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                    }
+                } else {
+                    val apk = Updater.download(this, rel) { pct -> show("Downloading build ${rel.build}… $pct%") }
+                    show("Installing build ${rel.build}… Tap Update when Android asks.")
+                    runOnUiThread { Updater.install(this, apk) }
+                }
+            } catch (e: Exception) {
+                show("Couldn't check for updates: ${e.message ?: "no internet?"}")
+            } finally {
+                updating = false
+            }
         }.start()
     }
 
