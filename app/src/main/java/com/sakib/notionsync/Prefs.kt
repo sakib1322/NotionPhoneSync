@@ -37,6 +37,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("auto_sync", false)
         set(v) { sp.edit().putBoolean("auto_sync", v).apply() }
 
+    /** How often auto-sync runs, in minutes (Android's minimum is 15). */
+    var intervalMinutes: Int
+        get() = sp.getInt("interval_minutes", 15).coerceAtLeast(15)
+        set(v) { sp.edit().putInt("interval_minutes", v.coerceIn(15, 10080)).apply() }
+
     var running: Boolean
         get() = sp.getBoolean("running", false)
         set(v) { sp.edit().putBoolean("running", v).apply() }

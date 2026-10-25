@@ -32,14 +32,30 @@ class MainActivity : Activity() {
     private lateinit var excludedEt: EditText
     private lateinit var autoCb: CheckBox
     private lateinit var updateText: TextView
+    private lateinit var speedText: TextView
+    private lateinit var speedTotals: TextView
     private var updating = false
+    private val meter = SpeedMeter()
+    private var tick = 0
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
-            refresh()
-            handler.postDelayed(this, 2000)
+            updateSpeed()
+            if (tick++ % 2 == 0) refresh()
+            handler.postDelayed(this, 1000)
         }
+    }
+
+    private fun updateSpeed() {
+        val r = meter.sample()
+        if (r == null) {
+            speedText.text = "Speed not available on this phone"
+            return
+        }
+        speedText.text = "↑ ${SpeedMeter.rate(r.upBps)}     ↓ ${SpeedMeter.rate(r.downBps)}"
+        speedTotals.text = "Since phone restart, this app sent ${SpeedMeter.size(r.totalUp)} " +
+            "and received ${SpeedMeter.size(r.totalDown)}."
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -56,6 +72,19 @@ class MainActivity : Activity() {
         val scroll = ScrollView(this)
         scroll.addView(col)
         setContentView(scroll)
+
+        // Speed meter
+        col.addView(header("Speed"))
+        speedText = TextView(this).apply {
+            textSize = 24f
+            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+            text = "↑ –     ↓ –"
+        }
+        col.addView(speedText)
+        speedTotals = body("")
+        speedTotals.textSize = 12f
+        col.addView(speedTotals)
+        col.addView(body("↑ upload to Notion   ↓ download (Notion replies, app updates). This app only."))
 
         // 1. Permissions
         col.addView(header("1. Permissions"))
@@ -110,7 +139,7 @@ class MainActivity : Activity() {
 
         // 4. Sync
         col.addView(header("4. Sync"))
-        autoCb = checkbox("Auto-sync every 15 minutes", prefs.autoSync) { on ->
+        autoCb = checkbox("Auto-sync every ${Scheduler.intervalLabel(prefs.intervalMinutes)}", prefs.autoSync) { on ->
             if (on && !ready()) {
                 toast("Finish steps 1 and 2 first.")
                 autoCb.isChecked = false
@@ -128,6 +157,57 @@ class MainActivity : Activity() {
             }
         }
         col.addView(autoCb)
+
+        // Custom auto-sync timer
+        col.addView(body("Auto-sync interval:"))
+        val presets = listOf(15, 30, 60, 120, 360, 720, 1440)
+        val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val minutesEt = EditText(this).apply {
+            hint = "minutes"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(prefs.intervalMinutes.toString())
+            textSize = 14f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        fun setInterval(minutes: Int) {
+            if (minutes < 15) {
+                toast("Android allows 15 minutes at the shortest.")
+                minutesEt.setText("15")
+                return
+            }
+            prefs.intervalMinutes = minutes
+            minutesEt.setText(prefs.intervalMinutes.toString())
+            autoCb.text = "Auto-sync every ${Scheduler.intervalLabel(prefs.intervalMinutes)}"
+            Scheduler.apply(this, delayFirstRun = true)
+            toast("Auto-sync set to every ${Scheduler.intervalLabel(prefs.intervalMinutes)}.")
+        }
+        for (m in presets) {
+            val label = when {
+                m >= 1440 -> "${m / 1440}d"
+                m >= 60 -> "${m / 60}h"
+                else -> "${m}m"
+            }
+            presetRow.addView(Button(this).apply {
+                text = label
+                isAllCaps = false
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(2), 0, dp(2), 0)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { setInterval(m) }
+            })
+        }
+        col.addView(presetRow)
+        customRow.addView(minutesEt)
+        customRow.addView(Button(this).apply {
+            text = "Set custom minutes"
+            isAllCaps = false
+            setOnClickListener { setInterval(minutesEt.text.toString().toIntOrNull() ?: 0) }
+        })
+        col.addView(customRow)
+        col.addView(body("Shortest is 15 minutes (an Android rule). Android may delay a run by a few minutes to save battery."))
+
         col.addView(button("Sync now") {
             if (!ready()) {
                 toast("Finish steps 1 and 2 first.")
@@ -143,7 +223,10 @@ class MainActivity : Activity() {
         })
         col.addView(button("Stop syncing") {
             Scheduler.stop(this)
-            toast(if (prefs.autoSync) "Stopped. Auto-sync will try again in 15 minutes." else "Stopped.")
+            toast(
+                if (prefs.autoSync) "Stopped. Auto-sync will try again in ${Scheduler.intervalLabel(prefs.intervalMinutes)}."
+                else "Stopped."
+            )
         })
         col.addView(button("Show skipped & failed files") { showProblems() })
         col.addView(button("Try skipped & failed files again") {

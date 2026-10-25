@@ -175,9 +175,10 @@ object Scheduler {
             .setRequiredNetworkType(network(p))
             .setRequiresCharging(p.chargingOnly)
             .build()
-        val builder = PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES)
+        val minutes = p.intervalMinutes.toLong()
+        val builder = PeriodicWorkRequestBuilder<SyncWorker>(minutes, TimeUnit.MINUTES)
             .setConstraints(constraints)
-        if (delayFirstRun) builder.setInitialDelay(15, TimeUnit.MINUTES)
+        if (delayFirstRun) builder.setInitialDelay(minutes, TimeUnit.MINUTES)
         wm.enqueueUniquePeriodicWork(AUTO, ExistingPeriodicWorkPolicy.UPDATE, builder.build())
     }
 
@@ -190,7 +191,13 @@ object Scheduler {
         WorkManager.getInstance(ctx).enqueueUniqueWork(NOW, ExistingWorkPolicy.KEEP, req)
     }
 
-    /** Stops any sync that is running or waiting. Auto-sync, if on, comes back in 15 minutes. */
+    fun intervalLabel(minutes: Int): String = when {
+        minutes % 1440 == 0 -> if (minutes == 1440) "day" else "${minutes / 1440} days"
+        minutes % 60 == 0 -> if (minutes == 60) "hour" else "${minutes / 60} hours"
+        else -> "$minutes minutes"
+    }
+
+    /** Stops any sync that is running or waiting. Auto-sync, if on, comes back after one interval. */
     fun stop(ctx: Context) {
         val wm = WorkManager.getInstance(ctx)
         wm.cancelUniqueWork(NOW)

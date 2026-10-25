@@ -56,8 +56,11 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         beat()
     }
 
+    private val meter = SpeedMeter()
+
     private fun progress(text: String, done: Int, total: Int) {
-        Notif.update(ctx, text, done, total)
+        val speed = meter.sample()?.let { "↑ ${SpeedMeter.rate(it.upBps)} · " } ?: ""
+        Notif.update(ctx, speed + text, done, total)
         beat()
     }
 
