@@ -25,3 +25,17 @@ Keep this repository **private**: it contains the app's signing key.
   listed in the app under "Show skipped & failed files".
 - Notion allows about 3 requests per second, so the first full backup
   can take hours or days. Later runs only upload new files.
+
+---
+
+# Notion Laptop Sync (Windows 11)
+
+The `windows/` folder holds the Windows version: it backs up chosen folders
+(by default Desktop, Documents, Downloads, Pictures, Videos, Music) to a
+separate Notion page such as **Laptop Backup**, with the same folder
+mirroring, duplicate protection, auto-sync timer, speed meter and in-app
+updates. It runs in the system tray and can start with Windows.
+
+GitHub builds `NotionLaptopSync-Setup.exe` whenever `windows/` changes
+(releases tagged `win-build-N`). Settings and progress live in
+`%APPDATA%\NotionLaptopSync` and survive updates and reinstalls.

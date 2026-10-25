@@ -1,0 +1,72 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.11.1
+
+      - name: Set version
+        run: Set-Content -Path version.py -Value "BUILD = ${{ github.run_number }}"
+
+      - name: Check the code
+        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py
+
+      - name: Open the window as a test
+        env:
+          APPDATA: ${{ runner.temp }}\selftest
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+          python app.py --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build the app
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name NotionLaptopSync `
+            --icon icon.ico --add-data "icon.ico;." `
+            --hidden-import pystray._win32 app.py
+
+      - name: Build the installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y }
+          & $iscc "/DAppBuild=${{ github.run_number }}" installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NotionLaptopSync-Setup
+          path: windows/Output/NotionLaptopSync-Setup.exe
+
+      - name: Publish a download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "win-build-${{ github.run_number }}" Output/NotionLaptopSync-Setup.exe `
+            --latest=false `
+            --title "Notion Laptop Sync for Windows (build ${{ github.run_number }})" `
+            --notes "Run NotionLaptopSync-Setup.exe on your Windows laptop. Later updates install from the app."
