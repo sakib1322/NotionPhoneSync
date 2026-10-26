@@ -1040,6 +1040,7 @@ class FilesPage(
             )
             badge.visibility = View.GONE
             when (it) {
+                is Header -> {}
                 is Folder -> {
                     h.meta.text = if (it.files >= 0) "${num.format(it.files)} files · ${SpeedMeter.size(it.bytes)}" else "Folder"
                     h.itemView.setOnClickListener { _ ->

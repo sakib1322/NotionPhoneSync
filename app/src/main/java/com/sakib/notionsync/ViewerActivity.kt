@@ -255,7 +255,7 @@ class ViewerActivity : AppCompatActivity() {
                     if (f.type == "video") thumbs.load(f.block, CloudFiles.local(f), null, true, false, h.thumb)
                     else {
                         h.thumb.visibility = View.GONE
-                        h.playerView.defaultArtwork = getDrawable(R.drawable.ic_audio)
+                        h.playerView.setDefaultArtwork(getDrawable(R.drawable.ic_audio))
                     }
                     h.playerView.setOnClickListener { toggleBar() }
                 }

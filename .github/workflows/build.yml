@@ -43,7 +43,13 @@ jobs:
       - name: Build the app
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$HOME/gradle/gradle-8.14.3/bin/gradle" assembleRelease --no-daemon --stacktrace
+          set -o pipefail
+          "$HOME/gradle/gradle-8.14.3/bin/gradle" assembleRelease --no-daemon 2>&1 | tee build.log
+
+      - name: Report build errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|What went wrong" -A2 build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done || true
 
       - name: Name the APK
         run: cp app/build/outputs/apk/release/app-release.apk NotionPhoneSync.apk
