@@ -39,7 +39,9 @@ jobs:
           GSECRET: ${{ secrets.GOOGLE_DESKTOP_CLIENT_SECRET }}
         run: |
           Set-Content -Path gconfig.py -Value "CLIENT_ID = '$env:GID'`nCLIENT_SECRET = '$env:GSECRET'"
-          if (-not $env:GID) { Write-Host "Google sign-in secrets not set yet; the app will offer transfer codes only." }
+          if (-not $env:GID -or -not $env:GSECRET) { Write-Host "::warning::Google sign-in secrets missing; the app will offer transfer codes only." }
+          elseif (-not $env:GID.EndsWith(".apps.googleusercontent.com")) { Write-Host "::warning::GOOGLE_DESKTOP_CLIENT_ID doesn't look like a client ID." }
+          else { Write-Host "::notice::Google sign-in included (client $($env:GID.Substring(0,12))...)" }
 
       - name: Check the code
         run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py
