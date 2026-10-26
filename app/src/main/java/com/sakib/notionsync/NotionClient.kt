@@ -129,6 +129,55 @@ class NotionClient(private val token: String) {
         return "Untitled"
     }
 
+    class ChildPage(val results: List<JSONObject>, val next: String?)
+
+    /** One page (up to 100) of the blocks inside a page, for the Files browser. */
+    fun children(pageId: String, cursor: String?): ChildPage {
+        val q = "/blocks/$pageId/children?page_size=100" + (cursor?.let { "&start_cursor=$it" } ?: "")
+        val res = get(q)
+        val arr = res.getJSONArray("results")
+        val list = (0 until arr.length()).map { arr.getJSONObject(it) }
+        val next = if (res.optBoolean("has_more")) {
+            res.optString("next_cursor").takeIf { it.isNotEmpty() && it != "null" }
+        } else null
+        return ChildPage(list, next)
+    }
+
+    fun block(blockId: String): JSONObject = get("/blocks/$blockId")
+
+    /** Top-level pages this integration can see (e.g. Phone Backup, Laptop Backup) as ID -> title. */
+    fun topLevelPages(): List<Pair<String, String>> {
+        val out = ArrayList<Pair<String, String>>()
+        var cursor: String? = null
+        var rounds = 0
+        do {
+            val body = JSONObject()
+                .put("filter", JSONObject().put("property", "object").put("value", "page"))
+                .put("page_size", 100)
+            if (cursor != null) body.put("start_cursor", cursor)
+            val res = post("/search", body)
+            val arr = res.getJSONArray("results")
+            for (i in 0 until arr.length()) {
+                val p = arr.getJSONObject(i)
+                if (p.optJSONObject("parent")?.optString("type") != "workspace") continue
+                val props = p.optJSONObject("properties") ?: continue
+                var title = "Untitled"
+                for (k in props.keys()) {
+                    val prop = props.getJSONObject(k)
+                    if (prop.optString("type") == "title") {
+                        val t = prop.getJSONArray("title")
+                        title = (0 until t.length()).joinToString("") { t.getJSONObject(it).optString("plain_text") }
+                            .ifBlank { "Untitled" }
+                    }
+                }
+                out.add(p.getString("id") to title)
+            }
+            cursor = if (res.optBoolean("has_more")) res.optString("next_cursor").takeIf { it.isNotEmpty() && it != "null" } else null
+            rounds++
+        } while (cursor != null && rounds < 3)
+        return out
+    }
+
     /** Sub-pages directly inside a page, as title -> page ID. */
     fun childPages(pageId: String): MutableMap<String, String> {
         val out = HashMap<String, String>()

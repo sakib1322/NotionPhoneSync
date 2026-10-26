@@ -90,6 +90,17 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
         writableDatabase.execSQL("DELETE FROM files WHERE status IN ('skipped', 'failed', 'retry')")
     }
 
+    /** Notion block ID -> phone path, for showing previews from files still on the phone. */
+    fun blockPaths(): HashMap<String, String> {
+        val map = HashMap<String, String>()
+        readableDatabase.rawQuery(
+            "SELECT block_id, path FROM files WHERE status = 'done' AND block_id IS NOT NULL", null
+        ).use { c ->
+            while (c.moveToNext()) map[c.getString(0)] = c.getString(1)
+        }
+        return map
+    }
+
     fun counts(): Map<String, Int> {
         val m = HashMap<String, Int>()
         readableDatabase.rawQuery("SELECT status, COUNT(*) FROM files GROUP BY status", null).use { c ->

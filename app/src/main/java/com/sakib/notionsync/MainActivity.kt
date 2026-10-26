@@ -19,6 +19,7 @@ import android.text.style.StyleSpan
 import android.view.View
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.material.bottomnavigation.BottomNavigationView
@@ -89,6 +90,15 @@ class MainActivity : AppCompatActivity() {
     // activity
     private lateinit var logView: TextView
 
+    // files
+    private lateinit var files: FilesPage
+    private val backCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            files.goUp()
+            isEnabled = files.canGoUp()
+        }
+    }
+
     private val colGood by lazy { ContextCompat.getColor(this, R.color.good) }
     private val colWarn by lazy { ContextCompat.getColor(this, R.color.warn) }
     private val colMuted by lazy { MaterialColors.getColor(logViewOrRoot(), com.google.android.material.R.attr.colorOnSurfaceVariant) }
@@ -112,20 +122,24 @@ class MainActivity : AppCompatActivity() {
         bindViews()
         setupHome()
         setupSettings()
+        files = FilesPage(this, findViewById(R.id.page_files)) { etExcluded.setText(prefs.excluded) }
+        files.onStackChanged = { backCallback.isEnabled = tab == TAB_FILES && files.canGoUp() }
+        onBackPressedDispatcher.addCallback(this, backCallback)
 
         val nav = findViewById<BottomNavigationView>(R.id.nav)
         nav.setOnItemSelectedListener { item ->
             showTab(
                 when (item.itemId) {
-                    R.id.nav_settings -> 1
-                    R.id.nav_activity -> 2
+                    R.id.nav_files -> TAB_FILES
+                    R.id.nav_activity -> TAB_ACTIVITY
+                    R.id.nav_settings -> TAB_SETTINGS
                     else -> 0
                 }
             )
             true
         }
-        val start = savedInstanceState?.getInt("tab") ?: if (prefs.token.isBlank()) 1 else 0
-        nav.selectedItemId = listOf(R.id.nav_home, R.id.nav_settings, R.id.nav_activity)[start]
+        val start = savedInstanceState?.getInt("tab") ?: if (prefs.token.isBlank()) TAB_SETTINGS else TAB_HOME
+        nav.selectedItemId = NAV_IDS[start]
         showTab(start)
         checkUpdate(install = false)
     }
@@ -150,7 +164,10 @@ class MainActivity : AppCompatActivity() {
         title = findViewById(R.id.title)
         subtitle = findViewById(R.id.subtitle)
         pill = findViewById(R.id.state_pill)
-        pages = listOf(findViewById(R.id.page_home), findViewById(R.id.page_settings), findViewById(R.id.page_activity))
+        pages = listOf(
+            findViewById(R.id.page_home), findViewById(R.id.page_files),
+            findViewById(R.id.page_activity), findViewById(R.id.page_settings)
+        )
 
         ring = findViewById(R.id.ring)
         percent = findViewById(R.id.percent)
@@ -188,7 +205,9 @@ class MainActivity : AppCompatActivity() {
     private fun showTab(i: Int) {
         tab = i
         pages.forEachIndexed { idx, v -> v.visibility = if (idx == i) View.VISIBLE else View.GONE }
-        title.text = listOf("Backup", "Settings", "Activity")[i]
+        title.text = listOf("Backup", "Files", "Activity", "Settings")[i]
+        if (i == TAB_FILES) files.onShown()
+        backCallback.isEnabled = i == TAB_FILES && files.canGoUp()
         refresh()
     }
 
@@ -296,7 +315,7 @@ class MainActivity : AppCompatActivity() {
             else -> setPill("✓ Up to date", green, onSurface)
         }
 
-        if (tab == 0) {
+        if (tab == TAB_HOME) {
             ring.setProgressCompat(pct, true)
             percent.text = if (total == 0 && done == 0) "–" else "${pct / 10}%"
             statusTitle.text = when {
@@ -342,8 +361,9 @@ class MainActivity : AppCompatActivity() {
             issuesDetail.text = parts.joinToString("\n")
         }
 
-        if (tab == 1) refreshSettings()
-        if (tab == 2) renderLog()
+        if (tab == TAB_SETTINGS) refreshSettings()
+        if (tab == TAB_ACTIVITY) renderLog()
+        if (tab == TAB_FILES) backCallback.isEnabled = files.canGoUp()
     }
 
     // ---- settings -------------------------------------------------------------
@@ -634,4 +654,12 @@ class MainActivity : AppCompatActivity() {
 
     @Suppress("unused")
     private fun tint(c: Int) = ColorStateList.valueOf(c)
+
+    companion object {
+        const val TAB_HOME = 0
+        const val TAB_FILES = 1
+        const val TAB_ACTIVITY = 2
+        const val TAB_SETTINGS = 3
+        val NAV_IDS = listOf(R.id.nav_home, R.id.nav_files, R.id.nav_activity, R.id.nav_settings)
+    }
 }

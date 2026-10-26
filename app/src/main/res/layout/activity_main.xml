@@ -61,6 +61,11 @@
             layout="@layout/page_home" />
 
         <include
+            android:id="@+id/page_files"
+            layout="@layout/page_files"
+            android:visibility="gone" />
+
+        <include
             android:id="@+id/page_settings"
             layout="@layout/page_settings"
             android:visibility="gone" />

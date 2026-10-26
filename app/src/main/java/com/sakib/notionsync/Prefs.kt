@@ -65,6 +65,15 @@ class Prefs(ctx: Context) {
         get() = sp.getString("current_text", "") ?: ""
         set(v) { sp.edit().putString("current_text", v).apply() }
 
+    var filesGrid: Boolean
+        get() = sp.getBoolean("files_grid", true)
+        set(v) { sp.edit().putBoolean("files_grid", v).apply() }
+
+    /** Extra Notion pages to browse in Files, saved as "id|title" lines. */
+    var extraSources: String
+        get() = sp.getString("extra_sources", "") ?: ""
+        set(v) { sp.edit().putString("extra_sources", v).apply() }
+
     var lastPending: Int
         get() = sp.getInt("last_pending", 0)
         set(v) { sp.edit().putInt("last_pending", v).apply() }

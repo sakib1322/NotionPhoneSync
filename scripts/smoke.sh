@@ -39,6 +39,7 @@ for mode in light dark; do
   adb shell input swipe 540 1900 540 500 500; sleep 1; shoot "$mode-1b-backup-lower"
   tap_label "Settings"; shoot "$mode-2-settings"
   adb shell input swipe 540 1900 540 400 500; sleep 1; shoot "$mode-2b-settings-lower"
+  tap_label "Files";    shoot "$mode-4-files"
   tap_label "Activity"; shoot "$mode-3-activity"
 done
 
