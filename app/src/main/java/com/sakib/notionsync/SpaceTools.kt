@@ -42,6 +42,10 @@ class SpaceTools(private val act: Activity) {
                 refreshCard(root, force = true)
             }
         }
+        root.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.sw_cloud_previews).apply {
+            isChecked = prefs.cloudPreviews
+            setOnCheckedChangeListener { _, on -> prefs.cloudPreviews = on }
+        }
         root.findViewById<MaterialButton>(R.id.space_see).setOnClickListener { showDownloads { refreshCard(root, true) } }
         root.findViewById<MaterialButton>(R.id.space_clear).setOnClickListener {
             MaterialAlertDialogBuilder(act)

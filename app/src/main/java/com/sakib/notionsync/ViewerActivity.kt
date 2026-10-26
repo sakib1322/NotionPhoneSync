@@ -74,6 +74,10 @@ class ViewerActivity : AppCompatActivity() {
             override fun onPageSelected(position: Int) {
                 showInfo(position)
                 startMediaFor(position)
+                // Photos are downloaded only when you actually look at them.
+                if (items[position].type == "image") holderAt(position)?.let { h ->
+                    if (!h.loaded) (pager.adapter as Adapter).loadImage(h, items[position])
+                }
             }
         })
         showInfo(pager.currentItem)
@@ -218,7 +222,7 @@ class ViewerActivity : AppCompatActivity() {
 
     // ---- pages ---------------------------------------------------------------------------------
 
-    private class Holder(v: View) : RecyclerView.ViewHolder(v) {
+    class Holder(v: View) : RecyclerView.ViewHolder(v) {
         val thumb: ImageView = v.findViewById(R.id.p_thumb)
         val image: SubsamplingScaleImageView = v.findViewById(R.id.p_image)
         val playerView: PlayerView = v.findViewById(R.id.p_player)
@@ -229,9 +233,10 @@ class ViewerActivity : AppCompatActivity() {
         val loading: View = v.findViewById(R.id.p_loading)
         val status: TextView = v.findViewById(R.id.p_status)
         var boundBlock: String? = null
+        var loaded = false
     }
 
-    private inner class Adapter : RecyclerView.Adapter<Holder>() {
+    inner class Adapter : RecyclerView.Adapter<Holder>() {
         override fun getItemCount() = items.size
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
@@ -240,6 +245,7 @@ class ViewerActivity : AppCompatActivity() {
         override fun onBindViewHolder(h: Holder, position: Int) {
             val f = items[position]
             h.boundBlock = f.block
+            h.loaded = false
             h.image.recycle()
             h.image.visibility = View.GONE
             h.playerView.visibility = View.GONE
@@ -249,7 +255,7 @@ class ViewerActivity : AppCompatActivity() {
             h.thumb.visibility = View.VISIBLE
             h.thumb.setOnClickListener { toggleBar() }
             when (f.type) {
-                "image" -> bindImage(h, f)
+                "image" -> bindImage(h, f, position == pager.currentItem)
                 "video", "audio" -> {
                     h.playerView.visibility = View.VISIBLE
                     if (f.type == "video") thumbs.load(f.block, CloudFiles.local(f), null, true, false, h.thumb)
@@ -269,9 +275,15 @@ class ViewerActivity : AppCompatActivity() {
             }
         }
 
-        private fun bindImage(h: Holder, f: FilesPage.FileItem) {
+        private fun bindImage(h: Holder, f: FilesPage.FileItem, isCurrent: Boolean) {
             thumbs.load(f.block, CloudFiles.local(f), null, false, false, h.thumb)
             h.thumb.scaleType = ImageView.ScaleType.FIT_CENTER
+            val onPhone = CloudFiles.local(f) != null || CloudFiles.cacheFile(this@ViewerActivity, f).let { it.exists() && it.length() > 0 }
+            if (onPhone || isCurrent) loadImage(h, f)
+        }
+
+        fun loadImage(h: Holder, f: FilesPage.FileItem) {
+            h.loaded = true
             h.loading.visibility = View.VISIBLE
             h.status.text = ""
             Thread {

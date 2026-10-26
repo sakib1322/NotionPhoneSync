@@ -1092,7 +1092,9 @@ class FilesPage(
                             .filter { s -> s.isNotEmpty() }.joinToString(" · ")
                     }
                     if (it.type == "image" || it.type == "video") {
-                        val allowDownload = !(prefs.wifiOnly && Perms.onMeteredNetwork(act))
+                        // Files not on the phone are only downloaded when you open them,
+                        // unless you turned on previews for cloud-only photos.
+                        val allowDownload = prefs.cloudPreviews && !(prefs.wifiOnly && Perms.onMeteredNetwork(act))
                         val item = it
                         thumbs.load(it.block, localFile(it), it.url, it.type == "video", allowDownload, thumb) {
                             freshUrl(item)

@@ -75,6 +75,11 @@ class Prefs(ctx: Context) {
         get() = sp.getInt("cache_limit_mb", 1024)
         set(v) { sp.edit().putInt("cache_limit_mb", v).apply() }
 
+    /** Download small previews for photos that are only in the cloud (off saves space and data). */
+    var cloudPreviews: Boolean
+        get() = sp.getBoolean("cloud_previews", false)
+        set(v) { sp.edit().putBoolean("cloud_previews", v).apply() }
+
     var filesGrid: Boolean
         get() = sp.getBoolean("files_grid", true)
         set(v) { sp.edit().putBoolean("files_grid", v).apply() }

@@ -317,6 +317,13 @@
                     app:selectionRequired="true"
                     app:singleSelection="true" />
 
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/sw_cloud_previews"
+                    style="@style/SettingSwitch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Previews for cloud-only photos (uses some space and data)" />
+
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
                     <com.google.android.material.button.MaterialButton android:id="@+id/space_see" style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginEnd="8dp" android:text="See downloads" />
                     <com.google.android.material.button.MaterialButton android:id="@+id/space_clear" style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear them" />
