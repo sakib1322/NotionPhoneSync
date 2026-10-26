@@ -293,6 +293,51 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Space -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout style="@style/CardBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Space" />
+
+                <TextView style="@style/Label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="This app uses" />
+                <TextView android:id="@+id/space_app" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="?attr/colorOnSurface" android:textSize="20sp" android:textStyle="bold" />
+                <TextView android:id="@+id/space_app_detail" style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+
+                <TextView style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Keep files opened from the cloud up to:" />
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/space_limit"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    app:selectionRequired="true"
+                    app:singleSelection="true" />
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                    <com.google.android.material.button.MaterialButton android:id="@+id/space_see" style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginEnd="8dp" android:text="See downloads" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/space_clear" style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear them" />
+                </LinearLayout>
+
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="10dp" android:layout_marginBottom="12dp" android:background="?attr/colorOutlineVariant" />
+
+                <TextView style="@style/Label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Free up space on this phone" />
+                <TextView android:id="@+id/space_free" style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Checking…" />
+                <TextView android:id="@+id/space_freed" style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="2dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/space_free_btn"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Free up space…" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Issues -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/issues_card"

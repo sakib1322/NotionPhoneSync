@@ -28,6 +28,7 @@ class Thumbs(ctx: Context) {
     private val app = ctx.applicationContext
     private val dir = File(app.cacheDir, "thumbs").apply { mkdirs() }
     private val pool = Executors.newFixedThreadPool(3)
+    private var saves = 0
     private val main = Handler(Looper.getMainLooper())
     private val mem = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
@@ -83,6 +84,7 @@ class Thumbs(ctx: Context) {
     private fun save(id: String, bmp: Bitmap) {
         try {
             File(dir, "$id.jpg").outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+            if (++saves % 200 == 0) LocalSpace.trim(dir, LocalSpace.THUMB_LIMIT)
         } catch (e: Exception) {
         }
     }

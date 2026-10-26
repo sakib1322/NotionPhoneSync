@@ -70,6 +70,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("files_sort", "new") ?: "new"
         set(v) { sp.edit().putString("files_sort", v).apply() }
 
+    /** Most space files opened from the cloud may use on the phone. */
+    var cacheLimitMb: Int
+        get() = sp.getInt("cache_limit_mb", 1024)
+        set(v) { sp.edit().putInt("cache_limit_mb", v).apply() }
+
     var filesGrid: Boolean
         get() = sp.getBoolean("files_grid", true)
         set(v) { sp.edit().putBoolean("files_grid", v).apply() }

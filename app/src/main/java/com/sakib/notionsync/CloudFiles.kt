@@ -39,7 +39,10 @@ object CloudFiles {
     fun obtain(ctx: Context, f: FilesPage.FileItem, progress: (Long, Long) -> Unit = { _, _ -> }): File {
         local(f)?.let { return it }
         val dest = cacheFile(ctx, f)
-        if (dest.exists() && dest.length() > 0) return dest
+        if (dest.exists() && dest.length() > 0) {
+            dest.setLastModified(System.currentTimeMillis()) // recently used: kept longest
+            return dest
+        }
         val url = freshUrl(ctx, f) ?: throw IllegalStateException("No download link")
         dest.parentFile?.mkdirs()
         val part = File(dest.path + ".part")
@@ -62,6 +65,7 @@ object CloudFiles {
             }
         }
         part.renameTo(dest)
+        LocalSpace.trimAll(ctx)
         return dest
     }
 }

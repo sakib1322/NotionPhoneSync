@@ -91,6 +91,9 @@ class MainActivity : AppCompatActivity() {
     // activity
     private lateinit var logView: TextView
 
+    // space
+    private lateinit var space: SpaceTools
+
     // files
     private lateinit var files: FilesPage
     private val pickFilesLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -126,6 +129,8 @@ class MainActivity : AppCompatActivity() {
         bindViews()
         setupHome()
         setupSettings()
+        space = SpaceTools(this)
+        space.bindCard(findViewById(R.id.page_home))
         files = FilesPage(this, findViewById(R.id.page_files)) { etExcluded.setText(prefs.excluded) }
         files.onStackChanged = { backCallback.isEnabled = tab == TAB_FILES && files.canGoUp() }
         files.pickFiles = { pickFilesLauncher.launch(arrayOf("*/*")) }
@@ -321,6 +326,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (tab == TAB_HOME) {
+            space.refreshCard(findViewById(R.id.page_home))
             ring.setProgressCompat(pct, true)
             percent.text = if (total == 0 && done == 0) "–" else "${pct / 10}%"
             statusTitle.text = when {

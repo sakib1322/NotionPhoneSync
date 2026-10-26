@@ -262,7 +262,14 @@ class FilesPage(
         val root = sourceId
         MaterialAlertDialogBuilder(act)
             .setTitle(f.name)
-            .setItems(arrayOf("Rename folder", "Delete folder")) { _, i ->
+            .setItems(
+                if (root == prefs.rootPageId) arrayOf("Rename folder", "Delete folder", "Free up space on the phone")
+                else arrayOf("Rename folder", "Delete folder")
+            ) { _, i ->
+                if (i == 2) {
+                    SpaceTools(act).freeUp(onlyFolder = f.key) { showIndex() }
+                    return@setItems
+                }
                 if (i == 0) ask("Rename folder", f.name, "Rename") { name ->
                     runOp("Renaming") { ops, prog -> ops.renameFolder(root, f.key, name, prog) }
                 } else MaterialAlertDialogBuilder(act)
@@ -797,6 +804,7 @@ class FilesPage(
     private fun actions(f: FileItem) {
         val opts = mutableListOf("Open", "Share", "Save to phone")
         if (f.row != null) opts.addAll(listOf("Rename", "Move", "Delete"))
+        if (f.row?.device == "Phone" && localFile(f) != null) opts.add("Remove from this phone")
         if (f.where != null) opts.add("Show in folder")
         opts.add("Open in Notion")
         MaterialAlertDialogBuilder(act)
@@ -807,6 +815,21 @@ class FilesPage(
                     "Share" -> obtain(f) { share(f, it) }
                     "Save to phone" -> obtain(f) { saveToPhone(f, it) }
                     "Open in Notion" -> openInNotion(f)
+                    "Remove from this phone" -> MaterialAlertDialogBuilder(act)
+                        .setTitle("Remove from this phone?")
+                        .setMessage("Frees ${SpeedMeter.size(f.size)}. The file stays in the cloud and opens from here whenever you need it.")
+                        .setPositiveButton("Remove") { _, _ ->
+                            val rel = f.localPath ?: return@setPositiveButton
+                            Thread {
+                                val ok = try { LocalSpace.offloadOne(act, rel, f.block) } catch (e: Exception) { false }
+                                main.post {
+                                    toast(if (ok) "Removed from the phone. Still in the cloud." else "Not removed: couldn't confirm the cloud copy (or the file changed).")
+                                    showIndex()
+                                }
+                            }.start()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
                     "Rename" -> ask("Rename", f.name, "Rename") { n -> runOp("Renaming") { ops, _ -> ops.rename(f.row!!, n) } }
                     "Move" -> FolderPicker(act, "Move “${f.name}” to", "Move here", { root, p ->
                         if (root != f.row!!.root) toast("Files can only move within the same backup.")
@@ -840,6 +863,7 @@ class FilesPage(
         val safe = f.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
         val dest = File(act.cacheDir, "open/${f.block}/$safe")
         if (dest.exists() && dest.length() > 0) {
+            dest.setLastModified(System.currentTimeMillis())
             then(dest)
             return
         }
@@ -886,6 +910,7 @@ class FilesPage(
                     }
                 }
                 part.renameTo(dest)
+                LocalSpace.trimAll(act)
                 main.post {
                     dialog.dismiss()
                     then(dest)

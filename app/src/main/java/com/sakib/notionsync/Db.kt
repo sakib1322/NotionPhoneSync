@@ -429,4 +429,24 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
         ).use { c -> while (c.moveToNext()) out.add(rowFrom(c)) }
         return out
     }
+
+    data class Offloadable(val path: String, val size: Long, val mtime: Long, val block: String)
+
+    /** Backed-up files (status done) that may still be on the phone. */
+    fun offloadable(): List<Offloadable> {
+        val out = ArrayList<Offloadable>()
+        readableDatabase.rawQuery(
+            "SELECT path, size, mtime, block_id FROM files WHERE status = 'done' AND block_id IS NOT NULL", null
+        ).use { c -> while (c.moveToNext()) out.add(Offloadable(c.getString(0), c.getLong(1), c.getLong(2), c.getString(3))) }
+        return out
+    }
+
+    /** The phone copy was removed to save space; the cloud copy stays. */
+    fun markOffloaded(path: String) {
+        writableDatabase.execSQL("UPDATE files SET status = 'offloaded' WHERE path = ?", arrayOf(path))
+    }
+
+    fun offloadedTotals(): Pair<Int, Long> =
+        readableDatabase.rawQuery("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files WHERE status = 'offloaded'", null)
+            .use { c -> if (c.moveToFirst()) c.getInt(0) to c.getLong(1) else 0 to 0L }
 }
