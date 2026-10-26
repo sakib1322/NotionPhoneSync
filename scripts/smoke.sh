@@ -36,13 +36,15 @@ for mode in light dark; do
   adb shell am start -W -n $PKG/.MainActivity
   sleep 6
   tap_label "Backup";   shoot "$mode-1-backup"
+  adb shell input swipe 540 1900 540 500 500; sleep 1; shoot "$mode-1b-backup-lower"
   tap_label "Settings"; shoot "$mode-2-settings"
+  adb shell input swipe 540 1900 540 400 500; sleep 1; shoot "$mode-2b-settings-lower"
   tap_label "Activity"; shoot "$mode-3-activity"
 done
 
-if adb logcat -d | grep -E "FATAL EXCEPTION|AndroidRuntime" | grep -q .; then
+if adb logcat -d -b crash | grep -q "Process: $PKG"; then
   echo "::error::The app crashed on the test phone"
-  adb logcat -d | grep -A 40 "FATAL EXCEPTION" | head -80
+  adb logcat -d -b crash | head -80
   exit 1
 fi
 if ! adb shell pidof $PKG > /dev/null; then

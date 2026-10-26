@@ -114,8 +114,11 @@
                         android:layout_height="52dp"
                         android:layout_marginEnd="6dp"
                         android:layout_weight="1"
+                        android:maxLines="1"
                         android:text="Sync now"
-                        app:icon="@drawable/ic_sync" />
+                        android:textSize="14sp"
+                        app:icon="@drawable/ic_sync"
+                        app:iconPadding="6dp" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btn_stop"
@@ -124,8 +127,11 @@
                         android:layout_height="52dp"
                         android:layout_marginStart="6dp"
                         android:layout_weight="1"
+                        android:maxLines="1"
                         android:text="Stop"
-                        app:icon="@drawable/ic_stop" />
+                        android:textSize="14sp"
+                        app:icon="@drawable/ic_stop"
+                        app:iconPadding="6dp" />
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -151,7 +157,7 @@
                     android:orientation="vertical"
                     android:padding="14dp">
 
-                    <TextView style="@style/Label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Uploaded" />
+                    <TextView style="@style/Label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Done" />
                     <TextView android:id="@+id/n_done" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="0" android:textColor="?attr/colorOnSurface" android:textSize="20sp" android:textStyle="bold" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
