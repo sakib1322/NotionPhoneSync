@@ -48,7 +48,7 @@ class ViewerActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
     private var playerHolder: Holder? = null
     private val thumbs by lazy { Thumbs(this) }
-    private val dateFmt = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.US)
+    private val dateFmt = SimpleDateFormat("d MMM yyyy, h:mm a", Locale.US)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,6 +89,7 @@ class ViewerActivity : AppCompatActivity() {
     private fun showInfo(pos: Int) {
         val f = items[pos]
         title.text = f.name
+        title.isSelected = true
         val parts = listOfNotNull(
             if (f.mtime > 0) dateFmt.format(Date(f.mtime)) else f.dateText.ifEmpty { null },
             if (f.size > 0) SpeedMeter.size(f.size) else null,

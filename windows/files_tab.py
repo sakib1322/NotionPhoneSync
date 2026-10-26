@@ -77,7 +77,7 @@ class FilesTab:
         self.tree.heading("kind", text="Type / location")
         self.tree.column("#0", width=330)
         self.tree.column("size", width=90, anchor="e")
-        self.tree.column("date", width=130)
+        self.tree.column("date", width=160)
         self.tree.column("kind", width=170)
         sc = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sc.set)
@@ -214,7 +214,7 @@ class FilesTab:
             self._set_status(f"{n:,} files · {core.human_size(b)} in this backup{extra}")
 
     def _add_file(self, r, where):
-        date = time.strftime("%d %b %Y %H:%M", time.localtime(r.mtime / 1000)) if r.mtime else ""
+        date = time.strftime("%d %b %Y, %I:%M %p", time.localtime(r.mtime / 1000)) if r.mtime else ""
         iid = self.tree.insert("", "end", text=f"{ICONS.get(r.kind, '📄')}  {r.name}",
                                values=(core.human_size(r.size) if r.size else "", date,
                                        self._where(r) if where else r.kind))
@@ -285,7 +285,7 @@ class FilesTab:
         if r.size:
             lines.append(core.human_size(r.size))
         if r.mtime:
-            lines.append(time.strftime("%d %b %Y, %H:%M", time.localtime(r.mtime / 1000)))
+            lines.append(time.strftime("%d %b %Y, %I:%M %p", time.localtime(r.mtime / 1000)))
         if r.device:
             lines.append(f"From: {r.device}")
         self.preview_text.config(text="\n".join(lines))

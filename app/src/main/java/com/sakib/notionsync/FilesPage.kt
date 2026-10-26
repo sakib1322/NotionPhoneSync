@@ -69,7 +69,7 @@ class FilesPage(
     private val main = Handler(Looper.getMainLooper())
     private val storageRoot = Environment.getExternalStorageDirectory()
     private val num: NumberFormat = NumberFormat.getIntegerInstance()
-    private val dateFmt = SimpleDateFormat("d MMM yyyy", Locale.US)
+    private val dateFmt = SimpleDateFormat("d MMM yyyy, h:mm a", Locale.US)
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -1029,6 +1029,7 @@ class FilesPage(
             val it = shown[position]
             if (it is Header) {
                 h.name.text = it.name
+            h.name.isSelected = true // long names scroll so you can read them in full
                 return
             }
             val thumb = h.thumb ?: return
