@@ -429,4 +429,12 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
         ).use { c -> while (c.moveToNext()) out.add(rowFrom(c)) }
         return out
     }
+
+    /** Every file row of one backup's index (used to set up a new phone without re-uploading). */
+    fun idxRows(root: String): List<IdxRow> {
+        val out = ArrayList<IdxRow>()
+        readableDatabase.rawQuery("SELECT $IDX_COLS FROM idx WHERE root = ? AND kind != 'Folder'", arrayOf(root))
+            .use { c -> while (c.moveToNext()) out.add(rowFrom(c)) }
+        return out
+    }
 }

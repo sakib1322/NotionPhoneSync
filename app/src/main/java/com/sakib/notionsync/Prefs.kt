@@ -80,6 +80,15 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("cloud_previews", false)
         set(v) { sp.edit().putBoolean("cloud_previews", v).apply() }
 
+    /** The Google account your setup is saved to (empty = not signed in). */
+    var googleEmail: String
+        get() = sp.getString("google_email", "") ?: ""
+        set(v) { sp.edit().putString("google_email", v).apply() }
+
+    var googleSavedAt: Long
+        get() = sp.getLong("google_saved_at", 0L)
+        set(v) { sp.edit().putLong("google_saved_at", v).apply() }
+
     var filesGrid: Boolean
         get() = sp.getBoolean("files_grid", true)
         set(v) { sp.edit().putBoolean("files_grid", v).apply() }

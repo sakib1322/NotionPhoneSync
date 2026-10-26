@@ -164,7 +164,30 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val storage = Environment.getExternalStorageDirectory()
         val rootPath = storage.absolutePath
         val excluded = p.excludedList()
-        val known = db.loadAll()
+        var known = db.loadAll()
+        // A new phone (or a reinstall): learn what's already uploaded from the cloud index,
+        // so those files aren't uploaded again.
+        if (known.isEmpty() && index != null && indexDb != null) {
+            try {
+                progress("Reading your cloud file list…", 0, 0)
+                index!!.pull(rootId, indexDb!!, full = true)
+                var seeded = 0
+                for (r in db.idxRows(rootId)) {
+                    if (r.device != "Phone" || r.source.isEmpty() || r.block.isEmpty()) continue
+                    db.save(r.source, r.size, r.mtime, "done", r.block, null, 0)
+                    db.setIndexId(r.source, r.rowId)
+                    if (r.path.isNotEmpty() && r.page.isNotEmpty()) db.setFolderPage(r.path, r.page)
+                    seeded++
+                }
+                if (seeded > 0) log("Found $seeded files already in the cloud from before. They won't be uploaded again.")
+                // Files the index doesn't know yet are still checked against Notion before uploading.
+                p.checkNotion = true
+                known = db.loadAll()
+            } catch (e: Exception) {
+                if (isStopped) return
+                log("Couldn't read the cloud file list (${e.message}). Checking files one by one instead.")
+            }
+        }
         // Nothing recorded yet (fresh install or reinstall): check Notion for
         // files that are already there, so nothing is uploaded twice.
         if (known.isEmpty()) p.checkNotion = true

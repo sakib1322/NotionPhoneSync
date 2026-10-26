@@ -94,6 +94,12 @@ class MainActivity : AppCompatActivity() {
     // space
     private lateinit var space: SpaceTools
 
+    // account
+    private lateinit var account: AccountTools
+    private val authLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        account.onAuthResult(r.data)
+    }
+
     // files
     private lateinit var files: FilesPage
     private val pickFilesLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -129,6 +135,11 @@ class MainActivity : AppCompatActivity() {
         bindViews()
         setupHome()
         setupSettings()
+        account = AccountTools(this, authLauncher) { reloadSettingsUi() }
+        findViewById<MaterialButton>(R.id.btn_google).setOnClickListener { account.signInOrOut() }
+        findViewById<MaterialButton>(R.id.btn_transfer_out).setOnClickListener { account.showTransfer() }
+        findViewById<MaterialButton>(R.id.btn_transfer_in).setOnClickListener { account.receiveTransfer() }
+        reloadSettingsUi()
         space = SpaceTools(this)
         space.bindCard(findViewById(R.id.page_home))
         files = FilesPage(this, findViewById(R.id.page_files)) { etExcluded.setText(prefs.excluded) }
@@ -167,6 +178,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         prefs.excluded = etExcluded.text.toString()
+        account.saveIfChanged()
         handler.removeCallbacks(ticker)
     }
 
@@ -443,6 +455,25 @@ class MainActivity : AppCompatActivity() {
         updateText.text = "Version: build ${Updater.currentBuild(this)}"
     }
 
+    /** Shows the current settings (e.g. after restoring a setup from Google or a code). */
+    private fun reloadSettingsUi() {
+        etToken.setText(prefs.token)
+        etLink.setText(prefs.rootPageId)
+        etExcluded.setText(prefs.excluded)
+        etMinutes.setText(prefs.intervalMinutes.toString())
+        notionStatus.text = if (prefs.rootTitle.isEmpty()) "Not connected yet." else "✓ Connected to “${prefs.rootTitle}”"
+        // Only touch switches whose value really changed (so their actions don't run again).
+        fun sync(id: Int, v: Boolean) = findViewById<MaterialSwitch>(id).let { if (it.isChecked != v) it.isChecked = v }
+        sync(R.id.sw_wifi, prefs.wifiOnly)
+        sync(R.id.sw_charging, prefs.chargingOnly)
+        sync(R.id.sw_hidden, prefs.skipHidden)
+        if (swAuto.isChecked != prefs.autoSync) swAuto.isChecked = prefs.autoSync
+        findViewById<TextView>(R.id.acct_status).text = account.statusText()
+        findViewById<MaterialButton>(R.id.btn_google).text =
+            if (prefs.googleEmail.isEmpty()) "Sign in with Google" else "Google account: ${prefs.googleEmail}"
+        if (::space.isInitialized && ::files.isInitialized) refresh()
+    }
+
     private fun bindSwitch(id: Int, value: Boolean, onChange: (Boolean) -> Unit) {
         val sw = findViewById<MaterialSwitch>(id)
         sw.isChecked = value
@@ -497,6 +528,7 @@ class MainActivity : AppCompatActivity() {
                 prefs.token = token
                 prefs.rootPageId = id
                 prefs.rootTitle = t
+                runOnUiThread { account.saveNow(interactive = false) }
                 "✓ Connected to “$t”"
             } catch (e: NotionException) {
                 when (e.status) {
