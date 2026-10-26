@@ -37,7 +37,33 @@ class AccountTools(
     private val prefs = Prefs(act)
     private val main = Handler(Looper.getMainLooper())
     private var pending: ((String?) -> Unit)? = null
-    private val scopes = listOf(Scope("https://www.googleapis.com/auth/drive.appdata"), Scope("email"))
+    private val scopes = listOf(
+        Scope("https://www.googleapis.com/auth/drive.appdata"), Scope("openid"), Scope("email"), Scope("profile")
+    )
+
+    /** Asks Google who is signed in (name, email, photo). Runs on a background thread. */
+    private fun loadProfile(token: String) {
+        try {
+            val req = okhttp3.Request.Builder().url("https://www.googleapis.com/oauth2/v3/userinfo")
+                .header("Authorization", "Bearer $token").build()
+            okhttp3.OkHttpClient().newCall(req).execute().use { r ->
+                if (!r.isSuccessful) return@use
+                val j = JSONObject(r.body?.string() ?: "{}")
+                j.optString("email").takeIf { it.isNotEmpty() }?.let { prefs.googleEmail = it }
+                prefs.googleName = j.optString("name")
+                prefs.googlePhoto = j.optString("picture")
+            }
+        } catch (e: Exception) {
+        }
+        // Signed in even if Google didn't share the email.
+        if (prefs.googleEmail.isEmpty()) prefs.googleEmail = "your Google account"
+    }
+
+    fun savedText(): String {
+        val saved = prefs.googleSavedAt
+        return if (saved > 0) "Setup saved ${SimpleDateFormat("d MMM, h:mm a", Locale.US).format(Date(saved))}"
+        else "Saving your setup…"
+    }
 
     fun statusText(): String {
         val email = prefs.googleEmail
@@ -95,6 +121,8 @@ class AccountTools(
                 .setItems(arrayOf("Save setup now", "Sign out")) { _, i ->
                     if (i == 0) saveNow(interactive = true) else {
                         prefs.googleEmail = ""
+                        prefs.googleName = ""
+                        prefs.googlePhoto = ""
                         prefs.googleSavedAt = 0
                         onChanged()
                         toast("Signed out. Your files and setup on this phone are unchanged.")
@@ -106,6 +134,7 @@ class AccountTools(
         token(interactive = true) { t ->
             if (t == null) return@token
             Thread {
+                loadProfile(t)
                 val cloud = try { SetupSync.download(t) } catch (e: Exception) { null }
                 main.post {
                     onChanged()

@@ -137,8 +137,9 @@ class MainActivity : AppCompatActivity() {
         setupSettings()
         account = AccountTools(this, authLauncher) { reloadSettingsUi() }
         findViewById<MaterialButton>(R.id.btn_google).setOnClickListener { account.signInOrOut() }
-        findViewById<MaterialButton>(R.id.btn_transfer_out).setOnClickListener { account.showTransfer() }
-        findViewById<MaterialButton>(R.id.btn_transfer_in).setOnClickListener { account.receiveTransfer() }
+        findViewById<View>(R.id.btn_transfer_out).setOnClickListener { account.showTransfer() }
+        findViewById<View>(R.id.btn_transfer_in).setOnClickListener { account.receiveTransfer() }
+        findViewById<MaterialButton>(R.id.acct_manage).setOnClickListener { account.signInOrOut() }
         reloadSettingsUi()
         space = SpaceTools(this)
         space.bindCard(findViewById(R.id.page_home))
@@ -468,10 +469,51 @@ class MainActivity : AppCompatActivity() {
         sync(R.id.sw_charging, prefs.chargingOnly)
         sync(R.id.sw_hidden, prefs.skipHidden)
         if (swAuto.isChecked != prefs.autoSync) swAuto.isChecked = prefs.autoSync
-        findViewById<TextView>(R.id.acct_status).text = account.statusText()
-        findViewById<MaterialButton>(R.id.btn_google).text =
-            if (prefs.googleEmail.isEmpty()) "Sign in with Google" else "Google account: ${prefs.googleEmail}"
+        showAccount()
         if (::space.isInitialized && ::files.isInitialized) refresh()
+    }
+
+    private var photoShown = ""
+
+    /** The Account card: your Google name, email and photo when signed in; the sign-in button when not. */
+    private fun showAccount() {
+        val signedIn = prefs.googleEmail.isNotEmpty()
+        findViewById<View>(R.id.acct_signed_in).visibility = if (signedIn) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.btn_google).visibility = if (signedIn) View.GONE else View.VISIBLE
+        findViewById<TextView>(R.id.acct_status).apply {
+            visibility = if (signedIn) View.GONE else View.VISIBLE
+            text = account.statusText()
+        }
+        if (!signedIn) return
+        val name = prefs.googleName.ifEmpty { prefs.googleEmail.substringBefore('@') }
+        findViewById<TextView>(R.id.acct_name).text = name
+        findViewById<TextView>(R.id.acct_email).text = prefs.googleEmail
+        findViewById<TextView>(R.id.acct_saved).text = account.savedText()
+        findViewById<TextView>(R.id.acct_initial).text = name.firstOrNull()?.uppercase() ?: "G"
+        val photoView = findViewById<android.widget.ImageView>(R.id.acct_photo)
+        val url = prefs.googlePhoto
+        if (url.isEmpty()) {
+            photoView.visibility = View.GONE
+        } else if (url != photoShown) {
+            photoShown = url
+            Thread {
+                val bmp = try {
+                    okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(url).build()).execute().use { r ->
+                        r.body?.byteStream()?.let { android.graphics.BitmapFactory.decodeStream(it) }
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+                runOnUiThread {
+                    if (bmp != null) {
+                        val d = androidx.core.graphics.drawable.RoundedBitmapDrawableFactory.create(resources, bmp)
+                        d.isCircular = true
+                        photoView.setImageDrawable(d)
+                        photoView.visibility = View.VISIBLE
+                    }
+                }
+            }.start()
+        }
     }
 
     private fun bindSwitch(id: Int, value: Boolean, onChange: (Boolean) -> Unit) {

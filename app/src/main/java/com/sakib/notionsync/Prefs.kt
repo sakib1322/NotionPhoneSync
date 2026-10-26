@@ -85,6 +85,14 @@ class Prefs(ctx: Context) {
         get() = sp.getString("google_email", "") ?: ""
         set(v) { sp.edit().putString("google_email", v).apply() }
 
+    var googleName: String
+        get() = sp.getString("google_name", "") ?: ""
+        set(v) { sp.edit().putString("google_name", v).apply() }
+
+    var googlePhoto: String
+        get() = sp.getString("google_photo", "") ?: ""
+        set(v) { sp.edit().putString("google_photo", v).apply() }
+
     var googleSavedAt: Long
         get() = sp.getLong("google_saved_at", 0L)
         set(v) { sp.edit().putLong("google_saved_at", v).apply() }

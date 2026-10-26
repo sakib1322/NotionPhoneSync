@@ -25,42 +25,115 @@
 
                 <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Account" />
 
+                <!-- Signed in -->
+                <LinearLayout
+                    android:id="@+id/acct_signed_in"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <FrameLayout
+                        android:layout_width="52dp"
+                        android:layout_height="52dp">
+
+                        <TextView
+                            android:id="@+id/acct_initial"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:background="@drawable/bg_avatar"
+                            android:gravity="center"
+                            android:textColor="@color/on_primary_container"
+                            android:textSize="22sp"
+                            android:textStyle="bold" />
+
+                        <ImageView
+                            android:id="@+id/acct_photo"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:importantForAccessibility="no"
+                            android:visibility="gone" />
+                    </FrameLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="14dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView android:id="@+id/acct_name" style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textStyle="bold" android:singleLine="true" android:ellipsize="end" />
+                        <TextView android:id="@+id/acct_email" style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" android:singleLine="true" android:ellipsize="end" />
+                        <TextView android:id="@+id/acct_saved" style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/acct_manage"
+                        style="@style/Widget.Material3.Button.IconButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:contentDescription="Account options"
+                        app:icon="@drawable/ic_more" />
+                </LinearLayout>
+
+                <!-- Signed out -->
                 <TextView
                     android:id="@+id/acct_status"
                     style="@style/Muted"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp" />
+                    android:layout_marginTop="4dp" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btn_google"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="12dp"
                     android:text="Sign in with Google" />
 
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="14dp"
+                    android:layout_marginBottom="4dp"
+                    android:background="?attr/colorOutlineVariant" />
+
                 <LinearLayout
+                    android:id="@+id/btn_transfer_out"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal">
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center_vertical"
+                    android:minHeight="60dp"
+                    android:orientation="horizontal"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_transfer_out"
-                        style="@style/Widget.Material3.Button.OutlinedButton"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="4dp"
-                        android:layout_weight="1"
-                        android:text="Move to new device" />
+                    <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_qr" app:tint="?attr/colorPrimary" android:importantForAccessibility="no" />
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="16dp" android:layout_weight="1" android:orientation="vertical">
+                        <TextView style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Move to a new device" />
+                        <TextView style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Show a QR code or copy a setup code" android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_transfer_in"
-                        style="@style/Widget.Material3.Button.OutlinedButton"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="4dp"
-                        android:layout_weight="1"
-                        android:text="Set up from code" />
+                <LinearLayout
+                    android:id="@+id/btn_transfer_in"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center_vertical"
+                    android:minHeight="60dp"
+                    android:orientation="horizontal"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp">
+
+                    <ImageView android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_scan" app:tint="?attr/colorPrimary" android:importantForAccessibility="no" />
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="16dp" android:layout_weight="1" android:orientation="vertical">
+                        <TextView style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Set up from a code" />
+                        <TextView style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Scan the QR or paste the code from your other device" android:textSize="12sp" />
+                    </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
