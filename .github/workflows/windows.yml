@@ -33,8 +33,16 @@ jobs:
       - name: Set version
         run: Set-Content -Path version.py -Value "BUILD = ${{ github.run_number }}"
 
+      - name: Add Google sign-in details
+        env:
+          GID: ${{ secrets.GOOGLE_DESKTOP_CLIENT_ID }}
+          GSECRET: ${{ secrets.GOOGLE_DESKTOP_CLIENT_SECRET }}
+        run: |
+          Set-Content -Path gconfig.py -Value "CLIENT_ID = '$env:GID'`nCLIENT_SECRET = '$env:GSECRET'"
+          if (-not $env:GID) { Write-Host "Google sign-in secrets not set yet; the app will offer transfer codes only." }
+
       - name: Check the code
-        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py
+        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py
 
       - name: Open the window as a test
         env:
@@ -48,7 +56,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --windowed --name NotionLaptopSync `
             --icon icon.ico --add-data "icon.ico;." `
-            --hidden-import pystray._win32 app.py
+            --hidden-import pystray._win32 --hidden-import gconfig app.py
 
       - name: Build the installer
         run: |

@@ -182,6 +182,28 @@ class Syncer:
         self.log(f"Found {len(todo):,} new or changed file(s).")
 
         check_notion = s.get("check_notion")
+        # A new laptop (or a reinstall): match files with what's already in the cloud index
+        # (same folder, name and size), so they aren't uploaded again.
+        seen_in_cloud = {}
+        if not known and self.index_db:
+            try:
+                import cloud as cloudmod
+                self.status("Reading your cloud file list…", 0, 0)
+                cloudmod.Cloud(s, self.db, stop).pull(self.root_id, full=True)
+                with self.db.lock:
+                    rows = self.db.conn.execute(
+                        "SELECT row_id, name, path, size, block, page, device FROM idx WHERE root=? AND kind!='Folder'",
+                        (self.root_id,)).fetchall()
+                for row_id, nm, pth, sz, blk, pg, dev in rows:
+                    if blk and dev == "Laptop":
+                        seen_in_cloud[(pth, nm.lower(), sz)] = (row_id, blk)
+                        if pth and pg:
+                            self.db.set_folder_page(pth, pg)
+                check_notion = True
+            except Stopped:
+                return
+            except Exception as e:
+                self.log(f"Couldn't read the cloud file list ({e}). Checking files one by one instead.")
         network_failures = 0
         for i, (_, path, root, label) in enumerate(todo):
             if stop.is_set():
@@ -197,6 +219,13 @@ class Syncer:
             size, mtime = st.st_size, int(st.st_mtime * 1000)
             old = known.get(core.norm(path))
             key = self._key_for(path, root, label)
+
+            match = seen_in_cloud.get((key, name.lower(), size)) if old is None else None
+            if match:
+                self.db.save(path, size, mtime, "done", match[1], None, 0, key=key)
+                self.db.set_index_id(path, match[0])
+                self.log(f"Already in the cloud: {path}")
+                continue
 
             if old is None and check_notion:
                 try:

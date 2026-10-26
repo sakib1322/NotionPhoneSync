@@ -8,10 +8,11 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 import requests
 
+import account
 import core
 import winutil
 from files_tab import FilesTab
@@ -192,6 +193,16 @@ class App:
         self._refresh_folder_lists()
 
     def _build_notion(self, f):
+        self._h(f, "Account")
+        self.acct_lbl = self._p(f, "", foreground="#555")
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=4)
+        self.google_btn = ttk.Button(row, command=self.google_click)
+        self.google_btn.pack(side="left", padx=(0, 6))
+        ttk.Button(row, text="Move to a new device…", command=self.show_transfer).pack(side="left", padx=6)
+        ttk.Button(row, text="Set up from code…", command=self.receive_transfer).pack(side="left", padx=6)
+        self._account_ui()
+
         self._h(f, "1. Integration secret")
         self._p(f, "From notion.so/profile/integrations (Developer tools → Connections). "
                    "You can use the same one as the phone app.")
@@ -334,6 +345,11 @@ class App:
                 self.settings.set("token", token)
                 self.settings.set("root_page", pid)
                 self.settings.set("root_title", title)
+                if self.settings.get("google_refresh"):
+                    try:
+                        account.upload(self.settings)
+                    except Exception:
+                        pass
                 msg = f"✓ Connected to “{title}”"
             except NotionError as e:
                 msg = {401: "Notion didn't accept that secret. Copy it again."}.get(
@@ -344,6 +360,129 @@ class App:
             self.events.put(lambda: self.notion_lbl.config(text=msg))
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ---- account -----------------------------------------------------------------
+
+    def _account_ui(self):
+        email = self.settings.get("google_email")
+        if not account.available():
+            text = "Google sign-in will be available after the next update. Until then, use a transfer code."
+        elif email:
+            saved = self.settings.get("google_saved_at")
+            text = f"Signed in as {email}" + (time.strftime(" · setup saved %d %b, %I:%M %p", time.localtime(saved)) if saved else "")
+        else:
+            text = "Sign in with Google to keep your setup in your Google account. On a new laptop, just sign in and everything comes back."
+        self.acct_lbl.config(text=text)
+        self.google_btn.config(text="Sign out of Google" if email else "Sign in with Google",
+                               state="normal" if account.available() else "disabled")
+
+    def _reload_settings_ui(self):
+        self.token_var.set(self.settings.get("token"))
+        self.link_var.set(self.settings.get("root_page"))
+        title = self.settings.get("root_title")
+        self.notion_lbl.config(text=f"✓ Connected to “{title}”" if title else "Not connected yet.")
+        self.auto_var.set(self.settings.get("auto_sync"))
+        self.minutes_var.set(str(self.settings.get("interval")))
+        self._update_auto_label()
+        self.hidden_var.set(self.settings.get("skip_hidden"))
+        self.cloud_var.set(self.settings.get("skip_cloud_only"))
+        self._refresh_folder_lists()
+        self._account_ui()
+
+    def google_click(self):
+        if self.settings.get("google_email"):
+            if messagebox.askyesno(TITLE, "Sign out of Google? Your files and setup on this laptop are unchanged."):
+                account.sign_out(self.settings)
+                self._account_ui()
+            return
+        self.acct_lbl.config(text="Finish signing in in your browser…")
+
+        def work():
+            account.sign_in(self.settings)
+            return account.download(self.settings)
+
+        def done(cloud, err):
+            def ui():
+                if err:
+                    messagebox.showerror(TITLE, f"Google sign-in didn't work:\n{err}")
+                    self._account_ui()
+                    return
+                lap = (cloud or {}).get("laptop") or {}
+                if lap.get("root_page") and (not self.settings.get("token") or lap["root_page"] != self.settings.get("root_page")):
+                    if messagebox.askyesno(TITLE, f"Your Google account has a saved setup for “{lap.get('root_title') or 'Laptop Backup'}”.\n\n"
+                                                  "Use it on this laptop? Files already in the cloud won't be uploaded again."):
+                        self._apply_setup(cloud)
+                        return
+                if self.settings.get("token"):
+                    account.run_async(lambda: account.upload(self.settings), lambda r, e: self.events.put(self._account_ui))
+                self._account_ui()
+            self.events.put(ui)
+        account.run_async(work, done)
+
+    def _apply_setup(self, js):
+        if not account.apply(self.settings, js):
+            pages = account.sources_in(js)
+            win = tk.Toplevel(self.root)
+            win.title("Which page is this laptop's backup?")
+            ttk.Label(win, text="Which Notion page is this laptop's backup?", padding=10).pack()
+            for pid, t in pages:
+                ttk.Button(win, text=t, command=lambda pid=pid, t=t: (
+                    self.settings.set("root_page", pid), self.settings.set("root_title", t), win.destroy(),
+                    self._after_apply())).pack(fill="x", padx=10, pady=2)
+            ttk.Button(win, text="Another page (paste its link in the Notion tab)", command=win.destroy).pack(fill="x", padx=10, pady=8)
+            self._reload_settings_ui()
+            return
+        self._after_apply()
+
+    def _after_apply(self):
+        self._reload_settings_ui()
+        try:
+            winutil.set_startup(self.settings.get("startup"))
+        except OSError:
+            pass
+        messagebox.showinfo(TITLE, "All set. Your backup continues; files already in the cloud won't be uploaded again.")
+        if self.settings.get("google_refresh"):
+            account.run_async(lambda: account.upload(self.settings), lambda r, e: self.events.put(self._account_ui))
+
+    def show_transfer(self):
+        if not self.settings.get("token"):
+            messagebox.showinfo(TITLE, "Set up Notion first.")
+            return
+        code = account.transfer_code(self.settings)
+        win = tk.Toplevel(self.root)
+        win.title("Move to a new device")
+        try:
+            import qrcode
+            from PIL import ImageTk
+            img = qrcode.make(code).resize((300, 300))
+            win._qr = ImageTk.PhotoImage(img)
+            ttk.Label(win, image=win._qr).pack(padx=16, pady=10)
+        except Exception:
+            pass
+        ttk.Label(win, wraplength=420, padding=(16, 0),
+                  text="Phone: Settings → Account → Set up from code → Scan this QR.\n"
+                       "Another laptop: Notion tab → Set up from code → paste the code.\n\n"
+                       "This code contains your Notion secret: use it only on your own devices.").pack()
+        e = ttk.Entry(win, width=50)
+        e.insert(0, code)
+        e.pack(padx=16, pady=8)
+
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code)
+            messagebox.showinfo(TITLE, "Code copied. Paste it on the other device, then copy something else to clear it.", parent=win)
+        ttk.Button(win, text="Copy code", command=copy).pack(pady=(0, 12))
+
+    def receive_transfer(self):
+        code = simpledialog.askstring(TITLE, "Paste the setup code (starts with NSYNC1:):", parent=self.root)
+        if not code:
+            return
+        js = account.read_code(code)
+        if not js:
+            messagebox.showerror(TITLE, "That isn't a Notion Sync setup code.")
+            return
+        if messagebox.askyesno(TITLE, "Use this setup on this laptop? Files already in the cloud won't be uploaded again."):
+            self._apply_setup(js)
 
     def ready(self):
         return bool(self.settings.get("token") and self.settings.get("root_page") and self.settings.get("folders"))
@@ -415,8 +554,17 @@ class App:
         self.auto_cb.config(text=f"Auto-sync every {core.interval_label(self.settings.get('interval'))}")
 
     def _scheduler(self):
+        ticks = 0
         while not self.quitting:
             time.sleep(20)
+            ticks += 1
+            if ticks % 15 == 0:
+                # Keep the setup saved in your Google account up to date (only when something changed).
+                try:
+                    if account.save_if_changed(self.settings):
+                        self.events.put(self._account_ui)
+                except Exception:
+                    pass
             try:
                 s = self.settings
                 if not s.get("auto_sync") or self.running() or not self.ready():

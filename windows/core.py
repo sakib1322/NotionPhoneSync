@@ -35,7 +35,11 @@ class Settings:
         "check_notion": False,
         "closed_to_tray_hint": False,
         "extra_sources": [],
-        "cache_limit_mb": 1024,   # most space files opened from the cloud may use      # other backup pages to browse, as "id|title"
+        "cache_limit_mb": 1024,
+        "google_refresh": "",
+        "google_email": "",
+        "google_saved_at": 0,
+        "google_saved_hash": "",   # most space files opened from the cloud may use      # other backup pages to browse, as "id|title"
     }
 
     def __init__(self):
