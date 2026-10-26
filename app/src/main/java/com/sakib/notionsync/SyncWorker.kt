@@ -46,6 +46,9 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     private lateinit var rootId: String
     private lateinit var prefs: Prefs
     private val captionCache = HashMap<String, Map<String, String>>()
+    private var index: CloudIndex? = null
+    private var indexDb: String? = null
+    private var indexWarned = false
 
     private fun beat() {
         if (::prefs.isInitialized) prefs.heartbeat = System.currentTimeMillis()
@@ -144,6 +147,18 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             )
             return
         }
+
+        // The cloud index (for search and browsing in the app).
+        try {
+            index = CloudIndex(ctx, client)
+            indexDb = index?.dbIdFor(rootId, create = true)
+        } catch (e: Exception) {
+            if (e is IOException && isStopped) return
+            log("Couldn't set up the file index (${e.message}). Backup continues; search may miss new files.")
+            index = null
+        }
+        backfillIndex(1500)
+        if (isStopped) return
 
         // 1. Scan the phone for new or changed files.
         val storage = Environment.getExternalStorageDirectory()
@@ -302,18 +317,59 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val type = FileTypes.blockType(upName)
         val uploadId = client.uploadFile(f, upName, mime, size) { beat() }
         val caption = "${f.name} · ${dateFmt.format(Date(mtime))}"
-        val blockId = attach(relDir, uploadId, type, caption)
+        val (blockId, pageId) = attach(relDir, uploadId, type, caption)
         // If this file was uploaded before and has since changed, remove the old copy.
         old?.blockId?.let { oldBlock ->
             try { client.deleteBlock(oldBlock) } catch (e: Exception) { }
         }
         db.save(rel, size, mtime, "done", blockId, null, 0)
+        writeIndex(rel, f.name, size, mtime, blockId, pageId, old?.indexId)
     }
 
-    private fun attach(relDir: String, uploadId: String, type: String, caption: String): String {
+    private fun writeIndex(rel: String, name: String, size: Long, mtime: Long, blockId: String, pageId: String, rowId: String?) {
+        val idx = index ?: return
+        val dbId = indexDb ?: return
+        val e = CloudIndex.Entry(
+            name = name, path = rel.substringBeforeLast('/', ""), size = size, mtime = mtime,
+            kind = CloudIndex.kind(name), block = blockId, page = pageId, device = "Phone", source = rel
+        )
+        try {
+            val id = if (rowId != null) idx.updateFile(rootId, dbId, rowId, e) else idx.add(rootId, dbId, e)
+            db.setIndexId(rel, id)
+        } catch (ex: Exception) {
+            if (!indexWarned) {
+                indexWarned = true
+                log("Couldn't add to the file index (${ex.message}). It will be added later.")
+            }
+        }
+    }
+
+    /** Adds files uploaded before the index existed, a batch per run. */
+    private fun backfillIndex(limit: Int) {
+        if (index == null || indexDb == null) return
+        val pending = db.pendingIndex(limit)
+        if (pending.isEmpty()) return
+        val total = db.countPendingIndex()
+        log("Adding ${pending.size} of $total earlier uploads to the file index…")
+        var done = 0
+        for ((rel, r) in pending) {
+            if (isStopped) return
+            val relDir = rel.substringBeforeLast('/', "")
+            val pageId = if (relDir.isEmpty()) rootId else (db.folderPage(relDir) ?: "")
+            progress("Indexing earlier uploads: ${done + 1} of $total", done, total)
+            val before = indexWarned
+            writeIndex(rel, rel.substringAfterLast('/'), r.size, r.mtime, r.blockId ?: continue, pageId, null)
+            if (indexWarned && !before) return
+            done++
+        }
+        log("Indexed $done earlier uploads${if (total > done) " (${total - done} left for the next runs)" else ""}.")
+    }
+
+    /** Adds the upload to its folder page; returns (block ID, page ID). */
+    private fun attach(relDir: String, uploadId: String, type: String, caption: String): Pair<String, String> {
         val pageId = folderPage(relDir)
         return try {
-            client.attach(pageId, uploadId, type, caption)
+            client.attach(pageId, uploadId, type, caption) to pageId
         } catch (e: NotionException) {
             when {
                 e.status == 404 -> {
@@ -321,9 +377,10 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                     db.clearFolders()
                     folderCache.clear()
                     childCache.clear()
-                    client.attach(folderPage(relDir), uploadId, type, caption)
+                    val fresh = folderPage(relDir)
+                    client.attach(fresh, uploadId, type, caption) to fresh
                 }
-                e.status == 400 && type != "file" -> client.attach(pageId, uploadId, "file", caption)
+                e.status == 400 && type != "file" -> client.attach(pageId, uploadId, "file", caption) to pageId
                 else -> throw e
             }
         }

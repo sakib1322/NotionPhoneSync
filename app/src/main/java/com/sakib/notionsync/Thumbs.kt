@@ -38,7 +38,10 @@ class Thumbs(ctx: Context) {
         .build()
 
     /** [url] is used only when [allowDownload] is true and no phone copy exists. */
-    fun load(id: String, local: File?, url: String?, isVideo: Boolean, allowDownload: Boolean, target: ImageView) {
+    fun load(
+        id: String, local: File?, url: String?, isVideo: Boolean, allowDownload: Boolean, target: ImageView,
+        fetchUrl: (() -> String?)? = null
+    ) {
         target.tag = id
         mem.get(id)?.let {
             show(target, it)
@@ -49,7 +52,10 @@ class Thumbs(ctx: Context) {
             val bmp = try {
                 fromDisk(id) ?: when {
                     local != null && local.exists() -> fromLocal(local, isVideo)?.also { save(id, it) }
-                    !isVideo && allowDownload && url != null -> fromUrl(id, url)?.also { save(id, it) }
+                    !isVideo && allowDownload -> {
+                        val u = url ?: try { fetchUrl?.invoke() } catch (e: Exception) { null }
+                        if (u != null) fromUrl(id, u)?.also { save(id, it) } else null
+                    }
                     else -> null
                 }
             } catch (e: Throwable) {

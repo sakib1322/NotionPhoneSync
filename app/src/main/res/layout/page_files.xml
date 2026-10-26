@@ -36,6 +36,14 @@
             app:icon="@drawable/ic_search" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_sort"
+            style="@style/Widget.Material3.Button.IconButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:contentDescription="Sort"
+            app:icon="@drawable/ic_sort" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_view"
             style="@style/Widget.Material3.Button.IconButton"
             android:layout_width="wrap_content"
@@ -52,7 +60,7 @@
         android:layout_marginStart="16dp"
         android:layout_marginTop="4dp"
         android:layout_marginEnd="16dp"
-        android:hint="Search this folder"
+        android:hint="Search all your files"
         android:visibility="gone"
         app:endIconMode="clear_text"
         app:startIconDrawable="@drawable/ic_search">
@@ -84,6 +92,34 @@
             android:orientation="horizontal" />
     </HorizontalScrollView>
 
+    <TextView
+        android:id="@+id/files_summary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/selectableItemBackground"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="6dp"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/files_banner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="6dp"
+        android:background="@drawable/bg_banner"
+        android:paddingStart="12dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="8dp"
+        android:textColor="?attr/colorOnSurface"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
     <com.google.android.material.progressindicator.LinearProgressIndicator
         android:id="@+id/files_loading"
         android:layout_width="match_parent"
@@ -97,15 +133,21 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/files_list"
+        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+            android:id="@+id/files_refresh"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingStart="10dp"
-            android:paddingTop="4dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="16dp" />
+            android:layout_height="match_parent">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/files_list"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingStart="10dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="16dp" />
+        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
         <TextView
             android:id="@+id/files_empty"

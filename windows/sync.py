@@ -25,6 +25,8 @@ class Syncer:
         self.folder_cache = {}
         self.child_cache = {}
         self.caption_cache = {}
+        self.index_db = None
+        self.index_warned = False
 
     # ---- folders -----------------------------------------------------------
 
@@ -152,6 +154,20 @@ class Syncer:
             self.log(f"Can't reach Notion ({e.__class__.__name__}). Will try again on the next run.")
             return
 
+        try:
+            self.index_db = self.index_db_for(self.root_id)
+        except Stopped:
+            return
+        except Exception as e:
+            self.index_db = None
+            self.log(f"Couldn't set up the file index ({e}). Backup continues; search may miss new files.")
+        try:
+            self.backfill_index(stop, 1500)
+        except Stopped:
+            return
+        if stop.is_set():
+            return
+
         self.log("Scanning your folders for files…")
         self.status("Scanning your folders…", 0, 0)
         todo, known = self.scan(stop)
@@ -257,7 +273,8 @@ class Syncer:
                 self.db.clear_folders()
                 self.folder_cache.clear()
                 self.child_cache.clear()
-                block_id = self.client.attach(self.folder_page(key), upload_id, btype, caption)
+                page_id = self.folder_page(key)
+                block_id = self.client.attach(page_id, upload_id, btype, caption)
             elif e.status == 400 and btype != "file":
                 block_id = self.client.attach(page_id, upload_id, "file", caption)
             else:
@@ -268,4 +285,92 @@ class Syncer:
                 self.client.delete_block(old.block_id)
             except Exception:
                 pass
-        self.db.save(path, size, mtime, "done", block_id, None, 0)
+        self.db.save(path, size, mtime, "done", block_id, None, 0, key=key)
+        self.write_index(path, name, key, size, mtime, block_id, page_id, old.index_id if old else None)
+
+    # ---- the cloud index ---------------------------------------------------------
+
+    def index_db_for(self, root_id):
+        k = "index_db:" + root_id
+        dbid = self.db.get_meta(k)
+        if dbid:
+            return dbid
+        dbid = self.client.find_child_database(root_id, core.INDEX_TITLE) or \
+            self.client.create_index_database(root_id, core.INDEX_TITLE)
+        self.db.set_meta(k, dbid)
+        return dbid
+
+    @staticmethod
+    def _text(v):
+        return {"rich_text": [{"text": {"content": (v or "")[:1900]}}]}
+
+    def write_index(self, path, name, key, size, mtime, block_id, page_id, row_id):
+        if not self.index_db:
+            return
+        try:
+            if row_id:
+                # Keep the name and folder (they may have been changed in the app).
+                props = {"Size": {"number": size}, "Modified": {"date": {"start": core.iso(mtime)}},
+                         "Block": self._text(block_id), "Page": self._text(page_id)}
+                try:
+                    self.client.update_row(row_id, props)
+                    self.db.set_index_id(path, row_id)
+                    return
+                except NotionError as e:
+                    if e.status not in (400, 404):
+                        raise
+            props = {
+                "Name": {"title": [{"text": {"content": name[:1900]}}]},
+                "Path": self._text(key),
+                "Size": {"number": size},
+                "Modified": {"date": {"start": core.iso(mtime)}},
+                "Kind": {"select": {"name": core.kind(name)}},
+                "Block": self._text(block_id),
+                "Page": self._text(page_id),
+                "Device": {"select": {"name": "Laptop"}},
+                "Source": self._text(path),
+            }
+            self.db.set_index_id(path, self.client.create_row(self.index_db, props))
+        except Stopped:
+            raise
+        except Exception as e:
+            if not self.index_warned:
+                self.index_warned = True
+                self.log(f"Couldn't add to the file index ({e}). It will be added later.")
+
+    def key_for_path(self, path):
+        """Notion folder path (e.g. 'Documents/Work') for a file, from the folder list."""
+        labels = self.settings.get("labels")
+        n = core.norm(path)
+        for root in self.settings.get("folders") or []:
+            r = core.norm(root)
+            if n.startswith(r + "\\") or n.startswith(r + "/"):
+                label = labels.get(r) or os.path.basename(root.rstrip("\\/")) or root
+                return self._key_for(path, root, label)
+        return None
+
+    def backfill_index(self, stop, limit):
+        """Adds files uploaded before the index existed, a batch per run."""
+        if not self.index_db:
+            return
+        pending = self.db.pending_index(limit)
+        if not pending:
+            return
+        total = self.db.count_pending_index()
+        self.log(f"Adding {len(pending):,} of {total:,} earlier uploads to the file index…")
+        done = 0
+        for shown, size, mtime, block_id, key in pending:
+            if stop.is_set():
+                return
+            key = key or self.key_for_path(shown)
+            if key is None:
+                self.db.set_index_id(shown, "unindexed")
+                continue
+            page_id = self.folder_page(key, create=False) or ""
+            self.status(f"Indexing earlier uploads: {done + 1:,} of {total:,}", done, total)
+            before = self.index_warned
+            self.write_index(shown, os.path.basename(shown), key, size, mtime, block_id, page_id, None)
+            if self.index_warned and not before:
+                return
+            done += 1
+        self.log(f"Indexed {done:,} earlier uploads" + (f" ({total - done:,} left for the next runs)." if total > done else "."))

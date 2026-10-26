@@ -275,3 +275,36 @@ class NotionClient:
 
     def delete_block(self, block_id):
         self._call("DELETE", f"/blocks/{block_id}")
+
+    # ---- index database ------------------------------------------------------
+
+    def find_child_database(self, page_id, title):
+        for b in self._children(page_id):
+            if b.get("type") == "child_database" and b.get("child_database", {}).get("title") == title:
+                return b["id"]
+        return None
+
+    def create_index_database(self, parent_id, title):
+        props = {
+            "Name": {"title": {}}, "Path": {"rich_text": {}}, "Size": {"number": {"format": "number"}},
+            "Modified": {"date": {}}, "Kind": {"select": {}}, "Block": {"rich_text": {}},
+            "Page": {"rich_text": {}}, "Device": {"select": {}}, "Source": {"rich_text": {}},
+        }
+        body = {"parent": {"type": "page_id", "page_id": parent_id},
+                "title": [{"type": "text", "text": {"content": title}}], "properties": props}
+        return self._call("POST", "/databases", json_body=body)["id"]
+
+    def create_row(self, db_id, properties):
+        return self._call("POST", "/pages", json_body={"parent": {"database_id": db_id}, "properties": properties})["id"]
+
+    def update_row(self, row_id, properties):
+        self._call("PATCH", f"/pages/{row_id}", json_body={"properties": properties})
+
+    def archive_page(self, page_id):
+        self._call("PATCH", f"/pages/{page_id}", json_body={"archived": True})
+
+    def query_database(self, db_id, body):
+        return self._call("POST", f"/databases/{db_id}/query", json_body=body)
+
+    def block(self, block_id):
+        return self._call("GET", f"/blocks/{block_id}")

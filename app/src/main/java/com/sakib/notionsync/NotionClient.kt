@@ -145,6 +145,62 @@ class NotionClient(private val token: String) {
 
     fun block(blockId: String): JSONObject = get("/blocks/$blockId")
 
+    // ---- index database ------------------------------------------------------------------
+
+    /** Finds a database directly inside a page by its title. */
+    fun findChildDatabase(pageId: String, title: String): String? {
+        var cursor: String? = null
+        do {
+            val res = children(pageId, cursor)
+            for (b in res.results) {
+                if (b.optString("type") == "child_database" &&
+                    b.optJSONObject("child_database")?.optString("title") == title
+                ) return b.getString("id")
+            }
+            cursor = res.next
+        } while (cursor != null)
+        return null
+    }
+
+    fun createIndexDatabase(parentId: String, title: String): String {
+        fun empty() = JSONObject()
+        val props = JSONObject()
+            .put("Name", JSONObject().put("title", empty()))
+            .put("Path", JSONObject().put("rich_text", empty()))
+            .put("Size", JSONObject().put("number", JSONObject().put("format", "number")))
+            .put("Modified", JSONObject().put("date", empty()))
+            .put("Kind", JSONObject().put("select", empty()))
+            .put("Block", JSONObject().put("rich_text", empty()))
+            .put("Page", JSONObject().put("rich_text", empty()))
+            .put("Device", JSONObject().put("select", empty()))
+            .put("Source", JSONObject().put("rich_text", empty()))
+        val body = JSONObject()
+            .put("parent", JSONObject().put("type", "page_id").put("page_id", parentId))
+            .put("title", JSONArray().put(JSONObject().put("type", "text").put("text", JSONObject().put("content", title))))
+            .put("properties", props)
+        return post("/databases", body).getString("id")
+    }
+
+    fun createRow(dbId: String, properties: JSONObject): String =
+        post("/pages", JSONObject().put("parent", JSONObject().put("database_id", dbId)).put("properties", properties))
+            .getString("id")
+
+    fun updateRow(rowId: String, properties: JSONObject) {
+        patch("/pages/$rowId", JSONObject().put("properties", properties))
+    }
+
+    /** Moves a page (or index row) to Notion's trash. */
+    fun archivePage(pageId: String) {
+        patch("/pages/$pageId", JSONObject().put("archived", true))
+    }
+
+    fun queryDatabase(dbId: String, body: JSONObject): JSONObject = post("/databases/$dbId/query", body)
+
+    fun updateCaption(blockId: String, type: String, caption: String) {
+        val cap = JSONArray().put(JSONObject().put("type", "text").put("text", JSONObject().put("content", caption.take(1900))))
+        patch("/blocks/$blockId", JSONObject().put(type, JSONObject().put("caption", cap)))
+    }
+
     /** Top-level pages this integration can see (e.g. Phone Backup, Laptop Backup) as ID -> title. */
     fun topLevelPages(): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>()

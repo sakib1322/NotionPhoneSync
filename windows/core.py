@@ -61,10 +61,11 @@ class Settings:
 
 
 class Rec:
-    __slots__ = ("size", "mtime", "status", "block_id", "attempts")
+    __slots__ = ("size", "mtime", "status", "block_id", "attempts", "index_id")
 
-    def __init__(self, size, mtime, status, block_id, attempts):
+    def __init__(self, size, mtime, status, block_id, attempts, index_id=None):
         self.size, self.mtime, self.status, self.block_id, self.attempts = size, mtime, status, block_id, attempts
+        self.index_id = index_id
 
 
 class Db:
@@ -78,18 +79,59 @@ class Db:
                 "CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, shown TEXT, size INTEGER, mtime INTEGER, "
                 "status TEXT, block_id TEXT, error TEXT, attempts INTEGER DEFAULT 0, updated REAL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS folders(key TEXT PRIMARY KEY, page_id TEXT)")
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(files)").fetchall()]
+            if "index_id" not in cols:
+                # Adds to the existing data; nothing already recorded is changed.
+                self.conn.execute("ALTER TABLE files ADD COLUMN index_id TEXT")
+            if "key" not in cols:
+                self.conn.execute("ALTER TABLE files ADD COLUMN key TEXT")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
             self.conn.commit()
 
     def load_all(self):
         with self.lock:
-            rows = self.conn.execute("SELECT path, size, mtime, status, block_id, attempts FROM files").fetchall()
-        return {r[0]: Rec(r[1], r[2], r[3], r[4], r[5]) for r in rows}
+            rows = self.conn.execute("SELECT path, size, mtime, status, block_id, attempts, index_id FROM files").fetchall()
+        return {r[0]: Rec(r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows}
 
-    def save(self, path, size, mtime, status, block_id, error, attempts):
+    def save(self, path, size, mtime, status, block_id, error, attempts, key=None):
+        """Records a file's sync state, keeping its index link."""
         with self.lock:
-            self.conn.execute(
-                "INSERT OR REPLACE INTO files VALUES(?,?,?,?,?,?,?,?,?)",
-                (norm(path), path, size, mtime, status, block_id, error, attempts, time.time()))
+            cur = self.conn.execute(
+                "UPDATE files SET shown=?, size=?, mtime=?, status=?, block_id=?, error=?, attempts=?, updated=?, "
+                "key=COALESCE(?, key) WHERE path=?",
+                (path, size, mtime, status, block_id, error, attempts, time.time(), key, norm(path)))
+            if cur.rowcount == 0:
+                self.conn.execute(
+                    "INSERT INTO files(path, shown, size, mtime, status, block_id, error, attempts, updated, key) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (norm(path), path, size, mtime, status, block_id, error, attempts, time.time(), key))
+            self.conn.commit()
+
+    def set_index_id(self, path, index_id):
+        with self.lock:
+            self.conn.execute("UPDATE files SET index_id=? WHERE path=?", (index_id, norm(path)))
+            self.conn.commit()
+
+    def pending_index(self, limit):
+        """Uploaded files that aren't in the cloud index yet (from before the index existed)."""
+        with self.lock:
+            return self.conn.execute(
+                "SELECT shown, size, mtime, block_id, key FROM files WHERE status='done' AND block_id IS NOT NULL "
+                "AND index_id IS NULL LIMIT ?", (limit,)).fetchall()
+
+    def count_pending_index(self):
+        with self.lock:
+            return self.conn.execute(
+                "SELECT COUNT(*) FROM files WHERE status='done' AND block_id IS NOT NULL AND index_id IS NULL").fetchone()[0]
+
+    def get_meta(self, k):
+        with self.lock:
+            r = self.conn.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+        return r[0] if r else None
+
+    def set_meta(self, k, v):
+        with self.lock:
+            self.conn.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
             self.conn.commit()
 
     def folder_page(self, key):
@@ -218,6 +260,24 @@ def block_type(name):
     if e == "pdf":
         return "pdf"
     return "file"
+
+
+INDEX_TITLE = "File index (used by Notion Sync apps - please don't edit)"
+DOC_EXT = {"doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "odt", "ods", "odp", "md",
+           "pages", "key", "numbers", "epub", "json", "xml", "html", "htm"}
+
+
+def kind(name):
+    e = ext(name)
+    if e == "pdf":
+        return "PDF"
+    if e in DOC_EXT:
+        return "Document"
+    return {"image": "Photo", "video": "Video", "audio": "Audio"}.get(block_type(upload_name(name)), "Other")
+
+
+def iso(mtime_ms):
+    return datetime.fromtimestamp(mtime_ms / 1000).astimezone().isoformat()
 
 
 def caption_time(mtime_ms):

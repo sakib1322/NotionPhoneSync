@@ -65,6 +65,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("current_text", "") ?: ""
         set(v) { sp.edit().putString("current_text", v).apply() }
 
+    /** new, old, name or size */
+    var filesSort: String
+        get() = sp.getString("files_sort", "new") ?: "new"
+        set(v) { sp.edit().putString("files_sort", v).apply() }
+
     var filesGrid: Boolean
         get() = sp.getBoolean("files_grid", true)
         set(v) { sp.edit().putBoolean("files_grid", v).apply() }

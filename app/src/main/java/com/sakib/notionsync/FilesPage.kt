@@ -17,6 +17,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -25,6 +26,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -35,28 +37,37 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
- * The Files tab: browse what's in Notion like a Drive folder, with previews,
- * and open, share or save any file.
+ * The Files tab: your cloud drive. Browses the file index (instant, works
+ * offline once loaded) and falls back to reading Notion pages directly for
+ * backups that have no index yet.
  */
 class FilesPage(
     private val act: AppCompatActivity,
     root: View,
     private val onExcludedChanged: () -> Unit
 ) {
-    sealed class Item(val id: String, val name: String)
-    class Folder(id: String, name: String) : Item(id, name)
+    sealed class Item(val key: String, val name: String)
+    class Folder(key: String, name: String, val files: Int = -1, val bytes: Long = 0) : Item(key, name)
     class FileItem(
-        id: String, name: String, val date: String, val type: String,
-        var url: String?, var fetchedAt: Long, val pageId: String
-    ) : Item(id, name)
+        val block: String, name: String, val mtime: Long, val dateText: String, val type: String,
+        var url: String?, var fetchedAt: Long, val pageId: String, val size: Long,
+        val localPath: String?, val where: String?, val root: String?, val folder: String?
+    ) : Item(block, name)
 
     private val prefs = Prefs(act)
+    private val db = Db.get(act)
     private val thumbs = Thumbs(act)
     private val main = Handler(Looper.getMainLooper())
     private val storageRoot = Environment.getExternalStorageDirectory()
+    private val num: NumberFormat = NumberFormat.getIntegerInstance()
+    private val dateFmt = SimpleDateFormat("d MMM yyyy", Locale.US)
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -67,26 +78,42 @@ class FilesPage(
     private val searchBox: View = root.findViewById(R.id.search_box)
     private val etSearch: TextInputEditText = root.findViewById(R.id.et_search)
     private val crumbs: LinearLayout = root.findViewById(R.id.crumbs)
+    private val summary: TextView = root.findViewById(R.id.files_summary)
+    private val banner: TextView = root.findViewById(R.id.files_banner)
     private val loadingBar: LinearProgressIndicator = root.findViewById(R.id.files_loading)
+    private val refresher: SwipeRefreshLayout = root.findViewById(R.id.files_refresh)
     private val list: RecyclerView = root.findViewById(R.id.files_list)
     private val empty: TextView = root.findViewById(R.id.files_empty)
 
-    private val stack = ArrayList<Pair<String, String>>() // folder id, title
+    // Where we are
+    private var sourceId = ""
+    private var sourceTitle = ""
+    private var useIndex = false
+    private var path = ""                                         // index mode
+    private val stack = ArrayList<Pair<String, String>>()        // Notion mode: page id, title
+
+    // What's shown
     private val items = ArrayList<Item>()
     private var shown: List<Item> = emptyList()
+    private var query = ""
+    private var error: String? = null
+
+    // Notion-mode paging
     private var nextCursor: String? = null
     private var hasMore = false
     private var loading = false
     private var generation = 0
-    private var query = ""
-    private var error: String? = null
-    private var blockPaths: Map<String, String> = emptyMap()
+
+    // Index refresh
+    private var refreshing = false
     private var discovered = false
+    private var lastAutoRefresh = 0L
+
     private val adapter = Adapter()
+    private val layout = GridLayoutManager(act, 3)
 
     /** Called when the folder changes (MainActivity uses it for the Back button). */
     var onStackChanged: (() -> Unit)? = null
-    private val layout = GridLayoutManager(act, 3)
 
     init {
         list.layoutManager = layout
@@ -94,13 +121,14 @@ class FilesPage(
         applyViewMode()
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                if (layout.findLastVisibleItemPosition() >= shown.size - 15) loadMore()
+                if (!useIndex && layout.findLastVisibleItemPosition() >= shown.size - 15) loadMore()
             }
         })
         btnView.setOnClickListener {
             prefs.filesGrid = !prefs.filesGrid
             applyViewMode()
         }
+        root.findViewById<MaterialButton>(R.id.btn_sort).setOnClickListener { pickSort() }
         root.findViewById<MaterialButton>(R.id.btn_search).setOnClickListener {
             val show = searchBox.visibility != View.VISIBLE
             searchBox.visibility = if (show) View.VISIBLE else View.GONE
@@ -111,41 +139,51 @@ class FilesPage(
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 query = s?.toString()?.trim() ?: ""
-                applyFilter()
-                if (query.isNotEmpty()) loadMore()
+                if (useIndex) showIndex() else {
+                    applyFilter()
+                    if (query.isNotEmpty()) loadMore()
+                }
             }
         })
         btnSource.setOnClickListener { pickSource() }
+        summary.setOnClickListener { showStorage() }
         empty.setOnClickListener { if (error != null) reload() }
+        refresher.setOnRefreshListener { refreshIndex(full = true) }
     }
 
     // ---- public -----------------------------------------------------------------------
 
     fun onShown() {
         if (prefs.token.isBlank() || prefs.rootPageId.isBlank()) {
-            stack.clear()
             items.clear()
             applyFilter()
-            showEmpty("Connect Notion in Settings first, then your backups appear here.")
+            showEmpty("Connect Notion in Settings first, then your files appear here.")
             return
         }
-        if (stack.isEmpty()) {
-            Thread { blockPaths = Db.get(act).blockPaths() }.start()
-            openSource(prefs.rootPageId, prefs.rootTitle.ifBlank { "Phone Backup" })
-        }
+        if (sourceId.isEmpty()) openSource(prefs.rootPageId, prefs.rootTitle.ifBlank { "Phone Backup" })
+        else if (useIndex) showIndex()
         if (!discovered) discover()
+        // Quietly pick up new files (at most once a minute).
+        if (System.currentTimeMillis() - lastAutoRefresh > 60_000) refreshIndex(full = false)
     }
 
-    fun canGoUp() = stack.size > 1
+    fun canGoUp() = if (useIndex) path.isNotEmpty() || query.isNotEmpty() else stack.size > 1
 
     fun goUp() {
-        if (stack.size > 1) {
+        if (useIndex) {
+            if (query.isNotEmpty()) {
+                etSearch.setText("")
+                return
+            }
+            path = path.substringBeforeLast('/', "")
+            showIndex()
+        } else if (stack.size > 1) {
             stack.removeAt(stack.size - 1)
             reload()
         }
     }
 
-    // ---- sources (Phone Backup, Laptop Backup…) ---------------------------------------------
+    // ---- sources --------------------------------------------------------------------------
 
     private fun sources(): List<Pair<String, String>> {
         val out = LinkedHashMap<String, String>()
@@ -157,19 +195,24 @@ class FilesPage(
         return out.toList()
     }
 
+    private fun titleOf(root: String) = sources().firstOrNull { it.first == root }?.second ?: "Backup"
+
     private fun addSource(id: String, title: String) {
         if (sources().any { it.first == id }) return
         prefs.extraSources = (prefs.extraSources.lines().filter { it.isNotBlank() } + "$id|$title").joinToString("\n")
     }
 
-    /** Finds other top-level pages the integration can see, e.g. Laptop Backup. */
     private fun discover() {
         discovered = true
         val token = prefs.token
         Thread {
             try {
                 val found = NotionClient(token).topLevelPages()
-                main.post { found.forEach { (id, t) -> addSource(id, t) } }
+                main.post {
+                    val before = sources().size
+                    found.forEach { (id, t) -> addSource(id, t) }
+                    if (sources().size > before) refreshIndex(full = false)
+                }
             } catch (e: Exception) {
                 discovered = false
             }
@@ -178,11 +221,23 @@ class FilesPage(
 
     private fun pickSource() {
         val src = sources()
-        val labels = src.map { it.second } + "+ Add a page by link…"
+        val labels = src.map { (id, t) ->
+            val (n, b) = db.storageTotal(id)
+            if (n > 0) "$t  ·  ${num.format(n)} files, ${SpeedMeter.size(b)}" else t
+        } + "+ Add a page by link…" + "Browse Notion pages directly"
         MaterialAlertDialogBuilder(act)
-            .setTitle("Show backup")
+            .setTitle("Show")
             .setItems(labels.toTypedArray()) { _, i ->
-                if (i < src.size) openSource(src[i].first, src[i].second) else addByLink()
+                when {
+                    i < src.size -> openSource(src[i].first, src[i].second)
+                    i == src.size -> addByLink()
+                    else -> {
+                        useIndex = false
+                        stack.clear()
+                        stack.add(sourceId to sourceTitle)
+                        reload()
+                    }
+                }
             }
             .show()
     }
@@ -214,6 +269,7 @@ class FilesPage(
                         main.post {
                             addSource(id, t)
                             openSource(id, t)
+                            refreshIndex(full = false)
                         }
                     } catch (e: Exception) {
                         main.post { toast("Can't open that page. Connect it to your integration in Notion first.") }
@@ -225,16 +281,190 @@ class FilesPage(
     }
 
     private fun openSource(id: String, title: String) {
-        stack.clear()
-        stack.add(id to title)
+        sourceId = id
+        sourceTitle = title
         btnSource.text = title
+        path = ""
         etSearch.setText("")
-        reload()
+        useIndex = db.indexDbId(id) != null && db.idxCount(id) > 0
+        if (useIndex) showIndex() else {
+            stack.clear()
+            stack.add(id to title)
+            reload()
+        }
     }
 
-    private fun isPhoneSource() = stack.firstOrNull()?.first == prefs.rootPageId
+    // ---- the index ---------------------------------------------------------------------------
 
-    // ---- loading --------------------------------------------------------------------------
+    /** Brings the local copy of every backup's index up to date. */
+    private fun refreshIndex(full: Boolean) {
+        if (refreshing) {
+            refresher.isRefreshing = false
+            return
+        }
+        refreshing = true
+        lastAutoRefresh = System.currentTimeMillis()
+        val token = prefs.token
+        val all = sources()
+        Thread {
+            var anyError: String? = null
+            for ((root, title) in all) {
+                try {
+                    val idx = CloudIndex(act, NotionClient(token))
+                    val dbId = idx.dbIdFor(root, create = false) ?: continue
+                    val (_, lastFull) = db.pullTimes(root)
+                    // A full refresh catches files removed elsewhere; do one at least daily.
+                    val doFull = full || lastFull == 0L || System.currentTimeMillis() - lastFull > 24 * 3600_000L
+                    idx.pull(root, dbId, doFull) { n ->
+                        if (doFull) main.post { setBanner("Loading the file list for $title… ${num.format(n)} files") }
+                    }
+                } catch (e: Exception) {
+                    anyError = e.message
+                }
+            }
+            main.post {
+                refreshing = false
+                refresher.isRefreshing = false
+                if (anyError != null && full) toast("Couldn't refresh everything: ${friendly(anyError)}")
+                val nowIndexed = db.indexDbId(sourceId) != null && db.idxCount(sourceId) > 0
+                if (nowIndexed && !useIndex && stack.size <= 1) {
+                    useIndex = true
+                    path = ""
+                }
+                if (useIndex) showIndex() else updateBanner()
+            }
+        }.start()
+    }
+
+    private fun setBanner(text: String?) {
+        banner.text = text ?: ""
+        banner.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+    }
+
+    private fun updateBanner() {
+        when {
+            refreshing && !useIndex -> setBanner("Loading the file list…")
+            !useIndex && db.indexDbId(sourceId) == null ->
+                setBanner(
+                    if (sourceId == prefs.rootPageId) "Search and folder sizes appear after the next sync builds the file index."
+                    else "This backup has no file index yet. Update the app that uploads to it. Showing Notion pages directly."
+                )
+            sourceId == prefs.rootPageId -> {
+                val pending = db.countPendingIndex()
+                setBanner(
+                    if (pending > 0) "Adding earlier uploads to the file index: ${num.format(pending)} left. " +
+                        "They appear here as each sync adds them." else null
+                )
+            }
+            else -> setBanner(null)
+        }
+    }
+
+    private fun sortSql() = when (prefs.filesSort) {
+        "old" -> "mtime ASC"
+        "name" -> "name COLLATE NOCASE ASC"
+        "size" -> "size DESC"
+        else -> "mtime DESC"
+    }
+
+    private fun fileFrom(r: Db.IdxRow, withWhere: Boolean): FileItem {
+        val local = if (r.device == "Phone" && r.root == prefs.rootPageId && r.source.isNotEmpty()) r.source else null
+        val type = when (r.kind) {
+            "Photo" -> "image"
+            "Video" -> "video"
+            "Audio" -> "audio"
+            "PDF" -> "pdf"
+            else -> "file"
+        }
+        val where = if (withWhere) titleOf(r.root) + (if (r.path.isNotEmpty()) " › " + r.path.replace("/", " › ") else "") else null
+        return FileItem(
+            r.block, r.name, r.mtime, if (r.mtime > 0) dateFmt.format(Date(r.mtime)) else "", type,
+            null, 0, r.page, r.size, local, where, r.root, r.path
+        )
+    }
+
+    /** Shows the current folder (or search results) from the local index. */
+    private fun showIndex() {
+        error = null
+        val q = query
+        val result = ArrayList<Item>()
+        if (q.isNotEmpty()) {
+            val roots = sources().map { it.first }.filter { db.indexDbId(it) != null }
+            db.search(roots, q).forEach { result.add(fileFrom(it, withWhere = true)) }
+        } else {
+            val folders = db.subFolders(sourceId, path)
+            val sortedFolders = when (prefs.filesSort) {
+                "size" -> folders.sortedByDescending { it.bytes }
+                else -> folders
+            }
+            sortedFolders.forEach {
+                result.add(Folder(if (path.isEmpty()) it.name else "$path/${it.name}", it.name, it.files, it.bytes))
+            }
+            db.filesIn(sourceId, path, sortSql()).forEach { result.add(fileFrom(it, withWhere = false)) }
+        }
+        items.clear()
+        items.addAll(result)
+        shown = result
+        adapter.notifyDataSetChanged()
+        renderCrumbs()
+        val (n, b) = db.storageTotal(sourceId)
+        summary.text = "${num.format(n)} files · ${SpeedMeter.size(b)} in $sourceTitle  ·  Storage ›"
+        summary.visibility = View.VISIBLE
+        updateBanner()
+        when {
+            q.isNotEmpty() && result.isEmpty() -> showEmpty("Nothing called “$q” in your backups.")
+            result.isEmpty() -> showEmpty("This folder is empty.")
+            else -> empty.visibility = View.GONE
+        }
+    }
+
+    private fun pickSort() {
+        val keys = listOf("new", "old", "name", "size")
+        val labels = arrayOf("Newest first", "Oldest first", "Name (A–Z)", "Largest first")
+        MaterialAlertDialogBuilder(act)
+            .setTitle("Sort by")
+            .setSingleChoiceItems(labels, keys.indexOf(prefs.filesSort).coerceAtLeast(0)) { d, i ->
+                prefs.filesSort = keys[i]
+                d.dismiss()
+                if (useIndex) showIndex() else toast("Sorting needs the file index (Notion view shows upload order).")
+            }
+            .show()
+    }
+
+    private fun showStorage() {
+        val sb = StringBuilder()
+        for ((id, t) in sources()) {
+            val (n, b) = db.storageTotal(id)
+            if (n == 0) continue
+            sb.append("$t\n").append("${num.format(n)} files · ${SpeedMeter.size(b)}\n")
+            for ((kind, c, bytes) in db.storageByKind(id)) {
+                sb.append("   • ").append(plural(kind)).append(": ").append(num.format(c))
+                    .append(" · ").append(SpeedMeter.size(bytes)).append('\n')
+            }
+            val top = db.subFolders(id, "").sortedByDescending { it.bytes }.take(5)
+            if (top.isNotEmpty()) {
+                sb.append("   Biggest folders:\n")
+                top.forEach { sb.append("      ${it.name}: ${SpeedMeter.size(it.bytes)}\n") }
+            }
+            sb.append('\n')
+        }
+        MaterialAlertDialogBuilder(act)
+            .setTitle("Storage")
+            .setMessage(sb.toString().trim().ifEmpty { "Nothing in the file index yet." })
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun plural(kind: String) = when (kind) {
+        "Photo" -> "Photos"
+        "Video" -> "Videos"
+        "Document" -> "Documents"
+        "PDF" -> "PDFs"
+        "Other" -> "Other files"
+        else -> kind
+    }
+
+    // ---- Notion pages directly (fallback) -------------------------------------------------------------
 
     private fun reload() {
         generation++
@@ -243,24 +473,27 @@ class FilesPage(
         hasMore = true
         loading = false
         error = null
+        summary.visibility = View.GONE
         renderCrumbs()
         applyFilter()
+        updateBanner()
         list.scrollToPosition(0)
         loadMore()
     }
 
     private fun loadMore() {
-        if (loading || !hasMore || stack.isEmpty()) return
+        if (useIndex || loading || !hasMore || stack.isEmpty()) return
         loading = true
         loadingBar.visibility = View.VISIBLE
         val g = generation
         val pageId = stack.last().first
         val cursor = nextCursor
         val token = prefs.token
+        val blockPaths = if (sourceId == prefs.rootPageId) db.blockPaths() else emptyMap()
         Thread {
             try {
                 val res = NotionClient(token).children(pageId, cursor)
-                val parsed = res.results.mapNotNull { parse(it, pageId) }
+                val parsed = res.results.mapNotNull { parseBlock(it, pageId, blockPaths) }
                 main.post {
                     if (g != generation) return@post
                     items.addAll(parsed)
@@ -269,7 +502,6 @@ class FilesPage(
                     loading = false
                     loadingBar.visibility = if (hasMore && query.isNotEmpty()) View.VISIBLE else View.INVISIBLE
                     applyFilter()
-                    // Keep going while searching, or while the screen isn't full yet.
                     if (hasMore && (query.isNotEmpty() || shown.size < 30)) loadMore()
                 }
             } catch (e: Exception) {
@@ -277,36 +509,39 @@ class FilesPage(
                     if (g != generation) return@post
                     loading = false
                     loadingBar.visibility = View.INVISIBLE
-                    error = when {
-                        e is NotionException && e.status == 404 -> "Can't open this page. Is it connected to your integration?"
-                        e.message?.contains("resolve host") == true -> "No internet connection."
-                        else -> "Couldn't load: ${e.message ?: "error"}"
-                    }
+                    error = if (e is NotionException && e.status == 404) "Can't open this page. Is it connected to your integration?"
+                    else friendly(e.message)
                     applyFilter()
                 }
             }
         }.start()
     }
 
-    private fun parse(b: JSONObject, pageId: String): Item? {
+    private fun parseBlock(b: JSONObject, pageId: String, blockPaths: Map<String, String>): Item? {
         val id = b.optString("id")
         return when (val type = b.optString("type")) {
             "child_page" -> Folder(id, b.getJSONObject("child_page").optString("title").ifBlank { "Untitled" })
             "image", "video", "audio", "pdf", "file" -> {
-                val inner = b.optJSONObject(type) ?: return null
-                val capArr = inner.optJSONArray("caption")
-                val caption = if (capArr == null) "" else
-                    (0 until capArr.length()).joinToString("") { capArr.getJSONObject(it).optString("plain_text") }
-                val url = inner.optJSONObject("file")?.optString("url")?.takeIf { it.isNotEmpty() }
-                    ?: inner.optJSONObject("external")?.optString("url")?.takeIf { it.isNotEmpty() }
-                val name = caption.substringBefore(" · ").trim()
-                    .ifEmpty { inner.optString("name") }
-                    .ifEmpty { url?.substringBefore('?')?.substringAfterLast('/') ?: "File" }
-                val date = if (caption.contains(" · ")) caption.substringAfter(" · ").trim() else ""
-                FileItem(id, name, date, type, url, System.currentTimeMillis(), pageId)
+                val f = parseFile(b, pageId) ?: return null
+                FileItem(f.block, f.name, 0, f.dateText, type, f.url, f.fetchedAt, pageId, 0, blockPaths[id], null, null, null)
             }
             else -> null
         }
+    }
+
+    private fun parseFile(b: JSONObject, pageId: String): FileItem? {
+        val type = b.optString("type")
+        val inner = b.optJSONObject(type) ?: return null
+        val capArr = inner.optJSONArray("caption")
+        val caption = if (capArr == null) "" else
+            (0 until capArr.length()).joinToString("") { capArr.getJSONObject(it).optString("plain_text") }
+        val url = inner.optJSONObject("file")?.optString("url")?.takeIf { it.isNotEmpty() }
+            ?: inner.optJSONObject("external")?.optString("url")?.takeIf { it.isNotEmpty() }
+        val name = caption.substringBefore(" · ").trim()
+            .ifEmpty { inner.optString("name") }
+            .ifEmpty { url?.substringBefore('?')?.substringAfterLast('/') ?: "File" }
+        val date = if (caption.contains(" · ")) caption.substringAfter(" · ").trim() else ""
+        return FileItem(b.optString("id"), name, 0, date, type, url, System.currentTimeMillis(), pageId, 0, null, null, null, null)
     }
 
     private fun applyFilter() {
@@ -322,16 +557,39 @@ class FilesPage(
         }
     }
 
+    // ---- shared UI ------------------------------------------------------------------------------
+
     private fun showEmpty(text: String) {
         empty.text = text
         empty.visibility = View.VISIBLE
+    }
+
+    private fun friendly(msg: String?): String = when {
+        msg == null -> "error"
+        msg.contains("resolve host") || msg.contains("Unable to resolve") -> "No internet connection."
+        else -> msg
     }
 
     private fun renderCrumbs() {
         crumbs.removeAllViews()
         val primary = MaterialColors.getColor(crumbs, androidx.appcompat.R.attr.colorPrimary)
         val muted = MaterialColors.getColor(crumbs, com.google.android.material.R.attr.colorOnSurfaceVariant)
-        stack.forEachIndexed { i, (_, title) ->
+        val strong = MaterialColors.getColor(crumbs, com.google.android.material.R.attr.colorOnSurface)
+        val parts: List<Pair<String, () -> Unit>> = when {
+            useIndex && query.isNotEmpty() -> listOf("Search results" to {})
+            useIndex -> {
+                val segs = if (path.isEmpty()) emptyList() else path.split('/')
+                listOf<Pair<String, () -> Unit>>(sourceTitle to { path = ""; showIndex() }) +
+                    segs.mapIndexed { i, s -> s to { path = segs.take(i + 1).joinToString("/"); showIndex() } }
+            }
+            else -> stack.mapIndexed { i, (_, title) ->
+                title to {
+                    while (stack.size > i + 1) stack.removeAt(stack.size - 1)
+                    reload()
+                }
+            }
+        }
+        parts.forEachIndexed { i, (title, go) ->
             if (i > 0) crumbs.addView(TextView(act).apply {
                 text = "  ›  "
                 setTextColor(muted)
@@ -339,16 +597,14 @@ class FilesPage(
             crumbs.addView(TextView(act).apply {
                 text = title
                 textSize = 14f
-                setTextColor(if (i == stack.size - 1) MaterialColors.getColor(crumbs, com.google.android.material.R.attr.colorOnSurface) else primary)
-                if (i == stack.size - 1) setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setOnClickListener {
-                    while (stack.size > i + 1) stack.removeAt(stack.size - 1)
-                    reload()
-                }
+                val last = i == parts.size - 1
+                setTextColor(if (last) strong else primary)
+                if (last) setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setOnClickListener { go() }
             })
         }
         onStackChanged?.invoke()
-        (crumbs.parent as View).post { (crumbs.parent as android.widget.HorizontalScrollView).fullScroll(View.FOCUS_RIGHT) }
+        (crumbs.parent as View).post { (crumbs.parent as HorizontalScrollView).fullScroll(View.FOCUS_RIGHT) }
     }
 
     private fun applyViewMode() {
@@ -379,20 +635,37 @@ class FilesPage(
     }
 
     private fun localFile(f: FileItem): File? {
-        if (!isPhoneSource()) return null
-        val rel = blockPaths[f.id] ?: return null
+        val rel = f.localPath ?: return null
         return File(storageRoot, rel).takeIf { it.exists() }
     }
 
+    private fun freshUrl(f: FileItem): String? {
+        if (f.url != null && System.currentTimeMillis() - f.fetchedAt < 50 * 60_000) return f.url
+        val fresh = parseFile(NotionClient(prefs.token).block(f.block), f.pageId)
+        f.url = fresh?.url
+        f.fetchedAt = System.currentTimeMillis()
+        return f.url
+    }
+
     private fun actions(f: FileItem) {
+        val opts = mutableListOf("Open", "Share", "Save to phone", "Open in Notion")
+        if (f.where != null) opts.add("Show in folder")
         MaterialAlertDialogBuilder(act)
             .setTitle(f.name)
-            .setItems(arrayOf("Open", "Share", "Save to phone", "Open in Notion")) { _, i ->
-                when (i) {
-                    0 -> obtain(f) { open(f, it) }
-                    1 -> obtain(f) { share(f, it) }
-                    2 -> obtain(f) { saveToPhone(f, it) }
-                    3 -> openInNotion(f)
+            .setItems(opts.toTypedArray()) { _, i ->
+                when (opts[i]) {
+                    "Open" -> obtain(f) { open(f, it) }
+                    "Share" -> obtain(f) { share(f, it) }
+                    "Save to phone" -> obtain(f) { saveToPhone(f, it) }
+                    "Open in Notion" -> openInNotion(f)
+                    "Show in folder" -> {
+                        val r = f.root ?: return@setItems
+                        etSearch.setText("")
+                        searchBox.visibility = View.GONE
+                        if (r != sourceId) openSource(r, titleOf(r))
+                        path = f.folder ?: ""
+                        showIndex()
+                    }
                 }
             }
             .show()
@@ -405,7 +678,7 @@ class FilesPage(
             return
         }
         val safe = f.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-        val dest = File(act.cacheDir, "open/${f.id}/$safe")
+        val dest = File(act.cacheDir, "open/${f.block}/$safe")
         if (dest.exists() && dest.length() > 0) {
             then(dest)
             return
@@ -413,7 +686,7 @@ class FilesPage(
         var call: Call? = null
         var cancelled = false
         val dialog = MaterialAlertDialogBuilder(act)
-            .setTitle("Getting file from Notion")
+            .setTitle("Getting file from the cloud")
             .setMessage("Starting…")
             .setNegativeButton("Cancel") { _, _ ->
                 cancelled = true
@@ -421,18 +694,9 @@ class FilesPage(
             }
             .setCancelable(false)
             .show()
-        val token = prefs.token
         Thread {
             try {
-                var url = f.url
-                // Notion's file links expire after an hour: get a fresh one if needed.
-                if (url == null || System.currentTimeMillis() - f.fetchedAt > 50 * 60_000) {
-                    val fresh = parse(NotionClient(token).block(f.id), f.pageId) as? FileItem
-                    url = fresh?.url
-                    f.url = url
-                    f.fetchedAt = System.currentTimeMillis()
-                }
-                if (url == null) throw IllegalStateException("No download link")
+                val url = freshUrl(f) ?: throw IllegalStateException("No download link")
                 dest.parentFile?.mkdirs()
                 val part = File(dest.path + ".part")
                 val c = http.newCall(Request.Builder().url(url).build())
@@ -469,7 +733,7 @@ class FilesPage(
             } catch (e: Exception) {
                 main.post {
                     dialog.dismiss()
-                    if (!cancelled) toast("Couldn't get the file: ${e.message ?: "no internet?"}")
+                    if (!cancelled) toast("Couldn't get the file: ${friendly(e.message)}")
                 }
             }
         }.start()
@@ -528,7 +792,7 @@ class FilesPage(
     }
 
     private fun openInNotion(f: FileItem) {
-        val url = "https://www.notion.so/${f.pageId.replace("-", "")}#${f.id.replace("-", "")}"
+        val url = "https://www.notion.so/${f.pageId.replace("-", "")}#${f.block.replace("-", "")}"
         try {
             act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (e: ActivityNotFoundException) {
@@ -583,20 +847,33 @@ class FilesPage(
             h.badge.visibility = View.GONE
             when (it) {
                 is Folder -> {
-                    h.meta.text = "Folder"
+                    h.meta.text = if (it.files >= 0) "${num.format(it.files)} files · ${SpeedMeter.size(it.bytes)}" else "Folder"
                     h.itemView.setOnClickListener { _ ->
-                        stack.add(it.id to it.name)
-                        etSearch.setText("")
-                        reload()
+                        if (useIndex) {
+                            path = it.key
+                            showIndex()
+                        } else {
+                            stack.add(it.key to it.name)
+                            etSearch.setText("")
+                            reload()
+                        }
                     }
                     h.itemView.setOnLongClickListener(null)
                 }
                 is FileItem -> {
-                    h.meta.text = if (grid) it.date.substringBefore(',').ifEmpty { kindLabel(it) }
-                    else listOf(kindLabel(it), it.date).filter { s -> s.isNotEmpty() }.joinToString(" · ")
+                    val sizeText = if (it.size > 0) SpeedMeter.size(it.size) else ""
+                    h.meta.text = when {
+                        it.where != null -> it.where
+                        grid -> listOf(it.dateText, sizeText).firstOrNull { s -> s.isNotEmpty() } ?: kindLabel(it)
+                        else -> listOf(sizeText, it.dateText, if (sizeText.isEmpty()) kindLabel(it) else "")
+                            .filter { s -> s.isNotEmpty() }.joinToString(" · ")
+                    }
                     if (it.type == "image" || it.type == "video") {
                         val allowDownload = !(prefs.wifiOnly && Perms.onMeteredNetwork(act))
-                        thumbs.load(it.id, localFile(it), it.url, it.type == "video", allowDownload, h.thumb)
+                        val item = it
+                        thumbs.load(it.block, localFile(it), it.url, it.type == "video", allowDownload, h.thumb) {
+                            freshUrl(item)
+                        }
                         if (it.type == "video") h.badge.visibility = View.VISIBLE
                     }
                     h.itemView.setOnClickListener { _ -> obtain(it) { file -> open(it, file) } }

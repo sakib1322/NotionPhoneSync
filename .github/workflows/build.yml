@@ -53,6 +53,15 @@ jobs:
           name: NotionPhoneSync
           path: NotionPhoneSync.apk
 
+      - name: Get the previous release (to test updating over it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p prev
+          TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null || true)
+          if [ -n "$TAG" ]; then gh release download "$TAG" -p NotionPhoneSync.apk -D prev -R ${{ github.repository }} || true; fi
+          ls -la prev
+
       - name: Enable the virtual phone
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

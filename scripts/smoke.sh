@@ -26,9 +26,17 @@ shoot() {
   adb exec-out screencap -p > "shots/$1.png"
 }
 
+adb logcat -c
+# Install the previous release first, open it, then update over it (like a real update).
+if [ -f prev/NotionPhoneSync.apk ]; then
+  adb install prev/NotionPhoneSync.apk
+  adb shell am start -W -n $PKG/.MainActivity
+  sleep 6
+  shoot "0-previous-version"
+  adb shell am force-stop $PKG
+fi
 adb install -r NotionPhoneSync.apk
 adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
-adb logcat -c
 
 for mode in light dark; do
   if [ "$mode" = dark ]; then adb shell cmd uimode night yes; else adb shell cmd uimode night no; fi
