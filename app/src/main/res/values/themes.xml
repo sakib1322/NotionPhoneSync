@@ -27,6 +27,13 @@
         <item name="android:windowLightNavigationBar">@bool/light_bars</item>
     </style>
 
+    <style name="Theme.NotionSync.Translucent">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+
     <style name="Card" parent="Widget.Material3.CardView.Filled">
         <item name="cardBackgroundColor">?attr/colorSurfaceContainerLow</item>
         <item name="cardCornerRadius">22dp</item>

@@ -149,6 +149,16 @@
                 android:paddingBottom="16dp" />
         </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
+        <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+            android:id="@+id/fab_new"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="16dp"
+            android:text="New"
+            android:visibility="gone"
+            app:icon="@drawable/ic_add" />
+
         <TextView
             android:id="@+id/files_empty"
             style="@style/Muted"

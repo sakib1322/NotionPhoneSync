@@ -58,7 +58,8 @@ class FilesPage(
     class FileItem(
         val block: String, name: String, val mtime: Long, val dateText: String, val type: String,
         var url: String?, var fetchedAt: Long, val pageId: String, val size: Long,
-        val localPath: String?, val where: String?, val root: String?, val folder: String?
+        val localPath: String?, val where: String?, val root: String?, val folder: String?,
+        val row: Db.IdxRow? = null
     ) : Item(block, name)
 
     private val prefs = Prefs(act)
@@ -115,6 +116,12 @@ class FilesPage(
     /** Called when the folder changes (MainActivity uses it for the Back button). */
     var onStackChanged: (() -> Unit)? = null
 
+    /** Opens the phone's file picker (set by MainActivity). */
+    var pickFiles: (() -> Unit)? = null
+
+    private val fab: View = root.findViewById(R.id.fab_new)
+    private var lastQueued = -1
+
     init {
         list.layoutManager = layout
         list.adapter = adapter
@@ -149,6 +156,110 @@ class FilesPage(
         summary.setOnClickListener { showStorage() }
         empty.setOnClickListener { if (error != null) reload() }
         refresher.setOnRefreshListener { refreshIndex(full = true) }
+        fab.setOnClickListener {
+            MaterialAlertDialogBuilder(act)
+                .setItems(arrayOf("Upload files here", "New folder here")) { _, i ->
+                    if (i == 0) pickFiles?.invoke() else newFolderHere()
+                }
+                .show()
+        }
+    }
+
+    /** Called every couple of seconds while the Files tab is open. */
+    fun tick() {
+        val q = db.countQueuedUploads()
+        if (q != lastQueued) {
+            lastQueued = q
+            if (useIndex) showIndex() else updateBanner()
+        }
+    }
+
+    /** Files chosen in the phone's picker: copy and upload them to the folder being shown. */
+    fun onPicked(uris: List<android.net.Uri>) {
+        if (uris.isEmpty() || !useIndex) return
+        val root = sourceId
+        val dest = path
+        val dialog = MaterialAlertDialogBuilder(act)
+            .setTitle("Preparing ${uris.size} file(s)…")
+            .setMessage("Copying into the app")
+            .setCancelable(false)
+            .show()
+        Thread {
+            val n = UploadWorker.queue(act, uris, root, dest) { done ->
+                main.post { dialog.setMessage("Copying $done of ${uris.size}") }
+            }
+            main.post {
+                dialog.dismiss()
+                toast(if (n > 0) "Uploading $n file(s)…" else "Couldn't read those files.")
+                tick()
+            }
+        }.start()
+    }
+
+    private fun ask(title: String, initial: String, ok: String, then: (String) -> Unit) {
+        val input = EditText(act).apply {
+            setText(initial)
+            setSingleLine()
+            setSelection(0, initial.substringBeforeLast('.', initial).length)
+        }
+        val box = FrameLayout(act).apply {
+            val p = (20 * resources.displayMetrics.density).toInt()
+            setPadding(p, p / 2, p, 0)
+            addView(input)
+        }
+        MaterialAlertDialogBuilder(act)
+            .setTitle(title)
+            .setView(box)
+            .setPositiveButton(ok) { _, _ ->
+                val v = input.text.toString().trim().replace("/", "-")
+                if (v.isNotEmpty()) then(v)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Runs a cloud change in the background, then refreshes the list. */
+    private fun runOp(label: String, op: (CloudOps, (Int, Int) -> Unit) -> Unit) {
+        val dialog = MaterialAlertDialogBuilder(act).setTitle(label).setMessage("Working…").setCancelable(false).show()
+        Thread {
+            val err = try {
+                op(CloudOps(act)) { i, n -> if (n > 1) main.post { dialog.setMessage("${i + 1} of $n") } }
+                null
+            } catch (e: Exception) {
+                friendly(e.message)
+            }
+            main.post {
+                dialog.dismiss()
+                if (err != null) toast("Couldn't finish: $err")
+                showIndex()
+            }
+        }.start()
+    }
+
+    private fun newFolderHere() {
+        ask("New folder", "", "Create") { name ->
+            val root = sourceId
+            val p = path
+            runOp("Creating folder") { ops, _ -> ops.newFolder(root, p, name) }
+        }
+    }
+
+    private fun folderActions(f: Folder) {
+        val root = sourceId
+        MaterialAlertDialogBuilder(act)
+            .setTitle(f.name)
+            .setItems(arrayOf("Rename folder", "Delete folder")) { _, i ->
+                if (i == 0) ask("Rename folder", f.name, "Rename") { name ->
+                    runOp("Renaming") { ops, prog -> ops.renameFolder(root, f.key, name, prog) }
+                } else MaterialAlertDialogBuilder(act)
+                    .setTitle("Delete “${f.name}”?")
+                    .setMessage("${if (f.files >= 0) num.format(f.files) + " files" else "Everything"} in this folder will be moved to Notion's trash " +
+                        "(recoverable there for 30 days). Files on your phone and laptop are not touched.")
+                    .setPositiveButton("Delete") { _, _ -> runOp("Deleting") { ops, prog -> ops.deleteFolder(root, f.key, prog) } }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            .show()
     }
 
     // ---- public -----------------------------------------------------------------------
@@ -342,6 +453,11 @@ class FilesPage(
     }
 
     private fun updateBanner() {
+        val queued = db.countQueuedUploads()
+        if (queued > 0) {
+            setBanner("Uploading ${num.format(queued)} file(s) you added… They appear here when done.")
+            return
+        }
         when {
             refreshing && !useIndex -> setBanner("Loading the file list…")
             !useIndex && db.indexDbId(sourceId) == null ->
@@ -379,7 +495,7 @@ class FilesPage(
         val where = if (withWhere) titleOf(r.root) + (if (r.path.isNotEmpty()) " › " + r.path.replace("/", " › ") else "") else null
         return FileItem(
             r.block, r.name, r.mtime, if (r.mtime > 0) dateFmt.format(Date(r.mtime)) else "", type,
-            null, 0, r.page, r.size, local, where, r.root, r.path
+            null, 0, r.page, r.size, local, where, r.root, r.path, r
         )
     }
 
@@ -410,6 +526,7 @@ class FilesPage(
         val (n, b) = db.storageTotal(sourceId)
         summary.text = "${num.format(n)} files · ${SpeedMeter.size(b)} in $sourceTitle  ·  Storage ›"
         summary.visibility = View.VISIBLE
+        fab.visibility = if (q.isEmpty()) View.VISIBLE else View.GONE
         updateBanner()
         when {
             q.isNotEmpty() && result.isEmpty() -> showEmpty("Nothing called “$q” in your backups.")
@@ -474,6 +591,7 @@ class FilesPage(
         loading = false
         error = null
         summary.visibility = View.GONE
+        fab.visibility = View.GONE
         renderCrumbs()
         applyFilter()
         updateBanner()
@@ -648,8 +766,10 @@ class FilesPage(
     }
 
     private fun actions(f: FileItem) {
-        val opts = mutableListOf("Open", "Share", "Save to phone", "Open in Notion")
+        val opts = mutableListOf("Open", "Share", "Save to phone")
+        if (f.row != null) opts.addAll(listOf("Rename", "Move", "Delete"))
         if (f.where != null) opts.add("Show in folder")
+        opts.add("Open in Notion")
         MaterialAlertDialogBuilder(act)
             .setTitle(f.name)
             .setItems(opts.toTypedArray()) { _, i ->
@@ -658,6 +778,17 @@ class FilesPage(
                     "Share" -> obtain(f) { share(f, it) }
                     "Save to phone" -> obtain(f) { saveToPhone(f, it) }
                     "Open in Notion" -> openInNotion(f)
+                    "Rename" -> ask("Rename", f.name, "Rename") { n -> runOp("Renaming") { ops, _ -> ops.rename(f.row!!, n) } }
+                    "Move" -> FolderPicker(act, "Move “${f.name}” to", "Move here", { root, p ->
+                        if (root != f.row!!.root) toast("Files can only move within the same backup.")
+                        else runOp("Moving") { ops, _ -> ops.move(f.row, p) }
+                    }).show(f.row!!.root, f.row.path)
+                    "Delete" -> MaterialAlertDialogBuilder(act)
+                        .setTitle("Delete “${f.name}”?")
+                        .setMessage("It moves to Notion's trash (recoverable there for 30 days). The copy on your phone or laptop is not touched.")
+                        .setPositiveButton("Delete") { _, _ -> runOp("Deleting") { ops, _ -> ops.delete(f.row!!) } }
+                        .setNegativeButton("Cancel", null)
+                        .show()
                     "Show in folder" -> {
                         val r = f.root ?: return@setItems
                         etSearch.setText("")
@@ -858,7 +989,10 @@ class FilesPage(
                             reload()
                         }
                     }
-                    h.itemView.setOnLongClickListener(null)
+                    if (useIndex) h.itemView.setOnLongClickListener { _ ->
+                        folderActions(it)
+                        true
+                    } else h.itemView.setOnLongClickListener(null)
                 }
                 is FileItem -> {
                     val sizeText = if (it.size > 0) SpeedMeter.size(it.size) else ""

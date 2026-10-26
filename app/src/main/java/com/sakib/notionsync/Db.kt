@@ -13,7 +13,7 @@ import android.database.sqlite.SQLiteOpenHelper
  * Since version 2 it also keeps a local copy of the cloud file index
  * (table idx), which makes browsing, search and storage totals instant.
  */
-class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", null, 2) {
+class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", null, 3) {
 
     data class Rec(
         val size: Long,
@@ -59,6 +59,7 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
         )
         db.execSQL("CREATE TABLE folders(path TEXT PRIMARY KEY, page_id TEXT)")
         createIndexTables(db)
+        createOutbox(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -67,6 +68,67 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
             db.execSQL("ALTER TABLE files ADD COLUMN index_id TEXT")
             createIndexTables(db)
         }
+        if (oldVersion < 3) createOutbox(db)
+    }
+
+    private fun createOutbox(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT, name TEXT, " +
+                "size INTEGER, root TEXT, path TEXT, status TEXT, error TEXT, created INTEGER)"
+        )
+    }
+
+    // ---- uploads made in the app (queue) ---------------------------------------------------
+
+    data class OutItem(val id: Long, val file: String, val name: String, val size: Long, val root: String, val path: String)
+
+    fun queueUpload(file: String, name: String, size: Long, root: String, path: String) {
+        val v = ContentValues()
+        v.put("file", file)
+        v.put("name", name)
+        v.put("size", size)
+        v.put("root", root)
+        v.put("path", path)
+        v.put("status", "queued")
+        v.put("created", System.currentTimeMillis())
+        writableDatabase.insert("outbox", null, v)
+    }
+
+    fun queuedUploads(): List<OutItem> {
+        val out = ArrayList<OutItem>()
+        readableDatabase.rawQuery(
+            "SELECT id, file, name, size, root, path FROM outbox WHERE status = 'queued' ORDER BY id", null
+        ).use { c -> while (c.moveToNext()) out.add(OutItem(c.getLong(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4), c.getString(5))) }
+        return out
+    }
+
+    fun finishUpload(id: Long, status: String, error: String?) {
+        val v = ContentValues()
+        v.put("status", status)
+        v.put("error", error)
+        writableDatabase.update("outbox", v, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun countQueuedUploads(): Int =
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM outbox WHERE status = 'queued'", null)
+            .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    /** Every index row in a folder and everything below it (files and folder markers). */
+    fun rowsUnder(root: String, path: String): List<IdxRow> {
+        val out = ArrayList<IdxRow>()
+        val prefix = "$path/"
+        readableDatabase.rawQuery(
+            "SELECT $IDX_COLS FROM idx WHERE root = ? AND (path = ? OR substr(path, 1, ${prefix.length}) = ?)",
+            arrayOf(root, path, prefix)
+        ).use { c -> while (c.moveToNext()) out.add(rowFrom(c)) }
+        // The marker for the folder itself lives in its parent.
+        val parent = path.substringBeforeLast('/', "")
+        val name = path.substringAfterLast('/')
+        readableDatabase.rawQuery(
+            "SELECT $IDX_COLS FROM idx WHERE root = ? AND kind = 'Folder' AND path = ? AND name = ?",
+            arrayOf(root, parent, name)
+        ).use { c -> while (c.moveToNext()) out.add(rowFrom(c)) }
+        return out
     }
 
     private fun createIndexTables(db: SQLiteDatabase) {

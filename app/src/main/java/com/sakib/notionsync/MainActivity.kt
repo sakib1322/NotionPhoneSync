@@ -20,6 +20,7 @@ import android.view.View
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.material.bottomnavigation.BottomNavigationView
@@ -92,6 +93,9 @@ class MainActivity : AppCompatActivity() {
 
     // files
     private lateinit var files: FilesPage
+    private val pickFilesLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        files.onPicked(uris)
+    }
     private val backCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             files.goUp()
@@ -124,6 +128,7 @@ class MainActivity : AppCompatActivity() {
         setupSettings()
         files = FilesPage(this, findViewById(R.id.page_files)) { etExcluded.setText(prefs.excluded) }
         files.onStackChanged = { backCallback.isEnabled = tab == TAB_FILES && files.canGoUp() }
+        files.pickFiles = { pickFilesLauncher.launch(arrayOf("*/*")) }
         onBackPressedDispatcher.addCallback(this, backCallback)
 
         val nav = findViewById<BottomNavigationView>(R.id.nav)
@@ -363,7 +368,10 @@ class MainActivity : AppCompatActivity() {
 
         if (tab == TAB_SETTINGS) refreshSettings()
         if (tab == TAB_ACTIVITY) renderLog()
-        if (tab == TAB_FILES) backCallback.isEnabled = files.canGoUp()
+        if (tab == TAB_FILES) {
+            backCallback.isEnabled = files.canGoUp()
+            files.tick()
+        }
     }
 
     // ---- settings -------------------------------------------------------------
