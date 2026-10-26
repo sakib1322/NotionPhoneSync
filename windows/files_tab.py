@@ -532,6 +532,10 @@ class FilesTab:
         m.add_command(label="Move…", command=self.move)
         m.add_command(label="Delete", command=self.delete)
         files = self.selected_files()
+        import space
+        if len(files) == 1 and space.is_downloaded(files[0].block):
+            m.add_command(label="Remove downloaded copy", command=lambda r=files[0]: (
+                space.remove_download(r.block), self._set_status(f"Removed the downloaded copy of {r.name}. Still in the cloud.")))
         if self.query and len(files) == 1:
             r = files[0]
             m.add_separator()

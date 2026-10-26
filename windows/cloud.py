@@ -265,6 +265,7 @@ class Cloud:
         safe = "".join("_" if c in '\\/:*?"<>|' else c for c in row.name)
         dest = os.path.join(CACHE_DIR, row.block, safe)
         if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            os.utime(dest)  # recently used: kept longest
             return dest
         url = self.fresh_url(row)
         if not url:
@@ -285,4 +286,9 @@ class Cloud:
                     if progress:
                         progress(done, total)
         os.replace(part, dest)
+        try:
+            import space
+            space.trim_all(self.settings)
+        except Exception:
+            pass
         return dest

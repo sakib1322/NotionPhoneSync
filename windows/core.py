@@ -34,7 +34,8 @@ class Settings:
         "last_run": 0.0,
         "check_notion": False,
         "closed_to_tray_hint": False,
-        "extra_sources": [],      # other backup pages to browse, as "id|title"
+        "extra_sources": [],
+        "cache_limit_mb": 1024,   # most space files opened from the cloud may use      # other backup pages to browse, as "id|title"
     }
 
     def __init__(self):

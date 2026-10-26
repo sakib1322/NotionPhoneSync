@@ -236,9 +236,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             if (!f.exists()) continue
             val size = f.length()
             val mtime = f.lastModified()
-            // A file that was removed to save space and later appears again is treated as a new
-            // file, so the cloud copy of the earlier one is kept.
-            val old = known[rel]?.takeIf { it.status != "offloaded" }
+            val old = known[rel]
             progress("${i + 1} of ${todo.size}: ${f.name}", i, todo.size)
             if (old == null && p.checkNotion) {
                 val existing = try { alreadyInNotion(rel, f.name, mtime) } catch (e: Exception) { null }

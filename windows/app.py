@@ -15,6 +15,7 @@ import requests
 import core
 import winutil
 from files_tab import FilesTab
+from space_tab import SpaceTab
 from notion import TRAFFIC, NotionClient, NotionError, parse_page_id
 from sync import Syncer
 from version import BUILD
@@ -22,7 +23,7 @@ from version import BUILD
 REPO = "sakib1322/NotionPhoneSync"
 INSTANCE_PORT = 47391
 TITLE = "Notion Laptop Sync"
-TAB_FILES, TAB_NOTION, TAB_ACTIVITY = 1, 3, 4
+TAB_FILES, TAB_SPACE, TAB_NOTION, TAB_ACTIVITY = 1, 2, 4, 5
 
 
 class App:
@@ -85,6 +86,7 @@ class App:
         self.nb = nb
         self._build_backup(self._tab(nb, "Backup"))
         self.files = FilesTab(self, self._tab(nb, "Files"))
+        self.space = SpaceTab(self, self._tab(nb, "Space"))
         self._build_folders(self._tab(nb, "Folders"))
         self._build_notion(self._tab(nb, "Notion"))
         self._build_activity(self._tab(nb, "Activity"))
@@ -97,6 +99,8 @@ class App:
         try:
             if self.nb.index("current") == TAB_FILES:
                 self.files.on_shown()
+            elif self.nb.index("current") == TAB_SPACE:
+                self.space.on_shown()
         except Exception as e:
             self.log(f"Files tab error: {e}")
 
@@ -648,7 +652,9 @@ def selftest():
     app = App(False, listener)
     app.root.report_callback_exception = lambda *a: errors.append(a)
     steps = [
-        lambda: [app.nb.select(i) for i in range(6)],
+        lambda: [app.nb.select(i) for i in range(7)],
+        lambda: app.nb.select(TAB_SPACE),
+        app.space.refresh,
         lambda: app.nb.select(TAB_FILES),
         app.files.show,
         lambda: app.nb.select(TAB_ACTIVITY),
