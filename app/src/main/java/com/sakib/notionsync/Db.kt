@@ -419,4 +419,14 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
     fun rowById(rowId: String): IdxRow? =
         readableDatabase.rawQuery("SELECT $IDX_COLS FROM idx WHERE row_id = ?", arrayOf(rowId))
             .use { c -> if (c.moveToFirst()) rowFrom(c) else null }
+
+    /** Photos and videos, newest first, for the timeline. */
+    fun media(root: String, limit: Int = 50000): List<IdxRow> {
+        val out = ArrayList<IdxRow>()
+        readableDatabase.rawQuery(
+            "SELECT $IDX_COLS FROM idx WHERE root = ? AND kind IN ('Photo', 'Video') ORDER BY mtime DESC LIMIT $limit",
+            arrayOf(root)
+        ).use { c -> while (c.moveToNext()) out.add(rowFrom(c)) }
+        return out
+    }
 }

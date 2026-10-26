@@ -34,6 +34,11 @@
         </activity>
 
         <activity
+            android:name=".ViewerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false" />
+
+        <activity
             android:name=".ShareActivity"
             android:exported="true"
             android:label="Save to cloud"

@@ -55,6 +55,7 @@ class FilesPage(
 ) {
     sealed class Item(val key: String, val name: String)
     class Folder(key: String, name: String, val files: Int = -1, val bytes: Long = 0) : Item(key, name)
+    class Header(label: String) : Item("header:$label", label)
     class FileItem(
         val block: String, name: String, val mtime: Long, val dateText: String, val type: String,
         var url: String?, var fetchedAt: Long, val pageId: String, val size: Long,
@@ -120,6 +121,9 @@ class FilesPage(
     var pickFiles: (() -> Unit)? = null
 
     private val fab: View = root.findViewById(R.id.fab_new)
+    private val modeToggle: com.google.android.material.button.MaterialButtonToggleGroup = root.findViewById(R.id.mode_toggle)
+    private var photosMode = false
+    private val monthFmt = SimpleDateFormat("MMMM yyyy", Locale.US)
     private var lastQueued = -1
 
     init {
@@ -156,6 +160,16 @@ class FilesPage(
         summary.setOnClickListener { showStorage() }
         empty.setOnClickListener { if (error != null) reload() }
         refresher.setOnRefreshListener { refreshIndex(full = true) }
+        layout.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+            override fun getSpanSize(position: Int) =
+                if (shown.getOrNull(position) is Header) layout.spanCount else 1
+        }
+        modeToggle.addOnButtonCheckedListener { _, id, checked ->
+            if (!checked) return@addOnButtonCheckedListener
+            photosMode = id == R.id.mode_photos
+            applyViewMode()
+            if (useIndex) showIndex()
+        }
         fab.setOnClickListener {
             MaterialAlertDialogBuilder(act)
                 .setItems(arrayOf("Upload files here", "New folder here")) { _, i ->
@@ -278,7 +292,7 @@ class FilesPage(
         if (System.currentTimeMillis() - lastAutoRefresh > 60_000) refreshIndex(full = false)
     }
 
-    fun canGoUp() = if (useIndex) path.isNotEmpty() || query.isNotEmpty() else stack.size > 1
+    fun canGoUp() = if (useIndex) (!photosMode && path.isNotEmpty()) || query.isNotEmpty() else stack.size > 1
 
     fun goUp() {
         if (useIndex) {
@@ -507,6 +521,16 @@ class FilesPage(
         if (q.isNotEmpty()) {
             val roots = sources().map { it.first }.filter { db.indexDbId(it) != null }
             db.search(roots, q).forEach { result.add(fileFrom(it, withWhere = true)) }
+        } else if (photosMode) {
+            var month = ""
+            for (r in db.media(sourceId)) {
+                val m = if (r.mtime > 0) monthFmt.format(Date(r.mtime)) else "Unknown date"
+                if (m != month) {
+                    month = m
+                    result.add(Header(m))
+                }
+                result.add(fileFrom(r, withWhere = false))
+            }
         } else {
             val folders = db.subFolders(sourceId, path)
             val sortedFolders = when (prefs.filesSort) {
@@ -526,10 +550,12 @@ class FilesPage(
         val (n, b) = db.storageTotal(sourceId)
         summary.text = "${num.format(n)} files · ${SpeedMeter.size(b)} in $sourceTitle  ·  Storage ›"
         summary.visibility = View.VISIBLE
-        fab.visibility = if (q.isEmpty()) View.VISIBLE else View.GONE
+        modeToggle.visibility = View.VISIBLE
+        fab.visibility = if (q.isEmpty() && !photosMode) View.VISIBLE else View.GONE
         updateBanner()
         when {
             q.isNotEmpty() && result.isEmpty() -> showEmpty("Nothing called “$q” in your backups.")
+            photosMode && result.isEmpty() -> showEmpty("No photos or videos in this backup's index yet.")
             result.isEmpty() -> showEmpty("This folder is empty.")
             else -> empty.visibility = View.GONE
         }
@@ -592,6 +618,8 @@ class FilesPage(
         error = null
         summary.visibility = View.GONE
         fab.visibility = View.GONE
+        modeToggle.visibility = View.GONE
+        photosMode = false
         renderCrumbs()
         applyFilter()
         updateBanner()
@@ -695,6 +723,7 @@ class FilesPage(
         val strong = MaterialColors.getColor(crumbs, com.google.android.material.R.attr.colorOnSurface)
         val parts: List<Pair<String, () -> Unit>> = when {
             useIndex && query.isNotEmpty() -> listOf("Search results" to {})
+            useIndex && photosMode -> listOf("$sourceTitle · all photos and videos" to {})
             useIndex -> {
                 val segs = if (path.isEmpty()) emptyList() else path.split('/')
                 listOf<Pair<String, () -> Unit>>(sourceTitle to { path = ""; showIndex() }) +
@@ -726,7 +755,7 @@ class FilesPage(
     }
 
     private fun applyViewMode() {
-        layout.spanCount = if (prefs.filesGrid) 3 else 1
+        layout.spanCount = if (photosMode) 4 else if (prefs.filesGrid) 3 else 1
         btnView.setIconResource(if (prefs.filesGrid) R.drawable.ic_view_list else R.drawable.ic_grid)
         adapter.notifyDataSetChanged()
     }
@@ -870,6 +899,18 @@ class FilesPage(
         }.start()
     }
 
+    /** Opens the full-screen viewer, letting you swipe through the photos/videos/audio around this one. */
+    private fun openViewer(f: FileItem) {
+        val media = shown.filterIsInstance<FileItem>().filter { it.type == "image" || it.type == "video" || it.type == "audio" }
+        // Very long lists: keep a window around the tapped item.
+        val i = media.indexOf(f).coerceAtLeast(0)
+        val from = (i - 2000).coerceAtLeast(0)
+        val window = media.subList(from, (i + 2000).coerceAtMost(media.size))
+        ViewerData.items = window
+        ViewerData.start = i - from
+        act.startActivity(Intent(act, ViewerActivity::class.java))
+    }
+
     private fun uriFor(file: File): Uri = FileProvider.getUriForFile(act, "${act.packageName}.files", file)
 
     private fun open(f: FileItem, file: File) {
@@ -936,46 +977,68 @@ class FilesPage(
     // ---- list ---------------------------------------------------------------------------
 
     private class Holder(v: View) : RecyclerView.ViewHolder(v) {
-        val thumbBox: FrameLayout = v.findViewById(R.id.thumb_box)
-        val thumb: ImageView = v.findViewById(R.id.thumb)
-        val badge: ImageView = v.findViewById(R.id.badge)
+        val thumbBox: FrameLayout? = v.findViewById(R.id.thumb_box)
+        val thumb: ImageView? = v.findViewById(R.id.thumb)
+        val badge: ImageView? = v.findViewById(R.id.badge)
         val name: TextView = v.findViewById(R.id.name)
         val meta: TextView = v.findViewById(R.id.meta)
     }
 
     private inner class Adapter : RecyclerView.Adapter<Holder>() {
         override fun getItemCount() = shown.size
-        override fun getItemViewType(position: Int) = if (prefs.filesGrid) 1 else 0
+        override fun getItemViewType(position: Int) = when {
+            shown[position] is Header -> 2
+            photosMode -> 3
+            prefs.filesGrid -> 1
+            else -> 0
+        }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
             val inf = LayoutInflater.from(parent.context)
-            val v = inf.inflate(if (viewType == 1) R.layout.item_grid else R.layout.item_row, parent, false)
+            val v = inf.inflate(
+                when (viewType) {
+                    2 -> R.layout.item_header
+                    0 -> R.layout.item_row
+                    else -> R.layout.item_grid
+                }, parent, false
+            )
             val h = Holder(v)
-            if (viewType == 1) {
+            if (viewType == 1 || viewType == 3) {
+                val cols = if (viewType == 3) 4 else 3
                 val d = parent.resources.displayMetrics.density
                 val w = (if (parent.width > 0) parent.width else parent.resources.displayMetrics.widthPixels) -
                     parent.paddingLeft - parent.paddingRight
-                h.thumbBox.layoutParams.height = w / 3 - (10 * d).toInt()
+                h.thumbBox?.layoutParams?.height = w / cols - (10 * d).toInt()
+                if (viewType == 3) {
+                    h.name.visibility = View.GONE
+                    h.meta.visibility = View.GONE
+                }
             }
-            h.badge.imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            h.badge?.imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             return h
         }
 
         override fun onBindViewHolder(h: Holder, position: Int) {
             val it = shown[position]
+            if (it is Header) {
+                h.name.text = it.name
+                return
+            }
+            val thumb = h.thumb ?: return
+            val badge = h.badge ?: return
             val d = h.itemView.resources.displayMetrics.density
             val grid = prefs.filesGrid
             h.name.text = it.name
-            h.thumb.tag = null
-            h.thumb.setImageResource(kindIcon(it))
-            h.thumb.scaleType = ImageView.ScaleType.CENTER_INSIDE
+            thumb.tag = null
+            thumb.setImageResource(kindIcon(it))
+            thumb.scaleType = ImageView.ScaleType.CENTER_INSIDE
             val pad = ((if (grid) 30 else 12) * d).toInt()
-            h.thumb.setPadding(pad, pad, pad, pad)
-            h.thumb.imageTintList = ColorStateList.valueOf(
-                if (it is Folder) MaterialColors.getColor(h.thumb, androidx.appcompat.R.attr.colorPrimary)
-                else MaterialColors.getColor(h.thumb, com.google.android.material.R.attr.colorOnSurfaceVariant)
+            thumb.setPadding(pad, pad, pad, pad)
+            thumb.imageTintList = ColorStateList.valueOf(
+                if (it is Folder) MaterialColors.getColor(thumb, androidx.appcompat.R.attr.colorPrimary)
+                else MaterialColors.getColor(thumb, com.google.android.material.R.attr.colorOnSurfaceVariant)
             )
-            h.badge.visibility = View.GONE
+            badge.visibility = View.GONE
             when (it) {
                 is Folder -> {
                     h.meta.text = if (it.files >= 0) "${num.format(it.files)} files · ${SpeedMeter.size(it.bytes)}" else "Folder"
@@ -1005,12 +1068,15 @@ class FilesPage(
                     if (it.type == "image" || it.type == "video") {
                         val allowDownload = !(prefs.wifiOnly && Perms.onMeteredNetwork(act))
                         val item = it
-                        thumbs.load(it.block, localFile(it), it.url, it.type == "video", allowDownload, h.thumb) {
+                        thumbs.load(it.block, localFile(it), it.url, it.type == "video", allowDownload, thumb) {
                             freshUrl(item)
                         }
-                        if (it.type == "video") h.badge.visibility = View.VISIBLE
+                        if (it.type == "video") badge.visibility = View.VISIBLE
                     }
-                    h.itemView.setOnClickListener { _ -> obtain(it) { file -> open(it, file) } }
+                    h.itemView.setOnClickListener { _ ->
+                        if (it.type == "image" || it.type == "video" || it.type == "audio") openViewer(it)
+                        else obtain(it) { file -> open(it, file) }
+                    }
                     h.itemView.setOnLongClickListener { _ ->
                         actions(it)
                         true
