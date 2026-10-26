@@ -21,7 +21,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="Notion Phone Sync"
         android:requestLegacyExternalStorage="true"
-        android:theme="@android:style/Theme.Material.Light.DarkActionBar">
+        android:theme="@style/Theme.NotionSync">
 
         <activity
             android:name=".MainActivity"

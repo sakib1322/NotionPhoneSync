@@ -53,6 +53,34 @@ jobs:
           name: NotionPhoneSync
           path: NotionPhoneSync.apk
 
+      - name: Enable the virtual phone
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test on a virtual phone
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/smoke.sh
+
+      - name: Share the test screenshots
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ls shots/*.png > /dev/null 2>&1; then
+            gh release create "shots-${{ github.run_number }}" shots/*.png \
+              --prerelease --latest=false \
+              --title "Test screenshots (build ${{ github.run_number }})" \
+              --notes "Screenshots from the automatic test on a virtual phone."
+          fi
+
       - name: Publish a download
         env:
           GH_TOKEN: ${{ github.token }}

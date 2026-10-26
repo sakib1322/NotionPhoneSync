@@ -60,6 +60,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("check_notion", false)
         set(v) { sp.edit().putBoolean("check_notion", v).apply() }
 
+    /** What the sync is doing right now (shown on the dashboard). */
+    var currentText: String
+        get() = sp.getString("current_text", "") ?: ""
+        set(v) { sp.edit().putString("current_text", v).apply() }
+
     var lastPending: Int
         get() = sp.getInt("last_pending", 0)
         set(v) { sp.edit().putInt("last_pending", v).apply() }

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_bg">#1F1F1F</color>
+
+    <color name="primary">#8AB4FF</color>
+    <color name="on_primary">#0B2A6B</color>
+    <color name="primary_container">#1E3A8A</color>
+    <color name="on_primary_container">#DBE6FF</color>
+    <color name="secondary">#AEB6C4</color>
+    <color name="on_secondary">#1B2433</color>
+    <color name="secondary_container">#2A3242</color>
+    <color name="on_secondary_container">#DCE3F0</color>
+    <color name="background">#0E1014</color>
+    <color name="surface">#0E1014</color>
+    <color name="surface_lowest">#0A0C0F</color>
+    <color name="surface_low">#171A20</color>
+    <color name="surface_mid">#1C2027</color>
+    <color name="surface_high">#232832</color>
+    <color name="surface_highest">#2B313C</color>
+    <color name="on_surface">#E6E8EC</color>
+    <color name="on_surface_variant">#A3AAB8</color>
+    <color name="outline">#3A4150</color>
+    <color name="outline_variant">#2B313C</color>
+
+    <color name="good">#4ADE80</color>
+    <color name="warn">#FBBF24</color>
+    <color name="bad">#F87171</color>
+    <color name="good_container">#14532D</color>
+    <color name="warn_container">#78350F</color>
+</resources>

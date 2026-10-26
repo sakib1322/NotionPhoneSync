@@ -1,4 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_bg">#1F1F1F</color>
+
+    <color name="primary">#2563EB</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="primary_container">#DBE6FF</color>
+    <color name="on_primary_container">#0B2A6B</color>
+    <color name="secondary">#4B5563</color>
+    <color name="on_secondary">#FFFFFF</color>
+    <color name="secondary_container">#E3E8F2</color>
+    <color name="on_secondary_container">#1B2433</color>
+    <color name="background">#F4F6F9</color>
+    <color name="surface">#F4F6F9</color>
+    <color name="surface_lowest">#FFFFFF</color>
+    <color name="surface_low">#FFFFFF</color>
+    <color name="surface_mid">#EDF0F4</color>
+    <color name="surface_high">#E7EAF0</color>
+    <color name="surface_highest">#E1E5EB</color>
+    <color name="on_surface">#14171C</color>
+    <color name="on_surface_variant">#5B6270</color>
+    <color name="outline">#C5CAD3</color>
+    <color name="outline_variant">#E1E4EA</color>
+
+    <color name="good">#16A34A</color>
+    <color name="warn">#D97706</color>
+    <color name="bad">#DC2626</color>
+    <color name="good_container">#DCFCE7</color>
+    <color name="warn_container">#FEF3C7</color>
 </resources>

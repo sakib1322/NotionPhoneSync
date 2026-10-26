@@ -61,6 +61,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     private fun progress(text: String, done: Int, total: Int) {
         val speed = meter.sample()?.let { "↑ ${SpeedMeter.rate(it.upBps)} · " } ?: ""
         Notif.update(ctx, speed + text, done, total)
+        if (::prefs.isInitialized) prefs.currentText = text
         beat()
     }
 
@@ -106,6 +107,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             log("Sync stopped: ${e.message ?: e.javaClass.simpleName}")
         } finally {
             prefs.running = false
+            prefs.currentText = ""
             prefs.lastRun = System.currentTimeMillis()
             Notif.cancel(ctx)
             oneAtATime.unlock()
