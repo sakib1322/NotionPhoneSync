@@ -14,6 +14,7 @@ import requests
 
 import core
 import winutil
+from files_tab import FilesTab
 from notion import TRAFFIC, NotionClient, NotionError, parse_page_id
 from sync import Syncer
 from version import BUILD
@@ -21,6 +22,7 @@ from version import BUILD
 REPO = "sakib1322/NotionPhoneSync"
 INSTANCE_PORT = 47391
 TITLE = "Notion Laptop Sync"
+TAB_FILES, TAB_NOTION, TAB_ACTIVITY = 1, 3, 4
 
 
 class App:
@@ -82,12 +84,21 @@ class App:
         nb.pack(fill="both", expand=True, padx=8, pady=8)
         self.nb = nb
         self._build_backup(self._tab(nb, "Backup"))
+        self.files = FilesTab(self, self._tab(nb, "Files"))
         self._build_folders(self._tab(nb, "Folders"))
         self._build_notion(self._tab(nb, "Notion"))
         self._build_activity(self._tab(nb, "Activity"))
         self._build_about(self._tab(nb, "Updates & settings"))
+        nb.bind("<<NotebookTabChanged>>", lambda e: self._tab_changed())
         if not self.settings.get("token"):
-            nb.select(2)
+            nb.select(TAB_NOTION)
+
+    def _tab_changed(self):
+        try:
+            if self.nb.index("current") == TAB_FILES:
+                self.files.on_shown()
+        except Exception as e:
+            self.log(f"Files tab error: {e}")
 
     def _tab(self, nb, name):
         f = ttk.Frame(nb, padding=12)
@@ -490,7 +501,7 @@ class App:
             self.next_lbl.config(text="" if self.running() else f"Next auto-sync: {when}{extra}")
         else:
             self.next_lbl.config(text="Auto-sync is off.")
-        if self.nb.index("current") == 3:
+        if self.nb.index("current") == TAB_ACTIVITY:
             text = self.log.tail(300)
             self.log_box.configure(state="normal")
             self.log_box.delete("1.0", "end")
@@ -637,8 +648,10 @@ def selftest():
     app = App(False, listener)
     app.root.report_callback_exception = lambda *a: errors.append(a)
     steps = [
-        lambda: [app.nb.select(i) for i in range(5)],
-        lambda: app.nb.select(3),
+        lambda: [app.nb.select(i) for i in range(6)],
+        lambda: app.nb.select(TAB_FILES),
+        app.files.show,
+        lambda: app.nb.select(TAB_ACTIVITY),
         app._refresh_status,
         lambda: app.set_interval(30),
         lambda: app.minutes_var.set("45"),

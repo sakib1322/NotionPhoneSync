@@ -34,6 +34,7 @@ class Settings:
         "last_run": 0.0,
         "check_notion": False,
         "closed_to_tray_hint": False,
+        "extra_sources": [],      # other backup pages to browse, as "id|title"
     }
 
     def __init__(self):
@@ -86,6 +87,11 @@ class Db:
             if "key" not in cols:
                 self.conn.execute("ALTER TABLE files ADD COLUMN key TEXT")
             self.conn.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
+            # Local copy of the cloud file index (for the Files browser).
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS idx(row_id TEXT PRIMARY KEY, root TEXT, name TEXT, path TEXT, size INTEGER, "
+                "mtime INTEGER, kind TEXT, block TEXT, page TEXT, device TEXT, source TEXT)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_root_path ON idx(root, path)")
             self.conn.commit()
 
     def load_all(self):
@@ -123,6 +129,103 @@ class Db:
         with self.lock:
             return self.conn.execute(
                 "SELECT COUNT(*) FROM files WHERE status='done' AND block_id IS NOT NULL AND index_id IS NULL").fetchone()[0]
+
+    def mark_removed_by_block(self, block_id):
+        with self.lock:
+            self.conn.execute("UPDATE files SET status='removed', index_id=NULL WHERE block_id=?", (block_id,))
+            self.conn.commit()
+
+    # ---- local copy of the cloud index -------------------------------------------
+
+    IDX_COLS = "row_id, root, name, path, size, mtime, kind, block, page, device, source"
+
+    def upsert_idx(self, rows):
+        with self.lock:
+            self.conn.executemany(f"INSERT OR REPLACE INTO idx({self.IDX_COLS}) VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows)
+            self.conn.commit()
+
+    def delete_idx(self, row_id):
+        with self.lock:
+            self.conn.execute("DELETE FROM idx WHERE row_id=?", (row_id,))
+            self.conn.commit()
+
+    def prune_idx(self, root, keep):
+        with self.lock:
+            ids = [r[0] for r in self.conn.execute("SELECT row_id FROM idx WHERE root=?", (root,)).fetchall()]
+            self.conn.executemany("DELETE FROM idx WHERE row_id=?", [(i,) for i in ids if i not in keep])
+            self.conn.commit()
+
+    def idx_row(self, row_id):
+        with self.lock:
+            return self.conn.execute(f"SELECT {self.IDX_COLS} FROM idx WHERE row_id=?", (row_id,)).fetchone()
+
+    def idx_count(self, root):
+        with self.lock:
+            return self.conn.execute("SELECT COUNT(*) FROM idx WHERE root=? AND kind!='Folder'", (root,)).fetchone()[0]
+
+    def sub_folders(self, root, path):
+        """Sub-folders directly inside path: list of (name, files, bytes), including everything below."""
+        prefix = path + "/" if path else ""
+        agg = {}
+        with self.lock:
+            if path:
+                rows = self.conn.execute(
+                    "SELECT path, SUM(CASE WHEN kind='Folder' THEN 0 ELSE 1 END), SUM(size) FROM idx "
+                    "WHERE root=? AND substr(path, 1, ?)=? GROUP BY path", (root, len(prefix), prefix)).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT path, SUM(CASE WHEN kind='Folder' THEN 0 ELSE 1 END), SUM(size) FROM idx "
+                    "WHERE root=? AND path!='' GROUP BY path", (root,)).fetchall()
+            markers = self.conn.execute(
+                "SELECT name FROM idx WHERE root=? AND kind='Folder' AND path=?", (root, path)).fetchall()
+        for p, n, b in rows:
+            rest = p[len(prefix):]
+            if not rest:
+                continue
+            name = rest.split("/")[0]
+            a = agg.setdefault(name, [0, 0])
+            a[0] += n or 0
+            a[1] += b or 0
+        for (m,) in markers:
+            agg.setdefault(m, [0, 0])
+        return sorted(((k, v[0], v[1]) for k, v in agg.items()), key=lambda t: t[0].lower())
+
+    def files_in(self, root, path, order):
+        with self.lock:
+            return self.conn.execute(
+                f"SELECT {self.IDX_COLS} FROM idx WHERE root=? AND path=? AND kind!='Folder' ORDER BY {order}",
+                (root, path)).fetchall()
+
+    def rows_under(self, root, path):
+        prefix = path + "/"
+        parent, _, name = path.rpartition("/")
+        with self.lock:
+            rows = self.conn.execute(
+                f"SELECT {self.IDX_COLS} FROM idx WHERE root=? AND (path=? OR substr(path, 1, ?)=?)",
+                (root, path, len(prefix), prefix)).fetchall()
+            rows += self.conn.execute(
+                f"SELECT {self.IDX_COLS} FROM idx WHERE root=? AND kind='Folder' AND path=? AND name=?",
+                (root, parent, name)).fetchall()
+        return rows
+
+    def search_idx(self, roots, q, limit=500):
+        if not roots:
+            return []
+        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        marks = ",".join("?" * len(roots))
+        with self.lock:
+            return self.conn.execute(
+                f"SELECT {self.IDX_COLS} FROM idx WHERE root IN ({marks}) AND kind!='Folder' AND name LIKE ? ESCAPE '\\' "
+                f"ORDER BY mtime DESC LIMIT {limit}", (*roots, like)).fetchall()
+
+    def storage(self, root):
+        with self.lock:
+            total = self.conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size),0) FROM idx WHERE root=? AND kind!='Folder'", (root,)).fetchone()
+            kinds = self.conn.execute(
+                "SELECT kind, COUNT(*), SUM(size) FROM idx WHERE root=? AND kind!='Folder' GROUP BY kind "
+                "ORDER BY SUM(size) DESC", (root,)).fetchall()
+        return total, kinds
 
     def get_meta(self, k):
         with self.lock:
