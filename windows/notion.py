@@ -47,7 +47,19 @@ _gate = threading.Lock()
 _last = [0.0]
 
 
-def _throttle():
+_priority_until = [0.0]
+
+
+def _throttle(priority=False):
+    """Spaces requests out. Shared-clipboard requests ("priority") go straight through,
+    and the backup politely waits behind them, so copy and paste never queues behind uploads."""
+    if priority:
+        now = time.monotonic()
+        _priority_until[0] = now + 1.0
+        _last[0] = max(_last[0], now)
+        return
+    while time.monotonic() < _priority_until[0]:
+        time.sleep(0.1)
     with _gate:
         wait = _last[0] + 0.35 - time.monotonic()
         if wait > 0:
@@ -138,8 +150,9 @@ class _Body:
 
 
 class NotionClient:
-    def __init__(self, token, stop=None):
+    def __init__(self, token, stop=None, priority=False):
         self.token = token
+        self.priority = priority
         self.stop = stop or threading.Event()
         self.s = requests.Session()
 
@@ -153,7 +166,7 @@ class NotionClient:
             attempt += 1
             if self.stop.is_set():
                 raise Stopped()
-            _throttle()
+            _throttle(self.priority)
             headers = {"Authorization": f"Bearer {self.token}", "Notion-Version": VERSION}
             body = None
             try:

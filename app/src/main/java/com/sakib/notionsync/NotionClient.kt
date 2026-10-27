@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 class NotionException(val status: Int, val code: String, message: String) : Exception(message)
 
 /** Talks to the Notion API: pages, file uploads and blocks. */
-class NotionClient(private val token: String) {
+class NotionClient(private val token: String, private val priority: Boolean = false) {
 
     companion object {
         private const val BASE = "https://api.notion.com/v1"
@@ -39,7 +39,18 @@ class NotionClient(private val token: String) {
         private val gate = Object()
         private var lastCall = 0L
 
-        private fun throttle() {
+        @Volatile private var priorityUntil = 0L
+
+        /** Shared-clipboard requests ("priority") go straight through and the backup waits
+         *  behind them, so copy and paste never queues behind uploads. */
+        private fun throttle(priority: Boolean = false) {
+            if (priority) {
+                val now = System.currentTimeMillis()
+                priorityUntil = now + 1000
+                lastCall = maxOf(lastCall, now)
+                return
+            }
+            while (System.currentTimeMillis() < priorityUntil) Thread.sleep(100)
             synchronized(gate) {
                 val wait = lastCall + 350 - System.currentTimeMillis()
                 if (wait > 0) Thread.sleep(wait)
@@ -77,7 +88,7 @@ class NotionClient(private val token: String) {
         while (true) {
             attempt++
             if (cancelled) throw IOException("Sync stopped")
-            throttle()
+            throttle(priority)
             var status = 0
             var body = ""
             var retryAfter: String? = null
@@ -182,6 +193,8 @@ class NotionClient(private val token: String) {
     }
 
     fun search(body: JSONObject): JSONObject = post("/search", body)
+
+    fun patchDatabase(dbId: String, body: JSONObject): JSONObject = patch("/databases/$dbId", body)
 
     fun createDatabase(body: JSONObject): String = post("/databases", body).getString("id")
 

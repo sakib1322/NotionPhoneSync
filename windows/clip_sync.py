@@ -256,7 +256,7 @@ class ClipSync:
         seen = set()
         last_cleanup = 0
         while not self.stop.is_set():
-            time.sleep(3)
+            time.sleep(1.5)
             if not self.enabled():
                 since = datetime.now(timezone.utc)
                 continue
@@ -287,21 +287,30 @@ class ClipSync:
             self.ignore_seq = sequence()
             self.log("Shared clipboard: text from the phone is on the clipboard.")
             return
-        paths = []
+        # Pick names first, then download all files side by side.
+        jobs, taken = [], set()
         for name, url in relay.files_of(item):
             safe = "".join("_" if c in '\\/:*?"<>|' else c for c in name)
             dest = os.path.join(received_dir(), safe)
             base, ext = os.path.splitext(dest)
             n = 2
-            while os.path.exists(dest):
+            while os.path.exists(dest) or dest in taken:
                 dest = f"{base} ({n}){ext}"
                 n += 1
+            taken.add(dest)
+            jobs.append((url, dest))
+
+        def get(job):
+            url, dest = job
             with requests.get(url, stream=True, timeout=(20, 120)) as r:
                 r.raise_for_status()
                 with open(dest, "wb") as f:
-                    for chunk in r.iter_content(256 * 1024):
+                    for chunk in r.iter_content(1024 * 1024):
                         f.write(chunk)
-            paths.append(dest)
+            return dest
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max(1, min(4, len(jobs)))) as ex:
+            paths = list(ex.map(get, jobs))
         if not paths:
             return
         self.last_fp = fingerprint("files", paths)

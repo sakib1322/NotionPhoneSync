@@ -43,7 +43,9 @@ class Relay:
         self.settings = settings
         self.db = db
         self.device = device
-        self.client = NotionClient(settings.get("token"), stop)
+        # Sending and fetching go first; the background checks queue normally.
+        self.client = NotionClient(settings.get("token"), stop, priority=True)
+        self.bg = NotionClient(settings.get("token"), stop)
 
     # ---- the mailbox ---------------------------------------------------------------
 
@@ -55,7 +57,7 @@ class Relay:
                     "filter": {"property": "object", "value": "database"}}
             if cursor:
                 body["start_cursor"] = cursor
-            res = self.client._call("POST", "/search", json_body=body)
+            res = self.bg._call("POST", "/search", json_body=body)
             for d in res.get("results", []):
                 title = "".join(t.get("plain_text", "") for t in d.get("title", []))
                 if title == TITLE and not d.get("archived") and not d.get("in_trash"):
@@ -103,8 +105,31 @@ class Relay:
 
     # ---- sending -------------------------------------------------------------------------
 
+    def _ensure_attachments(self, dbid):
+        """Adds the 'Attachments' files column (one request per mailbox, ever)."""
+        if self.db.get_meta("clip_att") == dbid:
+            return True
+        try:
+            self.client._call("PATCH", f"/databases/{dbid}", json_body={"properties": {"Attachments": {"files": {}}}})
+        except NotionError:
+            return False
+        self.db.set_meta("clip_att", dbid)
+        return True
+
+    def _upload_all(self, paths):
+        """Uploads files side by side; returns [(name, upload id)] in order."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(p):
+            name = os.path.basename(p)
+            up = core.upload_name(name)
+            return name, self.client.upload_file(p, up, core.mime(up), os.path.getsize(p))
+        with ThreadPoolExecutor(max_workers=min(3, len(paths))) as ex:
+            return list(ex.map(one, paths))
+
     def send(self, kind, payload):
-        """kind 'text' (payload: str) or 'image'/'files' (payload: list of file paths)."""
+        """kind 'text' (payload: str) or 'image'/'files' (payload: list of file paths).
+        Everything goes in ONE request: the item appears complete and ready, or not at all."""
         dbid = self.db_id()
         if kind == "text":
             name = payload.strip().splitlines()[0][:80] if payload.strip() else "Text"
@@ -112,30 +137,38 @@ class Relay:
             name = ", ".join(os.path.basename(p) for p in payload)[:200]
         props = {"Name": {"title": [{"text": {"content": name or "Clipboard"}}]},
                  "Kind": {"select": {"name": kind}}, "From": {"select": {"name": self.device}},
-                 "Ready": {"checkbox": False}, "Files": {"number": 0 if kind == "text" else len(payload)}}
+                 "Ready": {"checkbox": True}, "Files": {"number": 0 if kind == "text" else len(payload)}}
+        uploads = []
         if kind == "text":
             props["Text"] = {"rich_text": _text_chunks(payload)}
-        try:
-            row = self.client.create_row(dbid, props)
-        except NotionError as e:
-            if e.status == 404:  # mailbox was deleted: make or find a new one
-                self._forget(dbid)
-                return self.send(kind, payload)
-            raise
-        if kind != "text":
-            for p in payload:
-                name = os.path.basename(p)
-                up = core.upload_name(name)
-                btype = core.block_type(up)
-                fid = self.client.upload_file(p, up, core.mime(up), os.path.getsize(p))
-                try:
-                    self.client.attach(row, fid, btype, name)
-                except NotionError as e:
-                    if e.status == 400 and btype != "file":
-                        self.client.attach(row, fid, "file", name)
-                    else:
-                        raise
-        # Only now can the other device pick it up (so it never sees half an item).
+        else:
+            uploads = self._upload_all(payload)
+            if self._ensure_attachments(dbid):
+                props["Attachments"] = {"files": [{"type": "file_upload", "file_upload": {"id": fid}, "name": n[:100]}
+                                                  for n, fid in uploads]}
+        if kind == "text" or "Attachments" in props:
+            try:
+                return self.client.create_row(dbid, props)
+            except NotionError as e:
+                if e.status == 404:  # mailbox was deleted: make or find a new one
+                    self._forget(dbid)
+                    return self.send(kind, payload)
+                if e.status != 400 or "Attachments" not in props:
+                    raise
+                self.db.set_meta("clip_att", "")
+        # Older way (if the files column can't be used): files as blocks, then mark ready.
+        props.pop("Attachments", None)
+        props["Ready"] = {"checkbox": False}
+        row = self.client.create_row(dbid, props)
+        for n, fid in uploads:
+            btype = core.block_type(core.upload_name(n))
+            try:
+                self.client.attach(row, fid, btype, n)
+            except NotionError as e:
+                if e.status == 400 and btype != "file":
+                    self.client.attach(row, fid, "file", n)
+                else:
+                    raise
         self.client.update_row(row, {"Ready": {"checkbox": True}})
         return row
 
@@ -154,7 +187,7 @@ class Relay:
         out = []
         for dbid in self.mailboxes():
             try:
-                res = self.client.query_database(dbid, body)
+                res = self.bg.query_database(dbid, body)
             except NotionError as e:
                 if e.status == 404:
                     self._forget(dbid)
@@ -168,12 +201,21 @@ class Relay:
                     continue
                 kind = ((pr.get("Kind") or {}).get("select") or {}).get("name") or "text"
                 text = "".join(t.get("plain_text", "") for t in (pr.get("Text") or {}).get("rich_text", []))
-                out.append({"id": p["id"], "kind": kind, "text": text, "created": p.get("created_time", "")})
+                files = []
+                for f in (pr.get("Attachments") or {}).get("files") or []:
+                    url = (f.get("file") or {}).get("url") or (f.get("external") or {}).get("url")
+                    if url:
+                        files.append((f.get("name") or "file", url))
+                count = (pr.get("Files") or {}).get("number") or 0
+                out.append({"id": p["id"], "kind": kind, "text": text, "created": p.get("created_time", ""),
+                            "files": files if len(files) >= count else None})
         out.sort(key=lambda x: x["created"])
         return out
 
     def files_of(self, item):
         """(name, url) of the files attached to an item."""
+        if item.get("files"):
+            return item["files"]
         out = []
         for b in self.client._children(item["id"]):
             t = b.get("type")
@@ -193,7 +235,7 @@ class Relay:
             self._cleanup_one(dbid, cutoff)
 
     def _cleanup_one(self, dbid, cutoff):
-        res = self.client.query_database(dbid, {"page_size": 50, "filter": {"and": [
+        res = self.bg.query_database(dbid, {"page_size": 50, "filter": {"and": [
             {"timestamp": "created_time", "created_time": {"before": _iso(cutoff)}}]}})
         for p in res.get("results", []):
             try:
@@ -203,6 +245,6 @@ class Relay:
             if created >= cutoff or (((p.get("properties") or {}).get("From") or {}).get("select") or {}).get("name") != self.device:
                 continue
             try:
-                self.client.archive_page(p["id"])
+                self.bg.archive_page(p["id"])
             except NotionError:
                 pass

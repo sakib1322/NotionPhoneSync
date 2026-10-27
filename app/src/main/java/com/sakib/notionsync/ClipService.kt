@@ -167,7 +167,7 @@ class ClipService : Service() {
             // Quick while the screen is on; gentle on the battery while it's off.
             val wait = when {
                 failures > 0 -> minOf(60_000L, 5_000L * failures)
-                pm.isInteractive -> 3_000L
+                pm.isInteractive -> 1_500L
                 else -> 30_000L
             }
             try { Thread.sleep(wait) } catch (e: InterruptedException) { break }
@@ -190,20 +190,35 @@ class ClipService : Service() {
         }
         val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "From laptop")
         dir.mkdirs()
-        val files = ArrayList<File>()
-        for ((name0, url) in relay.filesOf(item)) {
+        val links = relay.filesOf(item)
+        if (links.isEmpty()) return
+        main.post { toast(if (links.size == 1) "Receiving ${links[0].first} from the laptop…" else "Receiving ${links.size} files from the laptop…") }
+        // Pick names first, then download all files side by side.
+        val targets = ArrayList<File>()
+        for ((name0, _) in links) {
             val name = name0.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "file" }
             var f = File(dir, name)
             var n = 1
-            while (f.exists()) {
+            while (f.exists() || f in targets) {
                 f = File(dir, name.substringBeforeLast('.', name) + " ($n)" + (if (name.contains('.')) "." + name.substringAfterLast('.') else ""))
                 n++
             }
-            http.newCall(Request.Builder().url(url).build()).execute().use { r ->
-                if (!r.isSuccessful) throw RuntimeException("download failed (${r.code})")
-                f.outputStream().use { out -> r.body!!.byteStream().copyTo(out) }
-            }
-            files.add(f)
+            targets.add(f)
+        }
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(4, links.size))
+        val files = try {
+            links.indices.map { i ->
+                pool.submit<File> {
+                    val f = targets[i]
+                    http.newCall(Request.Builder().url(links[i].second).build()).execute().use { r ->
+                        if (!r.isSuccessful) throw RuntimeException("download failed (${r.code})")
+                        f.outputStream().use { out -> r.body!!.byteStream().copyTo(out, 1 shl 20) }
+                    }
+                    f
+                }
+            }.map { try { it.get() } catch (e: java.util.concurrent.ExecutionException) { throw (e.cause ?: e) } }
+        } finally {
+            pool.shutdown()
         }
         if (files.isEmpty()) return
         lastFp = ClipRelay.fingerprint("files", null, files)
