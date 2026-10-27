@@ -26,6 +26,36 @@ FILE = "notion-sync-setup.json"
 PREFIX = "NSYNC1:"
 
 
+class NoDriveAccess(RuntimeError):
+    def __init__(self):
+        super().__init__(
+            "Google didn't give the app access to its settings file in your Drive.\n\n"
+            "Please sign in again, and on Google's page tick the box\n"
+            "\u201cSee, create, and delete its own configuration data in your Google Drive\u201d\n"
+            "(or press \u201cSelect all\u201d). The app can only see its own small hidden file, "
+            "never your Drive files.")
+
+
+def _check(r):
+    """Turns Google Drive errors into plain messages."""
+    if r.ok:
+        return
+    reason = ""
+    try:
+        err = r.json().get("error") or {}
+        reason = ((err.get("errors") or [{}])[0].get("reason") or err.get("status") or "")
+        msg = err.get("message") or ""
+    except Exception:
+        msg = r.text[:200]
+    if r.status_code == 403 and reason in ("accessNotConfigured", "SERVICE_DISABLED") or "has not been used in project" in msg:
+        raise RuntimeError("The Google Drive API is turned off in the \u201cNotion Sync\u201d Google Cloud project.\n"
+                           "Open console.cloud.google.com \u2192 APIs & Services \u2192 Library \u2192 Google Drive API \u2192 Enable, "
+                           "wait a minute, then sign in again.")
+    if r.status_code in (401, 403):
+        raise NoDriveAccess()
+    raise RuntimeError(f"Google Drive error {r.status_code}: {msg or reason}")
+
+
 def available():
     return bool(CLIENT_ID and CLIENT_SECRET)
 
@@ -170,6 +200,8 @@ def sign_in(settings, timeout=300):
         "code_verifier": verifier, "redirect_uri": redirect, "grant_type": "authorization_code"}, timeout=30).json()
     if "refresh_token" not in tok:
         raise RuntimeError(tok.get("error_description") or tok.get("error") or "Google didn't sign you in")
+    if "drive.appdata" not in (tok.get("scope") or ""):
+        raise NoDriveAccess()
     email = ""
     try:
         part = tok["id_token"].split(".")[1]
@@ -203,7 +235,7 @@ def _find(tok):
     r = requests.get("https://www.googleapis.com/drive/v3/files", params={
         "spaces": "appDataFolder", "fields": "files(id)", "q": f"name='{FILE}'"},
         headers={"Authorization": f"Bearer {tok}"}, timeout=30)
-    r.raise_for_status()
+    _check(r)
     files = r.json().get("files") or []
     return files[0]["id"] if files else None
 
@@ -215,7 +247,7 @@ def download(settings):
         return None
     r = requests.get(f"https://www.googleapis.com/drive/v3/files/{fid}", params={"alt": "media"},
                      headers={"Authorization": f"Bearer {tok}"}, timeout=30)
-    r.raise_for_status()
+    _check(r)
     return r.json()
 
 
@@ -241,7 +273,7 @@ def upload(settings):
                 f"--{boundary}\r\nContent-Type: application/json\r\n\r\n{body}\r\n--{boundary}--").encode()
         r = requests.post("https://www.googleapis.com/upload/drive/v3/files", params={"uploadType": "multipart"},
                           data=data, headers={**h, "Content-Type": f"multipart/related; boundary={boundary}"}, timeout=30)
-    r.raise_for_status()
+    _check(r)
     settings.set("google_saved_at", time.time())
 
 

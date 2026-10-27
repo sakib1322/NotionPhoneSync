@@ -416,8 +416,14 @@ class App:
         def done(cloud, err):
             def ui():
                 if err:
-                    messagebox.showerror(TITLE, f"Google sign-in didn't work:\n{err}")
+                    # Don't stay half signed in.
+                    account.sign_out(self.settings)
                     self._account_ui()
+                    if isinstance(err, account.NoDriveAccess):
+                        if messagebox.askretrycancel(TITLE, f"Almost there.\n\n{err}"):
+                            self.google_click()
+                    else:
+                        messagebox.showerror(TITLE, f"Google sign-in didn't work:\n{err}")
                     return
                 lap = (cloud or {}).get("laptop") or {}
                 if lap.get("root_page") and (not self.settings.get("token") or lap["root_page"] != self.settings.get("root_page")):
