@@ -439,7 +439,10 @@ class FilesPage(
                     val dbId = idx.dbIdFor(root, create = false) ?: continue
                     val (_, lastFull) = db.pullTimes(root)
                     // A full refresh catches files removed elsewhere; do one at least daily.
-                    val doFull = full || lastFull == 0L || System.currentTimeMillis() - lastFull > 24 * 3600_000L
+                    // This phone records its own uploads as it makes them, so its own list only needs a
+                    // full check weekly; other backups (e.g. the laptop's) are checked daily.
+                    val every = if (root == prefs.rootPageId) 7 * 24 * 3600_000L else 24 * 3600_000L
+                    val doFull = full || lastFull == 0L || System.currentTimeMillis() - lastFull > every
                     idx.pull(root, dbId, doFull) { n ->
                         if (doFull) main.post { setBanner("Loading the file list for $title… ${num.format(n)} files") }
                     }

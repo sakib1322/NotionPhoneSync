@@ -103,7 +103,10 @@ class Cloud:
             return 0
         last = float(self.db.get_meta("pull:" + root) or 0)
         last_full = float(self.db.get_meta("pullfull:" + root) or 0)
-        if not last_full or time.time() - last_full > 24 * 3600:
+        # This laptop records its own uploads as it makes them, so its own list only needs a
+        # full check weekly; other backups (e.g. the phone's) are checked daily.
+        every = 7 * 24 * 3600 if root == self.settings.get("root_page") else 24 * 3600
+        if not last_full or time.time() - last_full > every:
             full = True
         started = time.time()
         seen, count, cursor = set(), 0, None
