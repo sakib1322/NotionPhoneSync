@@ -145,12 +145,13 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
     }
 
     fun poll(sinceMs: Long): List<Item> {
-        val body = JSONObject().put("page_size", 20)
+        // (No "From" filter here: Notion rejects one naming a device that hasn't sent anything yet.
+        // Items from this phone are skipped below instead.)
+        val body = JSONObject().put("page_size", 50)
             .put("sorts", JSONArray().put(JSONObject().put("timestamp", "created_time").put("direction", "ascending")))
             .put(
                 "filter", JSONObject().put(
                     "and", JSONArray()
-                        .put(JSONObject().put("property", "From").put("select", JSONObject().put("does_not_equal", device)))
                         .put(JSONObject().put("property", "Ready").put("checkbox", JSONObject().put("equals", true)))
                         .put(
                             JSONObject().put("timestamp", "created_time")
@@ -214,7 +215,6 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
             db, JSONObject().put("page_size", 50).put(
                 "filter", JSONObject().put(
                     "and", JSONArray()
-                        .put(JSONObject().put("property", "From").put("select", JSONObject().put("equals", device)))
                         .put(JSONObject().put("timestamp", "created_time").put("created_time", JSONObject().put("before", cutoff.toString())))
                 )
             )

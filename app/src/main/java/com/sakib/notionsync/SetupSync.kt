@@ -124,10 +124,29 @@ object SetupSync {
 
     // ---- Google Drive (hidden app folder) ---------------------------------------------------
 
+    /** Turns a Google Drive error into a plain message. */
+    private fun driveError(r: okhttp3.Response): IOException {
+        val body = try { r.body?.string().orEmpty() } catch (e: Exception) { "" }
+        var reason = ""
+        var msg = ""
+        try {
+            val err = JSONObject(body).optJSONObject("error")
+            msg = err?.optString("message").orEmpty()
+            reason = err?.optJSONArray("errors")?.optJSONObject(0)?.optString("reason").orEmpty().ifEmpty { err?.optString("status").orEmpty() }
+        } catch (e: Exception) { }
+        return when {
+            reason == "accessNotConfigured" || reason == "SERVICE_DISABLED" || msg.contains("has not been used in project") || msg.contains("is disabled") ->
+                IOException("the Google Drive API is turned off in your “Notion Sync” Google Cloud project. Turn it on: console.cloud.google.com → APIs & Services → Library → Google Drive API → Enable.")
+            r.code == 401 || r.code == 403 ->
+                IOException("Google didn't allow access to the app's settings file in your Drive ($reason). Sign out and sign in again, and allow Drive access.")
+            else -> IOException("Google Drive answered ${r.code}: ${msg.ifEmpty { body.take(150) }}")
+        }
+    }
+
     private fun findFile(token: String): String? {
         val url = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,modifiedTime)&q=name%3D%27$FILE%27"
         http.newCall(Request.Builder().url(url).header("Authorization", "Bearer $token").build()).execute().use { r ->
-            if (!r.isSuccessful) throw IOException("Google Drive answered ${r.code}")
+            if (!r.isSuccessful) throw driveError(r)
             val files = JSONObject(r.body?.string() ?: "{}").optJSONArray("files") ?: return null
             return if (files.length() > 0) files.getJSONObject(0).getString("id") else null
         }
@@ -140,7 +159,7 @@ object SetupSync {
             Request.Builder().url("https://www.googleapis.com/drive/v3/files/$id?alt=media")
                 .header("Authorization", "Bearer $token").build()
         ).execute().use { r ->
-            if (!r.isSuccessful) throw IOException("Google Drive answered ${r.code}")
+            if (!r.isSuccessful) throw driveError(r)
             return JSONObject(r.body?.string() ?: "{}")
         }
     }
@@ -159,7 +178,7 @@ object SetupSync {
             Request.Builder().url("https://www.googleapis.com/upload/drive/v3/files/$id?uploadType=media").patch(body)
         }
         http.newCall(req.header("Authorization", "Bearer $token").build()).execute().use { r ->
-            if (!r.isSuccessful) throw IOException("Google Drive answered ${r.code}: ${r.body?.string()?.take(200)}")
+            if (!r.isSuccessful) throw driveError(r)
         }
         Prefs(ctx).googleSavedAt = System.currentTimeMillis()
     }

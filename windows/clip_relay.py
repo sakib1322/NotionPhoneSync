@@ -143,10 +143,11 @@ class Relay:
 
     def poll(self, since):
         """New ready items from the other device since `since` (datetime): list of dicts, oldest first."""
-        body = {"page_size": 20,
+        # No "From" filter: Notion rejects one naming a device that hasn't sent anything yet.
+        # This device's own items are skipped below instead.
+        body = {"page_size": 50,
                 "sorts": [{"timestamp": "created_time", "direction": "ascending"}],
                 "filter": {"and": [
-                    {"property": "From", "select": {"does_not_equal": self.device}},
                     {"property": "Ready", "checkbox": {"equals": True}},
                     {"timestamp": "created_time", "created_time": {"on_or_after": _iso(since - timedelta(minutes=1))}},
                 ]}}
@@ -193,7 +194,6 @@ class Relay:
 
     def _cleanup_one(self, dbid, cutoff):
         res = self.client.query_database(dbid, {"page_size": 50, "filter": {"and": [
-            {"property": "From", "select": {"equals": self.device}},
             {"timestamp": "created_time", "created_time": {"before": _iso(cutoff)}}]}})
         for p in res.get("results", []):
             try:
