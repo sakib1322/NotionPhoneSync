@@ -181,6 +181,10 @@ class NotionClient(private val token: String) {
         return post("/databases", body).getString("id")
     }
 
+    fun search(body: JSONObject): JSONObject = post("/search", body)
+
+    fun createDatabase(body: JSONObject): String = post("/databases", body).getString("id")
+
     fun createRow(dbId: String, properties: JSONObject): String =
         post("/pages", JSONObject().put("parent", JSONObject().put("database_id", dbId)).put("properties", properties))
             .getString("id")

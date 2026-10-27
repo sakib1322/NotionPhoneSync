@@ -96,6 +96,7 @@ class UpdateReceiver : BroadcastReceiver() {
         val p = Prefs(ctx)
         p.running = false
         Logger.log(ctx, "App updated to build ${Updater.currentBuild(ctx)}. Resuming backup.")
+        ClipService.start(ctx)
         if (p.autoSync) {
             Scheduler.apply(ctx)
             Scheduler.syncNow(ctx)

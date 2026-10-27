@@ -97,6 +97,15 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("google_saved_at", 0L)
         set(v) { sp.edit().putLong("google_saved_at", v).apply() }
 
+    /** Share the clipboard with the laptop. */
+    var clipboardSync: Boolean
+        get() = sp.getBoolean("clipboard_sync", true)
+        set(v) { sp.edit().putBoolean("clipboard_sync", v).apply() }
+
+    var clipDbId: String
+        get() = sp.getString("clip_db", "") ?: ""
+        set(v) { sp.edit().putString("clip_db", v).apply() }
+
     var filesGrid: Boolean
         get() = sp.getBoolean("files_grid", true)
         set(v) { sp.edit().putBoolean("files_grid", v).apply() }

@@ -140,6 +140,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.btn_transfer_out).setOnClickListener { account.showTransfer() }
         findViewById<View>(R.id.btn_transfer_in).setOnClickListener { account.receiveTransfer() }
         findViewById<MaterialButton>(R.id.acct_manage).setOnClickListener { account.signInOrOut() }
+        ClipService.start(this)
         reloadSettingsUi()
         space = SpaceTools(this)
         space.bindCard(findViewById(R.id.page_home))
@@ -451,6 +452,13 @@ class MainActivity : AppCompatActivity() {
             Scheduler.apply(this)
         }
         bindSwitch(R.id.sw_hidden, prefs.skipHidden) { prefs.skipHidden = it }
+        bindSwitch(R.id.sw_clip, prefs.clipboardSync) {
+            prefs.clipboardSync = it
+            if (it) ClipService.start(this) else ClipService.stop(this)
+        }
+        findViewById<MaterialButton>(R.id.btn_clip_send).setOnClickListener {
+            startActivity(Intent(this, ClipSendActivity::class.java))
+        }
 
         findViewById<MaterialButton>(R.id.btn_update).setOnClickListener { checkUpdate(install = true) }
         updateText.text = "Version: build ${Updater.currentBuild(this)}"
@@ -468,6 +476,8 @@ class MainActivity : AppCompatActivity() {
         sync(R.id.sw_wifi, prefs.wifiOnly)
         sync(R.id.sw_charging, prefs.chargingOnly)
         sync(R.id.sw_hidden, prefs.skipHidden)
+        sync(R.id.sw_clip, prefs.clipboardSync)
+        ClipService.start(this)
         if (swAuto.isChecked != prefs.autoSync) swAuto.isChecked = prefs.autoSync
         showAccount()
         if (::space.isInitialized && ::files.isInitialized) refresh()

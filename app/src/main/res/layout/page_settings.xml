@@ -313,6 +313,27 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Shared clipboard -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout style="@style/CardBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Shared clipboard" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_clip" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Share the clipboard with the laptop" />
+
+                <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
+                    android:text="Copy anything on the laptop and paste it here a few seconds later. To send from the phone, copy, then tap “Send copied to laptop” in the notification, the “Send clipboard” Quick Settings tile, or Share › Copy to laptop. Files also go to Download › From laptop." />
+
+                <com.google.android.material.button.MaterialButton android:id="@+id/btn_clip_send" style="@style/Widget.Material3.Button.TonalButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Send what I copied" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Skip folders -->
         <com.google.android.material.card.MaterialCardView
             style="@style/Card"
