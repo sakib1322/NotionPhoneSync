@@ -123,6 +123,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             updateSpeed()
             if (tick++ % 2 == 0) refresh()
+            showClipStatus()
             handler.postDelayed(this, 1000)
         }
     }
@@ -524,6 +525,17 @@ class MainActivity : AppCompatActivity() {
                 }
             }.start()
         }
+    }
+
+    private fun showClipStatus() {
+        val tv = findViewById<TextView>(R.id.clip_status) ?: return
+        val t = when {
+            !prefs.clipboardSync -> "Off."
+            prefs.token.isEmpty() || prefs.rootPageId.isEmpty() -> "Connect Notion first."
+            else -> prefs.clipStatus.ifEmpty { "Starting…" } +
+                (if (!Perms.notifications(this)) "\nAllow notifications (above) to get the “Send copied to laptop” button." else "")
+        }
+        if (tv.text.toString() != t) tv.text = t
     }
 
     private fun bindSwitch(id: Int, value: Boolean, onChange: (Boolean) -> Unit) {

@@ -106,6 +106,20 @@ class Prefs(ctx: Context) {
         get() = sp.getString("clip_db", "") ?: ""
         set(v) { sp.edit().putString("clip_db", v).apply() }
 
+    /** Every clipboard mailbox found, as "created|id" entries. */
+    var clipDbs: String
+        get() = sp.getString("clip_dbs", "") ?: ""
+        set(v) { sp.edit().putString("clip_dbs", v).apply() }
+
+    var clipSearchAt: Long
+        get() = sp.getLong("clip_search_at", 0L)
+        set(v) { sp.edit().putLong("clip_search_at", v).apply() }
+
+    /** Shared clipboard status line for Settings. */
+    var clipStatus: String
+        get() = sp.getString("clip_status", "") ?: ""
+        set(v) { sp.edit().putString("clip_status", v).apply() }
+
     var filesGrid: Boolean
         get() = sp.getBoolean("files_grid", true)
         set(v) { sp.edit().putBoolean("files_grid", v).apply() }

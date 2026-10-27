@@ -173,6 +173,27 @@ class ClipSync:
         self.busy = False
         self.stop = threading.Event()
         self.last_error = ""
+        self.last_sent = 0
+        self.last_received = 0
+        self.boxes = 0
+        self.checked = 0
+
+    def status(self):
+        """One line for the window."""
+        if not self.settings.get("clipboard_sync"):
+            return "Off."
+        if not (self.settings.get("token") and self.settings.get("root_page")):
+            return "Connect Notion first."
+        if self.last_error:
+            return f"⚠ Problem: {self.last_error[:150]}"
+        if not self.checked:
+            return "Starting…"
+        parts = ["✓ Working"]
+        if self.last_sent:
+            parts.append("last sent " + time.strftime("%I:%M %p", time.localtime(self.last_sent)))
+        if self.last_received:
+            parts.append("last received " + time.strftime("%I:%M %p", time.localtime(self.last_received)))
+        return " · ".join(parts)
 
     def enabled(self):
         return bool(self.settings.get("clipboard_sync") and self.settings.get("token") and self.settings.get("root_page"))
@@ -221,6 +242,8 @@ class ClipSync:
                 return  # just received this from the phone
             self.last_fp = fp
             Relay(self.settings, self.db, "Laptop").send(kind, payload)
+            self.last_sent = time.time()
+            self.last_error = ""
             what = "text" if kind == "text" else ", ".join(os.path.basename(p) for p in payload)
             self.log(f"Shared clipboard: sent {what[:80]} to the phone.")
         except Exception as e:
@@ -244,11 +267,15 @@ class ClipSync:
                         continue
                     seen.add(item["id"])
                     self._apply(relay, item)
+                    self.last_received = time.time()
                 if time.time() - last_cleanup > 3600:
                     last_cleanup = time.time()
                     relay.cleanup()
+                self.checked = time.time()
                 self.last_error = ""
             except Exception as e:
+                if str(e) != self.last_error:
+                    self.log(f"Shared clipboard: can't reach the mailbox in Notion ({e}). Will keep trying.")
                 self.last_error = str(e)
                 time.sleep(10)
 

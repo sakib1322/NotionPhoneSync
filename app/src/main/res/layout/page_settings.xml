@@ -327,6 +327,8 @@
 
                 <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_clip" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Share the clipboard with the laptop" />
 
+                <TextView android:id="@+id/clip_status" style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" />
+
                 <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
                     android:text="Copy anything on the laptop and paste it here a few seconds later. To send from the phone, copy, then tap “Send copied to laptop” in the notification, the “Send clipboard” Quick Settings tile, or Share › Copy to laptop. Files also go to Download › From laptop." />
 

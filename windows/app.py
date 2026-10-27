@@ -214,10 +214,11 @@ class App:
         self._p(f, "Copy on the laptop and it's on your phone's clipboard in a few seconds. Things sent from the phone "
                    "land here, ready for Ctrl+V (files are also saved in Downloads\\From phone). Passwords copied from "
                    "password managers are never sent. Items are removed from Notion after a day.", foreground="#666")
+        self.clip_status = self._p(f, "Starting…")
 
         self._h(f, "1. Integration secret")
         self._p(f, "From notion.so/profile/integrations (Developer tools → Connections). "
-                   "You can use the same one as the phone app.")
+                   "Use the same one as the phone app (the shared clipboard needs it).")
         self.token_var = tk.StringVar(value=self.settings.get("token"))
         ttk.Entry(f, textvariable=self.token_var, show="•", width=80).pack(anchor="w", pady=4)
 
@@ -614,6 +615,12 @@ class App:
     # ---- the once-a-second refresh ---------------------------------------------------
 
     def _tick(self):
+        try:
+            st = "Shared clipboard: " + self.clip.status()
+            if self.clip_status.cget("text") != st:
+                self.clip_status.config(text=st)
+        except Exception:
+            pass
         while True:
             try:
                 self.events.get_nowait()()

@@ -47,30 +47,59 @@ class Relay:
 
     # ---- the mailbox ---------------------------------------------------------------
 
-    def db_id(self):
-        cached = self.db.get_meta("clip_db")
-        if cached:
-            return cached
-        # Look for one the other device made (so both use the same mailbox).
-        res = self.client._call("POST", "/search", json_body={
-            "query": "Clipboard (used by Notion Sync", "page_size": 25,
-            "filter": {"property": "object", "value": "database"}})
-        found = []
-        for d in res.get("results", []):
-            title = "".join(t.get("plain_text", "") for t in d.get("title", []))
-            if title == TITLE and not d.get("archived") and not d.get("in_trash"):
-                found.append((d.get("created_time", ""), d["id"]))
-        if found:
-            dbid = sorted(found)[0][1]
-        else:
+    def _search(self):
+        """All mailboxes Notion's search can see, oldest first: [(created, id)]."""
+        found, cursor = [], None
+        while True:
+            body = {"query": "Clipboard (used by Notion Sync", "page_size": 50,
+                    "filter": {"property": "object", "value": "database"}}
+            if cursor:
+                body["start_cursor"] = cursor
+            res = self.client._call("POST", "/search", json_body=body)
+            for d in res.get("results", []):
+                title = "".join(t.get("plain_text", "") for t in d.get("title", []))
+                if title == TITLE and not d.get("archived") and not d.get("in_trash"):
+                    found.append((d.get("created_time", ""), d["id"]))
+            cursor = res.get("next_cursor") if res.get("has_more") else None
+            if not cursor:
+                return sorted(set(found))
+
+    def mailboxes(self, refresh=False):
+        """Every mailbox to read from, oldest first. Notion's search is slow to notice new
+        databases, so the phone and laptop can each make one before seeing the other's;
+        we re-search every couple of minutes and read from all of them, and always send
+        to the oldest, so the two apps always meet."""
+        known = [tuple(x.split("|", 1)) for x in (self.db.get_meta("clip_dbs") or "").split(",") if "|" in x]
+        last = float(self.db.get_meta("clip_search_at") or 0)
+        if refresh or not known or time.time() - last > 120:
+            try:
+                found = self._search()
+                self.db.set_meta("clip_search_at", str(time.time()))
+                known = sorted(set(known) | set(found))
+            except NotionError:
+                if not known:
+                    raise
+        if not known:
             root = self.settings.get("root_page")
             props = {"Name": {"title": {}}, "Kind": {"select": {}}, "From": {"select": {}},
                      "Text": {"rich_text": {}}, "Ready": {"checkbox": {}}, "Files": {"number": {}}}
-            dbid = self.client._call("POST", "/databases", json_body={
+            d = self.client._call("POST", "/databases", json_body={
                 "parent": {"type": "page_id", "page_id": root},
-                "title": [{"type": "text", "text": {"content": TITLE}}], "properties": props})["id"]
-        self.db.set_meta("clip_db", dbid)
-        return dbid
+                "title": [{"type": "text", "text": {"content": TITLE}}], "properties": props})
+            known = [(d.get("created_time", ""), d["id"])]
+        self._save(known)
+        return [i for _, i in known]
+
+    def _save(self, known):
+        self.db.set_meta("clip_dbs", ",".join(f"{c}|{i}" for c, i in sorted(set(known))))
+        self.db.set_meta("clip_db", known[0][1] if known else "")
+
+    def _forget(self, dbid):
+        known = [tuple(x.split("|", 1)) for x in (self.db.get_meta("clip_dbs") or "").split(",") if "|" in x]
+        self._save([k for k in known if k[1] != dbid])
+
+    def db_id(self):
+        return self.mailboxes()[0]
 
     # ---- sending -------------------------------------------------------------------------
 
@@ -90,7 +119,7 @@ class Relay:
             row = self.client.create_row(dbid, props)
         except NotionError as e:
             if e.status == 404:  # mailbox was deleted: make or find a new one
-                self.db.set_meta("clip_db", "")
+                self._forget(dbid)
                 return self.send(kind, payload)
             raise
         if kind != "text":
@@ -114,7 +143,6 @@ class Relay:
 
     def poll(self, since):
         """New ready items from the other device since `since` (datetime): list of dicts, oldest first."""
-        dbid = self.db_id()
         body = {"page_size": 20,
                 "sorts": [{"timestamp": "created_time", "direction": "ascending"}],
                 "filter": {"and": [
@@ -122,22 +150,25 @@ class Relay:
                     {"property": "Ready", "checkbox": {"equals": True}},
                     {"timestamp": "created_time", "created_time": {"on_or_after": _iso(since - timedelta(minutes=1))}},
                 ]}}
-        try:
-            res = self.client.query_database(dbid, body)
-        except NotionError as e:
-            if e.status == 404:
-                self.db.set_meta("clip_db", "")
-            raise
         out = []
-        for p in res.get("results", []):
-            pr = p.get("properties") or {}
-            if (((pr.get("From") or {}).get("select") or {}).get("name")) == self.device:
-                continue
-            if not (pr.get("Ready") or {}).get("checkbox"):
-                continue
-            kind = ((pr.get("Kind") or {}).get("select") or {}).get("name") or "text"
-            text = "".join(t.get("plain_text", "") for t in (pr.get("Text") or {}).get("rich_text", []))
-            out.append({"id": p["id"], "kind": kind, "text": text, "created": p.get("created_time", "")})
+        for dbid in self.mailboxes():
+            try:
+                res = self.client.query_database(dbid, body)
+            except NotionError as e:
+                if e.status == 404:
+                    self._forget(dbid)
+                    continue
+                raise
+            for p in res.get("results", []):
+                pr = p.get("properties") or {}
+                if (((pr.get("From") or {}).get("select") or {}).get("name")) == self.device:
+                    continue
+                if not (pr.get("Ready") or {}).get("checkbox"):
+                    continue
+                kind = ((pr.get("Kind") or {}).get("select") or {}).get("name") or "text"
+                text = "".join(t.get("plain_text", "") for t in (pr.get("Text") or {}).get("rich_text", []))
+                out.append({"id": p["id"], "kind": kind, "text": text, "created": p.get("created_time", "")})
+        out.sort(key=lambda x: x["created"])
         return out
 
     def files_of(self, item):
@@ -156,8 +187,11 @@ class Relay:
 
     def cleanup(self):
         """Removes this device's items older than a day."""
-        dbid = self.db_id()
         cutoff = datetime.now(timezone.utc) - timedelta(hours=KEEP_HOURS)
+        for dbid in self.mailboxes():
+            self._cleanup_one(dbid, cutoff)
+
+    def _cleanup_one(self, dbid, cutoff):
         res = self.client.query_database(dbid, {"page_size": 50, "filter": {"and": [
             {"property": "From", "select": {"equals": self.device}},
             {"timestamp": "created_time", "created_time": {"before": _iso(cutoff)}}]}})

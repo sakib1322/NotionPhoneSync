@@ -111,7 +111,7 @@ class NotionClient(private val token: String) {
     }
 
     private fun get(path: String) = call { req(path).get().build() }
-    private fun post(path: String, json: JSONObject) =
+    fun post(path: String, json: JSONObject) =
         call { req(path).post(json.toString().toRequestBody(JSON_TYPE)).build() }
     private fun patch(path: String, json: JSONObject) =
         call { req(path).patch(json.toString().toRequestBody(JSON_TYPE)).build() }

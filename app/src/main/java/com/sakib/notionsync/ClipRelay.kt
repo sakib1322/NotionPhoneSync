@@ -42,37 +42,73 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
         }
     }
 
-    fun dbId(): String {
-        prefs.clipDbId.takeIf { it.isNotEmpty() }?.let { return it }
-        val res = client.search(
-            JSONObject().put("query", "Clipboard (used by Notion Sync").put("page_size", 25)
+    private fun search(): List<Pair<String, String>> {
+        val found = ArrayList<Pair<String, String>>()
+        var cursor: String? = null
+        do {
+            val body = JSONObject().put("query", "Clipboard (used by Notion Sync").put("page_size", 50)
                 .put("filter", JSONObject().put("property", "object").put("value", "database"))
-        )
-        val arr = res.optJSONArray("results") ?: JSONArray()
-        var best: Pair<String, String>? = null
-        for (i in 0 until arr.length()) {
-            val d = arr.getJSONObject(i)
-            val t = d.optJSONArray("title")
-            val title = if (t == null) "" else (0 until t.length()).joinToString("") { t.getJSONObject(it).optString("plain_text") }
-            if (title != TITLE || d.optBoolean("archived") || d.optBoolean("in_trash")) continue
-            val c = d.optString("created_time")
-            if (best == null || c < best.first) best = c to d.getString("id")
+            if (cursor != null) body.put("start_cursor", cursor)
+            val res = client.search(body)
+            val arr = res.optJSONArray("results") ?: JSONArray()
+            for (i in 0 until arr.length()) {
+                val d = arr.getJSONObject(i)
+                val t = d.optJSONArray("title")
+                val title = if (t == null) "" else (0 until t.length()).joinToString("") { t.getJSONObject(it).optString("plain_text") }
+                if (title != TITLE || d.optBoolean("archived") || d.optBoolean("in_trash")) continue
+                found.add(d.optString("created_time") to d.getString("id"))
+            }
+            cursor = if (res.optBoolean("has_more")) res.optString("next_cursor").takeIf { it.isNotEmpty() && it != "null" } else null
+        } while (cursor != null)
+        return found
+    }
+
+    private fun known(): List<Pair<String, String>> =
+        prefs.clipDbs.split(",").filter { it.contains("|") }.map { it.substringBefore("|") to it.substringAfter("|") }
+
+    private fun save(list: Collection<Pair<String, String>>) {
+        val sorted = list.toSortedSet(compareBy<Pair<String, String>>({ it.first }, { it.second })).toList()
+        prefs.clipDbs = sorted.joinToString(",") { "${it.first}|${it.second}" }
+        prefs.clipDbId = sorted.firstOrNull()?.second ?: ""
+    }
+
+    private fun forget(id: String) = save(known().filter { it.second != id })
+
+    /**
+     * Every mailbox to read from, oldest first. Notion's search is slow to notice new
+     * databases, so the phone and laptop can each make one before seeing the other's;
+     * we re-search every couple of minutes, read from all of them and always send to the
+     * oldest, so the two apps always meet.
+     */
+    fun mailboxes(refresh: Boolean = false): List<String> {
+        var list = known().toMutableSet()
+        if (refresh || list.isEmpty() || System.currentTimeMillis() - prefs.clipSearchAt > 120_000) {
+            try {
+                list.addAll(search())
+                prefs.clipSearchAt = System.currentTimeMillis()
+            } catch (e: Exception) {
+                if (list.isEmpty()) throw e
+            }
         }
-        val id = best?.second ?: run {
+        if (list.isEmpty()) {
             fun empty() = JSONObject()
             val props = JSONObject()
                 .put("Name", JSONObject().put("title", empty())).put("Kind", JSONObject().put("select", empty()))
                 .put("From", JSONObject().put("select", empty())).put("Text", JSONObject().put("rich_text", empty()))
                 .put("Ready", JSONObject().put("checkbox", empty())).put("Files", JSONObject().put("number", empty()))
-            client.createDatabase(
+            val d = client.post(
+                "/databases",
                 JSONObject().put("parent", JSONObject().put("type", "page_id").put("page_id", prefs.rootPageId))
                     .put("title", JSONArray().put(JSONObject().put("type", "text").put("text", JSONObject().put("content", TITLE))))
                     .put("properties", props)
             )
+            list = mutableSetOf(d.optString("created_time") to d.getString("id"))
         }
-        prefs.clipDbId = id
-        return id
+        save(list)
+        return known().map { it.second }
     }
+
+    fun dbId(): String = mailboxes().first()
 
     /** Sends text, or files (kind "image" or "files"). */
     fun send(kind: String, text: String?, files: List<File>) {
@@ -90,7 +126,7 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
             client.createRow(db, props)
         } catch (e: NotionException) {
             if (e.status == 404) {
-                prefs.clipDbId = ""
+                forget(db)
                 client.createRow(dbId(), props)
             } else throw e
         }
@@ -122,24 +158,27 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
                         )
                 )
             )
-        val res = try {
-            client.queryDatabase(dbId(), body)
-        } catch (e: NotionException) {
-            if (e.status == 404) prefs.clipDbId = ""
-            throw e
-        }
-        val arr = res.optJSONArray("results") ?: return emptyList()
         val out = ArrayList<Item>()
-        for (i in 0 until arr.length()) {
-            val p = arr.getJSONObject(i)
-            val pr = p.optJSONObject("properties") ?: continue
-            if (pr.optJSONObject("From")?.optJSONObject("select")?.optString("name") == device) continue
-            if (pr.optJSONObject("Ready")?.optBoolean("checkbox") != true) continue
-            val kind = pr.optJSONObject("Kind")?.optJSONObject("select")?.optString("name") ?: "text"
-            val t = pr.optJSONObject("Text")?.optJSONArray("rich_text")
-            val text = if (t == null) "" else (0 until t.length()).joinToString("") { t.getJSONObject(it).optString("plain_text") }
-            out.add(Item(p.getString("id"), kind, text, p.optString("created_time")))
+        for (db in mailboxes()) {
+            val res = try {
+                client.queryDatabase(db, body)
+            } catch (e: NotionException) {
+                if (e.status == 404) { forget(db); continue }
+                throw e
+            }
+            val arr = res.optJSONArray("results") ?: continue
+            for (i in 0 until arr.length()) {
+                val p = arr.getJSONObject(i)
+                val pr = p.optJSONObject("properties") ?: continue
+                if (pr.optJSONObject("From")?.optJSONObject("select")?.optString("name") == device) continue
+                if (pr.optJSONObject("Ready")?.optBoolean("checkbox") != true) continue
+                val kind = pr.optJSONObject("Kind")?.optJSONObject("select")?.optString("name") ?: "text"
+                val t = pr.optJSONObject("Text")?.optJSONArray("rich_text")
+                val text = if (t == null) "" else (0 until t.length()).joinToString("") { t.getJSONObject(it).optString("plain_text") }
+                out.add(Item(p.getString("id"), kind, text, p.optString("created_time")))
+            }
         }
+        out.sortBy { it.created }
         return out
     }
 
@@ -167,8 +206,12 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
     /** Removes this phone's items older than a day. */
     fun cleanup() {
         val cutoff = Instant.now().minusSeconds(24 * 3600)
+        for (db in mailboxes()) cleanupOne(db, cutoff)
+    }
+
+    private fun cleanupOne(db: String, cutoff: Instant) {
         val res = client.queryDatabase(
-            dbId(), JSONObject().put("page_size", 50).put(
+            db, JSONObject().put("page_size", 50).put(
                 "filter", JSONObject().put(
                     "and", JSONArray()
                         .put(JSONObject().put("property", "From").put("select", JSONObject().put("equals", device)))

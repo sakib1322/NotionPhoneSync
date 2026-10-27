@@ -152,12 +152,17 @@ class ClipService : Service() {
                     lastCleanup = System.currentTimeMillis()
                     try { relay.cleanup() } catch (e: Exception) { }
                 }
+                if (failures > 0 || !prefs.clipStatus.startsWith("✓")) prefs.clipStatus = "✓ Working — waiting for things copied on the laptop."
                 failures = 0
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
                 failures++
-                if (failures == 3) Logger.log(this, "Shared clipboard: can't reach Notion (${e.message}). Will keep trying.")
+                val msg = "⚠ Can't reach the clipboard mailbox in Notion: ${e.message}"
+                if (prefs.clipStatus != msg) {
+                    prefs.clipStatus = msg
+                    Logger.log(this, "Shared clipboard: can't reach Notion (${e.message}). Will keep trying.")
+                }
             }
             // Quick while the screen is on; gentle on the battery while it's off.
             val wait = when {
@@ -179,6 +184,7 @@ class ClipService : Service() {
                 toast("Copied from laptop: ${item.text.trim().take(40)}")
             }
             status(this, "Got text from the laptop — paste it anywhere.")
+            Prefs(this).clipStatus = "✓ Working — last received text at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
             Logger.log(this, "Shared clipboard: got text from the laptop.")
             return
         }
@@ -212,6 +218,7 @@ class ClipService : Service() {
         }
         status(this, "Got ${files.joinToString(", ") { it.name }.take(60)} — paste it, or find it in Downloads › From laptop.")
         Logger.log(this, "Shared clipboard: ${files.size} file(s) from the laptop (also in Download/From laptop).")
+        Prefs(this).clipStatus = "✓ Working — last received ${files.size} file(s) at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -298,16 +305,19 @@ object ClipSend {
                     files.forEach { it.delete() }
                     toast("✓ On the laptop's clipboard — press Ctrl+V")
                     Logger.log(app, "Shared clipboard: sent ${files.size} file(s) to the laptop.")
+                    p.clipStatus = "✓ Working — last sent ${files.size} file(s) at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
                 } else if (!text.isNullOrEmpty()) {
                     ClipRelay(app).send("text", text, emptyList())
                     ClipService.lastFp = ClipRelay.fingerprint("text", text, null)
                     toast("✓ On the laptop's clipboard — press Ctrl+V")
                     Logger.log(app, "Shared clipboard: sent text to the laptop.")
+                    p.clipStatus = "✓ Working — last sent text at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
                 } else {
                     toast("Nothing copied yet.")
                 }
             } catch (e: Exception) {
                 toast("Couldn't send: ${e.message}")
+                p.clipStatus = "⚠ Couldn't send: ${e.message}"
                 Logger.log(app, "Shared clipboard: couldn't send (${e.message}).")
             }
         }.start()
