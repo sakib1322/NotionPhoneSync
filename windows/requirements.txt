@@ -2,3 +2,4 @@ requests==2.32.3
 pystray==0.19.5
 pillow==11.0.0
 qrcode==7.4.2
+cryptography==43.0.3

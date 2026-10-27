@@ -532,7 +532,8 @@ class MainActivity : AppCompatActivity() {
         val t = when {
             !prefs.clipboardSync -> "Off."
             prefs.token.isEmpty() || prefs.rootPageId.isEmpty() -> "Connect Notion first."
-            else -> prefs.clipStatus.ifEmpty { "Starting…" } +
+            else -> (if (ClipService.lan?.connected == true) "⚡ Fast mode: the laptop is on the same Wi-Fi.\n" else "") +
+                prefs.clipStatus.ifEmpty { "Starting…" } +
                 (if (!Perms.notifications(this)) "\nAllow notifications (above) to get the “Send copied to laptop” button." else "")
         }
         if (tv.text.toString() != t) tv.text = t

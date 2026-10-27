@@ -44,7 +44,7 @@ jobs:
           else { Write-Host "::notice::Google sign-in included (client $($env:GID.Substring(0,12))...)" }
 
       - name: Check the code
-        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py clip_relay.py clip_sync.py
+        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py clip_relay.py clip_sync.py lan.py
 
       - name: Open the window as a test
         env:

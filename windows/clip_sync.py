@@ -3,6 +3,8 @@ phone, and whatever the phone sends lands on this laptop's clipboard, ready for 
 Passwords copied from password managers are never sent."""
 import os
 import tempfile
+
+import lan
 import threading
 import time
 from datetime import datetime, timezone
@@ -173,6 +175,7 @@ class ClipSync:
         self.busy = False
         self.stop = threading.Event()
         self.last_error = ""
+        self.lan = lan.LanClient(lambda: self.settings.get("token"), self.enabled, self._lan_item, self.log)
         self.last_sent = 0
         self.last_received = 0
         self.boxes = 0
@@ -188,7 +191,8 @@ class ClipSync:
             return f"⚠ Problem: {self.last_error[:150]}"
         if not self.checked:
             return "Starting…"
-        parts = ["✓ Working"]
+        parts = ["✓ Working" + (" — fast mode: connected to the phone over Wi-Fi" if self.lan.connected
+                                else " (through Notion; fast mode turns on when the phone is on the same Wi-Fi)")]
         if self.last_sent:
             parts.append("last sent " + time.strftime("%I:%M %p", time.localtime(self.last_sent)))
         if self.last_received:
@@ -203,12 +207,13 @@ class ClipSync:
             return
         threading.Thread(target=self._watch, daemon=True).start()
         threading.Thread(target=self._receive, daemon=True).start()
+        self.lan.start()
 
     # Copied on the laptop -> phone
     def _watch(self):
         last = sequence()
         while not self.stop.is_set():
-            time.sleep(0.8)
+            time.sleep(0.25)
             seq = sequence()
             if seq == last:
                 continue
@@ -231,9 +236,10 @@ class ClipSync:
                 payload = [path]
             if kind == "files":
                 payload = [p for p in payload if os.path.isfile(p)]
-                big = [p for p in payload if os.path.getsize(p) > MAX_FILE]
+                # Over Wi-Fi, big files are fine; through Notion the limit is 100 MB.
+                big = [p for p in payload if os.path.getsize(p) > (lan.MAX_LAN_FILE if self.lan.connected else MAX_FILE)]
                 if big:
-                    self.log(f"Shared clipboard: skipped {len(big)} file(s) over 100 MB.")
+                    self.log(f"Shared clipboard: skipped {len(big)} file(s) that are too big to send.")
                 payload = [p for p in payload if p not in big]
                 if not payload:
                     return
@@ -241,11 +247,24 @@ class ClipSync:
             if fp == self.last_fp:
                 return  # just received this from the phone
             self.last_fp = fp
+            what = "text" if kind == "text" else ", ".join(os.path.basename(p) for p in payload)
+            t0 = time.time()
+            if kind == "text":
+                fast = self.lan.send("text", text=payload)
+            else:
+                fast = self.lan.send(kind, paths=payload)
+            if fast:
+                self.last_sent = time.time()
+                self.last_error = ""
+                self.log(f"Shared clipboard: sent {what[:80]} to the phone over Wi-Fi ({time.time() - t0:.1f}s).")
+                return
+            if kind != "text" and any(os.path.getsize(p) > MAX_FILE for p in payload):
+                self.log("Shared clipboard: files over 100 MB can only be sent when the phone is on the same Wi-Fi.")
+                return
             Relay(self.settings, self.db, "Laptop").send(kind, payload)
             self.last_sent = time.time()
             self.last_error = ""
-            what = "text" if kind == "text" else ", ".join(os.path.basename(p) for p in payload)
-            self.log(f"Shared clipboard: sent {what[:80]} to the phone.")
+            self.log(f"Shared clipboard: sent {what[:80]} to the phone ({time.time() - t0:.1f}s).")
         except Exception as e:
             self.last_error = str(e)
             self.log(f"Shared clipboard: couldn't send ({e}).")
@@ -279,12 +298,54 @@ class ClipSync:
                 self.last_error = str(e)
                 time.sleep(10)
 
+    def _put_text(self, text):
+        self.last_fp = fingerprint("text", text)
+        write_text(text)
+        self.ignore_seq = sequence()
+        self.last_received = time.time()
+
+    def _put_files(self, kind, paths):
+        self.last_fp = fingerprint("files", paths)
+        if kind == "image" and len(paths) == 1:
+            try:
+                write_image(paths[0])
+            except Exception:
+                write_files(paths)
+        else:
+            write_files(paths)
+        self.ignore_seq = sequence()
+        self.last_received = time.time()
+
+    @staticmethod
+    def _dest(name, taken):
+        safe = "".join("_" if c in '\\/:*?"<>|' else c for c in os.path.basename(name)) or "file"
+        dest = os.path.join(received_dir(), safe)
+        base, ext = os.path.splitext(dest)
+        n = 2
+        while os.path.exists(dest) or dest in taken:
+            dest = f"{base} ({n}){ext}"
+            n += 1
+        taken.add(dest)
+        return dest
+
+    def _lan_item(self, msg, link):
+        """An item the phone sent over Wi-Fi."""
+        if msg.get("kind") == "text":
+            self._put_text(msg.get("text") or "")
+            self.log("Shared clipboard: text from the phone (over Wi-Fi) is on the clipboard.")
+            return True
+        taken = set()
+        paths = link.recv_files(msg.get("files") or [], lambda n: self._dest(n, taken))
+        if paths:
+            self._put_files(msg.get("kind"), paths)
+            self.log(f"Shared clipboard: {len(paths)} file(s) from the phone (over Wi-Fi) are on the clipboard "
+                     "(also in Downloads\\From phone).")
+        return True
+
     def _apply(self, relay, item):
         import requests
         if item["kind"] == "text":
-            self.last_fp = fingerprint("text", item["text"])
-            write_text(item["text"])
-            self.ignore_seq = sequence()
+            self._put_text(item["text"])
             self.log("Shared clipboard: text from the phone is on the clipboard.")
             return
         # Pick names first, then download all files side by side.
@@ -313,13 +374,5 @@ class ClipSync:
             paths = list(ex.map(get, jobs))
         if not paths:
             return
-        self.last_fp = fingerprint("files", paths)
-        if item["kind"] == "image" and len(paths) == 1:
-            try:
-                write_image(paths[0])
-            except Exception:
-                write_files(paths)
-        else:
-            write_files(paths)
-        self.ignore_seq = sequence()
+        self._put_files(item["kind"], paths)
         self.log(f"Shared clipboard: {len(paths)} file(s) from the phone are on the clipboard (also in Downloads\\From phone).")
