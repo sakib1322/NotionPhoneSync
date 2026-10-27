@@ -36,6 +36,7 @@ class Settings:
         "closed_to_tray_hint": False,
         "extra_sources": [],
         "cache_limit_mb": 1024,
+        "clipboard_sync": True,   # shared clipboard with the phone
         "google_refresh": "",
         "google_email": "",
         "google_saved_at": 0,

@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 import requests
 
 import account
+import clip_sync
 import core
 import winutil
 from files_tab import FilesTab
@@ -69,6 +70,8 @@ class App:
         self._start_tray()
         threading.Thread(target=self._listen_for_second_launch, daemon=True).start()
         threading.Thread(target=self._scheduler, daemon=True).start()
+        self.clip = clip_sync.ClipSync(self)
+        self.clip.start()
         if minimized:
             self.root.withdraw()
         self.root.after(300, self._tick)
@@ -202,6 +205,15 @@ class App:
         ttk.Button(row, text="Move to a new device…", command=self.show_transfer).pack(side="left", padx=6)
         ttk.Button(row, text="Set up from code…", command=self.receive_transfer).pack(side="left", padx=6)
         self._account_ui()
+
+        self._h(f, "Shared clipboard")
+        self.clip_var = tk.BooleanVar(value=self.settings.get("clipboard_sync"))
+        ttk.Checkbutton(f, text="Share my clipboard with my phone (text, images and files up to 100 MB)",
+                        variable=self.clip_var,
+                        command=lambda: self.settings.set("clipboard_sync", self.clip_var.get())).pack(anchor="w")
+        self._p(f, "Copy on the laptop and it's on your phone's clipboard in a few seconds. Things sent from the phone "
+                   "land here, ready for Ctrl+V (files are also saved in Downloads\\From phone). Passwords copied from "
+                   "password managers are never sent. Items are removed from Notion after a day.", foreground="#666")
 
         self._h(f, "1. Integration secret")
         self._p(f, "From notion.so/profile/integrations (Developer tools → Connections). "
@@ -823,6 +835,23 @@ def selftest():
             traceback.print_exception(*e)
         sys.exit(1)
     assert app.settings.get("interval") == 45, app.settings.get("interval")
+    if clip_sync.WINDOWS:
+        # The shared clipboard really can read and write the Windows clipboard.
+        clip_sync.write_text("Notion Sync clipboard test")
+        assert clip_sync.read() == ("text", "Notion Sync clipboard test"), clip_sync.read()
+        tmp = os.path.join(tempfile.gettempdir(), "clip test.txt")
+        with open(tmp, "w") as fh:
+            fh.write("x")
+        clip_sync.write_files([tmp])
+        got = clip_sync.read()
+        assert got and got[0] == "files" and os.path.normcase(got[1][0]) == os.path.normcase(tmp), got
+        from PIL import Image
+        png = os.path.join(tempfile.gettempdir(), "clip test.png")
+        Image.new("RGB", (40, 30), (200, 30, 30)).save(png)
+        clip_sync.write_image(png)
+        got = clip_sync.read()
+        assert got and got[0] == "image" and got[1].size == (40, 30), got
+        print("CLIPBOARD OK")
     print("SELFTEST OK")
 
 
