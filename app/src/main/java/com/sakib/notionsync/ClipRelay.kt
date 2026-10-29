@@ -148,9 +148,16 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
      * Sends text, or files (kind "image" or "files"). Everything goes in ONE request:
      * the item appears complete and ready, or not at all.
      */
+    /**
+     * kind "text", "image"/"files" (with files), or one of the small notes
+     * "request" / "offer" / "failed" (text only). For files, text is an optional note
+     * (the offer they answer).
+     */
     fun send(kind: String, text: String?, files: List<File>) {
+        val textual = kind in setOf("text", "request", "offer", "failed")
         val db = dbId()
         val name = if (kind == "text") (text ?: "").trim().lineSequence().firstOrNull()?.take(80).orEmpty().ifEmpty { "Text" }
+        else if (textual) kind
         else files.joinToString(", ") { it.name }.take(200)
         val props = JSONObject()
             .put("Name", JSONObject().put("title", JSONArray().put(JSONObject().put("text", JSONObject().put("content", name)))))
@@ -159,9 +166,10 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
             .put("Ready", JSONObject().put("checkbox", true))
             .put("Files", JSONObject().put("number", files.size))
         var uploads: List<Pair<String, String>> = emptyList()
-        if (kind == "text") {
+        if (textual) {
             props.put("Text", JSONObject().put("rich_text", chunks(text ?: "")))
         } else {
+            if (!text.isNullOrEmpty()) props.put("Text", JSONObject().put("rich_text", chunks(text)))
             uploads = uploadAll(files)
             if (ensureAttachments(db)) {
                 val arr = JSONArray()
@@ -171,14 +179,14 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
                 props.put("Attachments", JSONObject().put("files", arr))
             }
         }
-        if (kind == "text" || props.has("Attachments")) {
+        if (textual || props.has("Attachments")) {
             try {
                 client.createRow(db, props)
                 return
             } catch (e: NotionException) {
                 if (e.status == 404) {
                     forget(db)
-                    if (kind == "text") { client.createRow(dbId(), props); return }
+                    if (textual) { client.createRow(dbId(), props); return }
                     props.remove("Attachments")  // new mailbox: use the older way below
                 } else if (e.status == 400 && props.has("Attachments")) {
                     prefsRaw.edit().putString("clip_att", "").apply()

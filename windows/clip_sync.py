@@ -1,6 +1,7 @@
 """Shared clipboard on the laptop: whatever you copy (text, images, files) goes to the
 phone, and whatever the phone sends lands on this laptop's clipboard, ready for Ctrl+V.
 Passwords copied from password managers are never sent."""
+import json
 import os
 import tempfile
 
@@ -158,6 +159,20 @@ def write_files(paths):
 
 # ---- syncing ------------------------------------------------------------------------------
 
+def offers_dir():
+    """Copied pictures waiting for the phone to ask for them (cleared after a day)."""
+    d = os.path.join(tempfile.gettempdir(), "NotionSync copied pictures")
+    os.makedirs(d, exist_ok=True)
+    for f in os.listdir(d):
+        p = os.path.join(d, f)
+        try:
+            if time.time() - os.path.getmtime(p) > 86400:
+                os.remove(p)
+        except OSError:
+            pass
+    return d
+
+
 def received_dir():
     d = os.path.join(os.path.expanduser("~"), "Downloads", "From phone")
     os.makedirs(d, exist_ok=True)
@@ -175,7 +190,11 @@ class ClipSync:
         self.busy = False
         self.stop = threading.Event()
         self.last_error = ""
-        self.lan = lan.LanClient(lambda: self.settings.get("token"), self.enabled, self._lan_item, self.log)
+        self.lan = lan.LanClient(lambda: self.settings.get("token"), self.enabled, self._lan_item, self.log,
+                                 on_fetch=self._lan_fetch)
+        self.offers = {}
+        self.offers_lock = threading.Lock()
+        self.fulfilling = set()
         self.last_sent = 0
         self.last_received = 0
         self.boxes = 0
@@ -228,46 +247,102 @@ class ClipSync:
                 threading.Thread(target=self._send, args=(item,), daemon=True).start()
 
     def _send(self, item):
+        """Text goes to the phone right away. Files and pictures are only *offered*: the phone
+        shows them and fetches them when you tap Get or Share (so moving lots of files around on
+        the laptop doesn't fill up the phone)."""
         kind, payload = item
         try:
             if kind == "image":
-                path = os.path.join(tempfile.gettempdir(), f"Copied image {time.strftime('%Y-%m-%d %H.%M.%S')}.png")
+                path = os.path.join(offers_dir(), f"Copied image {time.strftime('%Y-%m-%d %H.%M.%S')}.png")
                 payload.save(path, "PNG")
                 payload = [path]
             if kind == "files":
                 payload = [p for p in payload if os.path.isfile(p)]
-                # Over Wi-Fi, big files are fine; through Notion the limit is 100 MB.
-                big = [p for p in payload if os.path.getsize(p) > (lan.MAX_LAN_FILE if self.lan.connected else MAX_FILE)]
-                if big:
-                    self.log(f"Shared clipboard: skipped {len(big)} file(s) that are too big to send.")
-                payload = [p for p in payload if p not in big]
                 if not payload:
                     return
             fp = fingerprint("text" if kind == "text" else "files", payload)
             if fp == self.last_fp:
                 return  # just received this from the phone
             self.last_fp = fp
-            what = "text" if kind == "text" else ", ".join(os.path.basename(p) for p in payload)
             t0 = time.time()
-            if kind == "text":
-                fast = self.lan.send("text", text=payload)
-            else:
-                fast = self.lan.send(kind, paths=payload)
-            if fast:
+            if kind != "text":
+                self._offer(kind, payload)
+                return
+            if self.lan.send("text", text=payload):
                 self.last_sent = time.time()
                 self.last_error = ""
-                self.log(f"Shared clipboard: sent {what[:80]} to the phone over Wi-Fi ({time.time() - t0:.1f}s).")
+                self.log(f"Shared clipboard: sent text to the phone over Wi-Fi ({time.time() - t0:.1f}s).")
                 return
-            if kind != "text" and any(os.path.getsize(p) > MAX_FILE for p in payload):
-                self.log("Shared clipboard: files over 100 MB can only be sent when the phone is on the same Wi-Fi.")
-                return
-            Relay(self.settings, self.db, "Laptop").send(kind, payload)
+            Relay(self.settings, self.db, "Laptop").send("text", payload)
             self.last_sent = time.time()
             self.last_error = ""
-            self.log(f"Shared clipboard: sent {what[:80]} to the phone ({time.time() - t0:.1f}s).")
+            self.log(f"Shared clipboard: sent text to the phone ({time.time() - t0:.1f}s).")
         except Exception as e:
             self.last_error = str(e)
             self.log(f"Shared clipboard: couldn't send ({e}).")
+
+    # ---- files: offered, then sent on request --------------------------------------------
+
+    def _offer(self, kind, paths):
+        oid = os.urandom(8).hex()
+        files = [{"name": os.path.basename(p), "size": os.path.getsize(p)} for p in paths]
+        with self.offers_lock:
+            self.offers[oid] = {"kind": kind, "paths": list(paths), "time": time.time()}
+            while len(self.offers) > 50:
+                self.offers.pop(next(iter(self.offers)))
+        meta = {"t": "offer", "id": oid, "kind": kind, "files": files[:200], "count": len(files),
+                "total": sum(f["size"] for f in files)}
+        what = files[0]["name"] if len(files) == 1 else f"{len(files)} files"
+        if self.lan.note(meta):
+            self.log(f"Shared clipboard: told the phone about {what} over Wi-Fi (it downloads only if you tap Get).")
+        else:
+            Relay(self.settings, self.db, "Laptop").send("offer", json.dumps(meta))
+            self.log(f"Shared clipboard: told the phone about {what} (it downloads only if you tap Get).")
+        self.last_sent = time.time()
+        self.last_error = ""
+
+    def _lan_fetch(self, msg):
+        self._fulfil(msg.get("id") or "")
+
+    def _fulfil(self, oid):
+        """The phone asked for an offer's files: send them (Wi-Fi first, else Notion)."""
+        with self.offers_lock:
+            if oid in self.fulfilling:
+                return
+            self.fulfilling.add(oid)
+            off = self.offers.get(oid)
+        try:
+            why = None
+            if not off:
+                why = "It's no longer available (the laptop app was restarted, or it was copied too long ago)."
+            else:
+                gone = [p for p in off["paths"] if not os.path.isfile(p)]
+                if gone:
+                    why = f"{os.path.basename(gone[0])} was moved or deleted on the laptop."
+            if not why:
+                paths = off["paths"]
+                t0 = time.time()
+                if self.lan.send(off["kind"], paths=paths, for_id=oid):
+                    self.log(f"Shared clipboard: sent {len(paths)} file(s) to the phone over Wi-Fi ({time.time() - t0:.1f}s).")
+                    return
+                if any(os.path.getsize(p) > MAX_FILE for p in paths):
+                    why = "Files over 100 MB can only be sent when the phone is on the same Wi-Fi as the laptop."
+                else:
+                    Relay(self.settings, self.db, "Laptop").send(off["kind"], paths, note=oid)
+                    self.log(f"Shared clipboard: sent {len(paths)} file(s) to the phone ({time.time() - t0:.1f}s).")
+                    return
+            if not self.lan.note({"t": "gone", "id": oid, "why": why}):
+                Relay(self.settings, self.db, "Laptop").send("failed", json.dumps({"id": oid, "why": why}))
+            self.log(f"Shared clipboard: couldn't send what the phone asked for: {why}")
+        except Exception as e:
+            self.log(f"Shared clipboard: couldn't send what the phone asked for ({e}).")
+            try:
+                Relay(self.settings, self.db, "Laptop").send("failed", json.dumps({"id": oid, "why": str(e)}))
+            except Exception:
+                pass
+        finally:
+            with self.offers_lock:
+                self.fulfilling.discard(oid)
 
     # Sent from the phone -> laptop clipboard
     def _receive(self):
@@ -285,6 +360,11 @@ class ClipSync:
                     if item["id"] in seen:
                         continue
                     seen.add(item["id"])
+                    if item["kind"] == "request":
+                        threading.Thread(target=self._fulfil, args=(item["text"].strip(),), daemon=True).start()
+                        continue
+                    if item["kind"] in ("offer", "failed"):
+                        continue
                     self._apply(relay, item)
                     self.last_received = time.time()
                 if time.time() - last_cleanup > 3600:

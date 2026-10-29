@@ -209,6 +209,8 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                 if (excluded.any { rel.equals(it, true) || rel.startsWith("$it/", true) }) {
                     return FileVisitResult.SKIP_SUBTREE
                 }
+                // Files that came from the laptop's clipboard are already on the laptop.
+                if (rel.equals("Download/From laptop", true)) return FileVisitResult.SKIP_SUBTREE
                 if (rel.count { it == '/' } >= 40) return FileVisitResult.SKIP_SUBTREE
                 return FileVisitResult.CONTINUE
             }

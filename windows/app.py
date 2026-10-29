@@ -211,9 +211,10 @@ class App:
         ttk.Checkbutton(f, text="Share my clipboard with my phone (text, images and files up to 100 MB)",
                         variable=self.clip_var,
                         command=lambda: self.settings.set("clipboard_sync", self.clip_var.get())).pack(anchor="w")
-        self._p(f, "Copy on the laptop and it's on your phone's clipboard in a few seconds. Things sent from the phone "
-                   "land here, ready for Ctrl+V (files are also saved in Downloads\\From phone). Passwords copied from "
-                   "password managers are never sent. Items are removed from Notion after a day.", foreground="#666")
+        self._p(f, "Text you copy here is on your phone's clipboard a few seconds later. Files and pictures aren't sent "
+                   "automatically (to save the phone's space): the phone shows what you copied, and downloads it only when "
+                   "you tap Get or Share there. Things sent from the phone land here, ready for Ctrl+V (files are also saved "
+                   "in Downloads\\From phone). Passwords copied from password managers are never sent. ", foreground="#666")
         self.clip_status = self._p(f, "Starting…")
 
         self._h(f, "1. Integration secret")

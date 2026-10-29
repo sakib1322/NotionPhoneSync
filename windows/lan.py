@@ -188,10 +188,11 @@ class LanClient:
     on_item(meta, link) is called (on the link's thread) for each item the phone sends;
     it must read the item's files from the link and return True when it's applied."""
 
-    def __init__(self, get_token, enabled, on_item, log=lambda m: None):
+    def __init__(self, get_token, enabled, on_item, log=lambda m: None, on_fetch=lambda msg: None):
         self.get_token = get_token
         self.enabled = enabled
         self.on_item = on_item
+        self.on_fetch = on_fetch
         self.log = log
         self.link = None
         self.peer = None
@@ -269,6 +270,9 @@ class LanClient:
                     ev = self.acks.get(msg.get("id"))
                 if ev:
                     ev.set()
+            elif t == "fetch":
+                # The phone wants the files of an offer: send them from another thread.
+                threading.Thread(target=self.on_fetch, args=(msg,), daemon=True).start()
             elif t == "item":
                 try:
                     link.sock.settimeout(60)
@@ -279,7 +283,19 @@ class LanClient:
                     self.log(f"Shared clipboard: couldn't take an item from the phone over Wi-Fi ({e}).")
                     return
 
-    def send(self, kind, text=None, paths=()):
+    def note(self, msg):
+        """Sends a small message (offer / gone). True if it went out."""
+        link = self.link
+        if link is None:
+            return False
+        try:
+            link.send_msg(msg)
+            return True
+        except OSError:
+            link.close()
+            return False
+
+    def send(self, kind, text=None, paths=(), for_id=None):
         """Sends over Wi-Fi. True if the phone confirmed it; False means use Notion."""
         link = self.link
         if link is None:
@@ -290,7 +306,10 @@ class LanClient:
         with self.acks_lock:
             self.acks[iid] = ev
         try:
-            link.send_msg({"t": "item", "id": iid, "kind": kind, "text": text or "", "files": files}, paths)
+            meta = {"t": "item", "id": iid, "kind": kind, "text": text or "", "files": files}
+            if for_id:
+                meta["for"] = for_id
+            link.send_msg(meta, paths)
             total = sum(f["size"] for f in files)
             if ev.wait(4 + total / (1024 * 1024)):
                 return True

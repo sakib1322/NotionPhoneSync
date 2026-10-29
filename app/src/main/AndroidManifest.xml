@@ -84,6 +84,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".FetchActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NotionSync.Translucent" />
+
         <service
             android:name=".ClipService"
             android:exported="false"

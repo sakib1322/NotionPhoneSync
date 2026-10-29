@@ -127,7 +127,7 @@ class LanLink(val sock: Socket, key: ByteArray, initiator: Boolean) {
     fun recvMsg(): JSONObject = JSONObject(String(recvFrame()))
 
     /** Reads the bytes for files ([{name, size}]) into destFor(name); returns the files. */
-    fun recvFiles(files: JSONArray, destFor: (String) -> File): List<File> {
+    fun recvFiles(files: JSONArray, progress: (Long) -> Unit = {}, destFor: (String) -> File): List<File> {
         val out = ArrayList<File>()
         for (i in 0 until files.length()) {
             val f = files.getJSONObject(i)
@@ -139,6 +139,7 @@ class LanLink(val sock: Socket, key: ByteArray, initiator: Boolean) {
                     if (b.size > left) throw IOException("too much data")
                     o.write(b)
                     left -= b.size
+                    progress(b.size.toLong())
                 }
             }
             out.add(dest)
@@ -159,6 +160,7 @@ class LanServer(
     private val enabled: () -> Boolean,
     private val onItem: (JSONObject, LanLink) -> Boolean,
     private val log: (String) -> Unit,
+    private val onNote: (JSONObject) -> Unit = {},
     private val tcpPort: Int = Lan.TCP_PORT,
     private val udpPort: Int = Lan.UDP_PORT,
 ) {
@@ -278,6 +280,7 @@ class LanServer(
             when (msg.optString("t")) {
                 "ping" -> try { l.sendMsg(JSONObject().put("t", "pong")) } catch (e: Exception) { return }
                 "ack" -> acks[msg.optString("id")]?.countDown()
+                "offer", "gone" -> try { onNote(msg) } catch (e: Exception) { }
                 "item" -> try {
                     l.sock.soTimeout = 60_000
                     val ok = onItem(msg, l)
@@ -289,6 +292,12 @@ class LanServer(
                 }
             }
         }
+    }
+
+    /** Sends a small message (e.g. "fetch"); true if it went out. */
+    fun note(msg: JSONObject): Boolean {
+        val l = link ?: return false
+        return try { l.sendMsg(msg); true } catch (e: Exception) { l.close(); false }
     }
 
     /** Sends over Wi-Fi; true if the laptop confirmed it, false means use Notion. */

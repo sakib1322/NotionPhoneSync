@@ -69,6 +69,8 @@ class Syncer:
         skip_hidden = s.get("skip_hidden")
         skip_cloud = s.get("skip_cloud_only")
         excluded = {core.norm(e) for e in s.get("excluded")}
+        # Files that came from the phone's clipboard are already on the phone.
+        excluded.add(core.norm(os.path.join(os.path.expanduser("~"), "Downloads", "From phone")))
         labels = s.get("labels")
         known = self.db.load_all()
         if not known:

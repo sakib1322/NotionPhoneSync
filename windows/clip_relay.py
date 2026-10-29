@@ -127,32 +127,41 @@ class Relay:
         with ThreadPoolExecutor(max_workers=min(3, len(paths))) as ex:
             return list(ex.map(one, paths))
 
-    def send(self, kind, payload):
-        """kind 'text' (payload: str) or 'image'/'files' (payload: list of file paths).
-        Everything goes in ONE request: the item appears complete and ready, or not at all."""
+    NOTE_KINDS = ("text", "offer", "request", "failed")
+
+    def send(self, kind, payload, note=None):
+        """kind 'text' (payload: str), 'image'/'files' (payload: list of file paths), or one of the
+        small notes 'offer' / 'request' / 'failed' (payload: str). `note` rides along with files
+        (the offer they answer). Everything goes in ONE request: the item appears complete and
+        ready, or not at all."""
         dbid = self.db_id()
+        textual = kind in self.NOTE_KINDS
         if kind == "text":
             name = payload.strip().splitlines()[0][:80] if payload.strip() else "Text"
+        elif textual:
+            name = kind
         else:
             name = ", ".join(os.path.basename(p) for p in payload)[:200]
         props = {"Name": {"title": [{"text": {"content": name or "Clipboard"}}]},
                  "Kind": {"select": {"name": kind}}, "From": {"select": {"name": self.device}},
-                 "Ready": {"checkbox": True}, "Files": {"number": 0 if kind == "text" else len(payload)}}
+                 "Ready": {"checkbox": True}, "Files": {"number": 0 if textual else len(payload)}}
         uploads = []
-        if kind == "text":
+        if textual:
             props["Text"] = {"rich_text": _text_chunks(payload)}
         else:
+            if note:
+                props["Text"] = {"rich_text": _text_chunks(note)}
             uploads = self._upload_all(payload)
             if self._ensure_attachments(dbid):
                 props["Attachments"] = {"files": [{"type": "file_upload", "file_upload": {"id": fid}, "name": n[:100]}
                                                   for n, fid in uploads]}
-        if kind == "text" or "Attachments" in props:
+        if textual or "Attachments" in props:
             try:
                 return self.client.create_row(dbid, props)
             except NotionError as e:
                 if e.status == 404:  # mailbox was deleted: make or find a new one
                     self._forget(dbid)
-                    return self.send(kind, payload)
+                    return self.send(kind, payload, note)
                 if e.status != 400 or "Attachments" not in props:
                     raise
                 self.db.set_meta("clip_att", "")
