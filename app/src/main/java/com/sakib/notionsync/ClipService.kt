@@ -41,6 +41,7 @@ class ClipService : Service() {
 
     companion object {
         const val CHANNEL = "clipboard"
+        const val CHANNEL_IN = "clipboard_in"
         const val ID = 77
         @Volatile var lastFp: String = ""
         /** The direct Wi-Fi link to the laptop (null when the service isn't running). */
@@ -235,15 +236,62 @@ class ClipService : Service() {
         // Let the gallery and file apps see them.
         android.media.MediaScannerConnection.scanFile(this, files.map { it.path }.toTypedArray(), null, null)
         val uris = files.map { FileProvider.getUriForFile(this, "$packageName.files", it) }
+        val mimes = files.map { FileTypes.mime(it.name) }
+        val clip = ClipData(
+            android.content.ClipDescription(files.first().name, mimes.distinct().toTypedArray()),
+            ClipData.Item(uris.first())
+        )
+        for (u in uris.drop(1)) clip.addItem(ClipData.Item(u))
         main.post {
-            val clip = ClipData.newUri(contentResolver, files.first().name, uris.first())
-            for (u in uris.drop(1)) clip.addItem(ClipData.Item(u))
             cm.setPrimaryClip(clip)
             toast(if (files.size == 1) "Copied from laptop: ${files.first().name}" else "Copied ${files.size} files from the laptop")
         }
+        fileNotification(files, uris, mimes, clip)
         status(this, "Got ${files.joinToString(", ") { it.name }.take(60)} — paste it, or find it in Downloads › From laptop.")
         Logger.log(this, "Shared clipboard: ${files.size} file(s) from the laptop$via (also in Download/From laptop).")
         Prefs(this).clipStatus = "✓ Working$via — last received ${files.size} file(s) at ${now()}"
+    }
+
+    /**
+     * A pop-up for files that arrive, with Share (e.g. to WhatsApp) and Open. Many apps,
+     * WhatsApp included, only accept pasted text and pictures, not documents like PDFs,
+     * so sharing is the one-tap way to send those on.
+     */
+    private fun fileNotification(files: List<File>, uris: List<Uri>, mimes: List<String>, clip: ClipData) {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (nm.getNotificationChannel(CHANNEL_IN) == null) {
+                nm.createNotificationChannel(NotificationChannel(CHANNEL_IN, "Files from the laptop", NotificationManager.IMPORTANCE_HIGH))
+            }
+            val type = if (mimes.distinct().size == 1) mimes[0] else "*/*"
+            val send = if (uris.size == 1) {
+                Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_STREAM, uris[0])
+            } else {
+                Intent(Intent.ACTION_SEND_MULTIPLE).setType(type).putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            }
+            send.clipData = clip
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val chooser = Intent.createChooser(send, "Send to…").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val nid = 1000 + (System.currentTimeMillis() % 100000).toInt()
+            val sharePi = PendingIntent.getActivity(this, nid, chooser, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val b = NotificationCompat.Builder(this, CHANNEL_IN)
+                .setSmallIcon(R.drawable.ic_stat)
+                .setContentTitle(if (files.size == 1) "From laptop: ${files[0].name}" else "${files.size} files from the laptop")
+                .setContentText("Copied. Tap Share to send it on (e.g. WhatsApp), or paste it.")
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .addAction(0, "Share", sharePi)
+            if (uris.size == 1) {
+                val view = Intent(Intent.ACTION_VIEW).setDataAndType(uris[0], mimes[0])
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                val openPi = PendingIntent.getActivity(this, nid + 1, Intent.createChooser(view, "Open with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                b.addAction(0, "Open", openPi).setContentIntent(openPi)
+            } else {
+                b.setContentIntent(sharePi)
+            }
+            NotificationManagerCompat.from(this).notify(nid, b.build())
+        } catch (e: SecurityException) { }
     }
 
     /** An item the laptop sent over Wi-Fi. */
