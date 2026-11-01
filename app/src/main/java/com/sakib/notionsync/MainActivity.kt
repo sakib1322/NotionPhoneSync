@@ -644,10 +644,56 @@ class MainActivity : AppCompatActivity() {
         Thread {
             try {
                 Registry(this).apply { registerMe(Devices.myStatus(this@MainActivity)); all() }
-                runOnUiThread { showDevices() }
+                runOnUiThread {
+                    showDevices()
+                    Devices.conflict(this)?.let { askOwnPage(it) }
+                }
             } catch (e: Exception) { }
         }.start()
     }
+
+    /** This phone was backing up into another device's page: give it its own. */
+    private fun askOwnPage(owner: Devices.Device) {
+        if (conflictShown) return
+        conflictShown = true
+        Scheduler.stop(this)
+        val name = Devices.myName(this)
+        Thread {
+            val parents = try { Registry(this).candidateParents() } catch (e: Exception) { emptyList() }
+            runOnUiThread {
+                val labels = parents.map { "Inside “${it.second}”" }.toTypedArray()
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle("This phone needs its own backup page")
+                    .setMessage("“${prefs.rootTitle}” belongs to ${owner.name}, but this phone was backing up into it too. " +
+                        "Backup is paused so the two don't mix. Choose where to make “$name Backup” for this phone:")
+                    .setItems(if (labels.isEmpty()) arrayOf("No page found — connect a page to your integration in Notion first") else labels) { _, i ->
+                        if (parents.isEmpty()) { conflictShown = false; return@setItems }
+                        Thread {
+                            try {
+                                val title = "$name Backup"
+                                val pid = Registry(this).createPage(parents[i].first, title)
+                                Db.get(this).resetAll()
+                                prefs.rootPageId = pid
+                                prefs.rootTitle = title
+                                Registry(this).apply { registerMe(Devices.myStatus(this@MainActivity)); all() }
+                                runOnUiThread {
+                                    conflictShown = false
+                                    reloadSettingsUi()
+                                    toast("This phone now backs up to “$title”.")
+                                    Scheduler.syncNow(this)
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread { conflictShown = false; toast("Couldn't make the page: ${e.message}") }
+                            }
+                        }.start()
+                    }
+                    .setCancelable(false)
+                    .show()
+            }
+        }.start()
+    }
+
+    private var conflictShown = false
 
     private fun renameDevice() {
         val input = android.widget.EditText(this).apply { setText(Devices.myName(this@MainActivity)); setSelectAllOnFocus(true) }

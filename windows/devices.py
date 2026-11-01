@@ -42,12 +42,13 @@ def _plain(props, name):
 
 
 class Device:
-    __slots__ = ("row", "id", "name", "type", "page", "page_title", "seen", "status")
+    __slots__ = ("row", "id", "name", "type", "page", "page_title", "seen", "status", "created")
 
-    def __init__(self, row, id, name, type, page, page_title, seen, status=""):
+    def __init__(self, row, id, name, type, page, page_title, seen, status="", created=""):
         self.row, self.id, self.name, self.type, self.page, self.page_title, self.seen = \
             row, id, name, type, page, page_title, seen
         self.status = status or ""
+        self.created = created or ""  # when the device first registered
 
     def info(self):
         """What the device last reported (files, pending, syncing…)."""
@@ -69,7 +70,8 @@ class Device:
 
     @staticmethod
     def from_dict(d):
-        return Device(*(d.get(k) for k in Device.__slots__[:7]), status=d.get("status") or "")
+        return Device(*(d.get(k) for k in Device.__slots__[:7]), status=d.get("status") or "",
+                      created=d.get("created") or "")
 
     def seen_ago(self):
         if not self.seen:
@@ -182,6 +184,7 @@ class Registry:
                     d = Device(p["id"], _plain(pr, "Id"), _plain(pr, "Name"), _plain(pr, "Type"),
                                _plain(pr, "Page"), _plain(pr, "Page title"), seen)
                     d.status = _plain(pr, "Status")
+                    d.created = p.get("created_time", "")
                     out.append(d)
                 cursor = res.get("next_cursor") if res.get("has_more") else None
                 if not cursor:
@@ -193,8 +196,10 @@ class Registry:
         by_id = {}
         for d in self._rows():
             if d.id and d.id != HOME_ID:
+                first = min([x for x in (d.created, by_id[d.id].created if d.id in by_id else "") if x] or [""])
                 if d.id not in by_id or (d.seen or "") > (by_id[d.id].seen or ""):
                     by_id[d.id] = d
+                by_id[d.id].created = first
         devs = sorted(by_id.values(), key=lambda d: d.seen or "", reverse=True)
         self.settings.set("devices_cache", [d.as_dict() for d in devs])
         return devs

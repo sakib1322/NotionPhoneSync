@@ -125,6 +125,16 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             log("Not set up yet: add your Notion secret and page link.")
             return
         }
+        if (p.signedIn.isEmpty()) {
+            log("Sign in to the app to back up.")
+            return
+        }
+        // Never upload into another device's page.
+        try { Registry(ctx).all() } catch (e: Exception) { }
+        Devices.conflict(ctx)?.let { owner ->
+            log("Backup paused: “${p.rootTitle}” belongs to ${owner.name}. Open the app to give this phone its own page.")
+            return
+        }
         if (!Perms.hasStorage(ctx)) {
             log("No permission to read files. Tap \"Allow access to all files\".")
             return

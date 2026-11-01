@@ -18,10 +18,10 @@ object Devices {
 
     data class Device(
         val row: String, val id: String, val name: String, val type: String,
-        val page: String, val pageTitle: String, val seen: String, val status: String = ""
+        val page: String, val pageTitle: String, val seen: String, val status: String = "", val created: String = ""
     ) {
         fun toJson(): JSONObject = JSONObject().put("row", row).put("id", id).put("name", name).put("type", type)
-            .put("page", page).put("page_title", pageTitle).put("seen", seen).put("status", status)
+            .put("page", page).put("page_title", pageTitle).put("seen", seen).put("status", status).put("created", created)
 
         /** What the device last reported (files, pending, syncing…). */
         fun info(): JSONObject = try { JSONObject(status.ifEmpty { "{}" }) } catch (e: Exception) { JSONObject() }
@@ -49,7 +49,8 @@ object Devices {
         companion object {
             fun fromJson(o: JSONObject) = Device(
                 o.optString("row"), o.optString("id"), o.optString("name"), o.optString("type"),
-                o.optString("page"), o.optString("page_title"), o.optString("seen"), o.optString("status")
+                o.optString("page"), o.optString("page_title"), o.optString("seen"), o.optString("status"),
+                o.optString("created")
             )
         }
     }
@@ -92,6 +93,17 @@ object Devices {
             .put("cloud_files", n).put("cloud_bytes", b).put("last_sync", p.lastRun)
             .put("auto", p.autoSync).put("clipboard", p.clipboardSync)
             .put("wifi", JSONArray(ClipService.lan?.connectedNames() ?: emptyList<String>()))
+    }
+
+    /** The device that owns this phone's backup page, if that isn't this phone (the device that
+     *  registered with the page first owns it). A phone must never upload into another's page. */
+    fun conflict(ctx: Context): Device? {
+        val p = Prefs(ctx)
+        if (p.rootPageId.isEmpty()) return null
+        val same = cached(ctx).filter { it.page == p.rootPageId && it.id.isNotEmpty() }
+        if (same.size < 2 || same.none { it.id == p.deviceId }) return null
+        val owner = same.minWith(compareBy({ it.created.ifEmpty { "9999" } }, { it.id }))
+        return if (owner.id == p.deviceId) null else owner
     }
 
     /** Notion is needed unless every other recent device already got it over Wi-Fi. */
@@ -210,7 +222,7 @@ class Registry(private val ctx: Context) {
                     val pr = p.optJSONObject("properties") ?: continue
                     val seen = pr.optJSONObject("Seen")?.optJSONObject("date")?.optString("start").orEmpty()
                     out.add(Devices.Device(p.getString("id"), plain(pr, "Id"), plain(pr, "Name"), plain(pr, "Type"),
-                        plain(pr, "Page"), plain(pr, "Page title"), seen, plain(pr, "Status")))
+                        plain(pr, "Page"), plain(pr, "Page title"), seen, plain(pr, "Status"), p.optString("created_time")))
                 }
                 cursor = if (res.optBoolean("has_more")) res.optString("next_cursor").takeIf { it.isNotEmpty() && it != "null" } else null
             } while (cursor != null)
@@ -230,12 +242,16 @@ class Registry(private val ctx: Context) {
     /** Every device (one per id), newest-seen first; also caches them. */
     fun all(): List<Devices.Device> {
         val byId = LinkedHashMap<String, Devices.Device>()
-        for (d in rows()) {
+        val all = rows()
+        for (d in all) {
             if (d.id.isEmpty() || d.id == Devices.HOME_ID) continue
             val cur = byId[d.id]
             if (cur == null || d.seen > cur.seen) byId[d.id] = d
         }
-        val devs = byId.values.sortedByDescending { it.seen }
+        // When a device first registered (its earliest row) decides who owns a shared page.
+        val first = HashMap<String, String>()
+        for (d in all) if (d.created.isNotEmpty() && (first[d.id] == null || d.created < first[d.id]!!)) first[d.id] = d.created
+        val devs = byId.values.map { it.copy(created = first[it.id] ?: it.created) }.sortedByDescending { it.seen }
         prefs.devicesCache = JSONArray().apply { devs.forEach { put(it.toJson()) } }.toString()
         return devs
     }

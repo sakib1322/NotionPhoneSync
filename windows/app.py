@@ -15,6 +15,7 @@ import requests
 import account
 import clip_sync
 import device_setup
+import pagefix
 import devices
 import core
 import winutil
@@ -349,7 +350,8 @@ class App:
         """What this laptop reports to your other devices."""
         c = self.db.counts()
         try:
-            n, b = self.db.storage(self.settings.get("root_page"))[:2]
+            with self.db.lock:
+                n, b = self.db.conn.execute("SELECT COUNT(*), COALESCE(SUM(size),0) FROM files WHERE status='done'").fetchone()
         except Exception:
             n, b = None, None
         return {"platform": "windows", "version": BUILD, "syncing": self.running(),
@@ -584,10 +586,87 @@ class App:
                     last = time.time()
                     self.events.put(self._account_ui)
                     self.events.put(self._fill_devices)
+                    owner = pagefix.conflict(self.settings)
+                    if owner and not getattr(self, "conflict_open", False):
+                        self.conflict_open = True
+                        self.events.put(lambda o=owner: self._show_conflict(o))
                 except Exception as e:
                     self.log(f"Couldn't update your devices list ({e}).")
                     last = time.time() - 240
             self.stop_event.wait(20)
+
+    def _show_conflict(self, owner):
+        """This laptop has been backing up into another device's page: give it its own."""
+        self.stop_sync()
+        self.show_window()
+        win = tk.Toplevel(self.root)
+        win.title("This laptop needs its own backup page")
+        win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+        fr = ttk.Frame(win, padding=18)
+        fr.pack(fill="both", expand=True)
+        name = devices.my_name(self.settings)
+        ttk.Label(fr, text="This laptop needs its own backup page", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        ttk.Label(fr, wraplength=520, justify="left", text=(
+            f"“{self.settings.get('root_title')}” belongs to {owner.name}, but this laptop ({name}) was backing up "
+            "into it too. Backup is paused here so the two don't mix.\n\n"
+            f"The app will make “{name} Backup” for this laptop, back everything up there, and then remove the "
+            f"copies this laptop put in {owner.name}'s page (only its own uploads, and only once they're safely "
+            "in the new page).")).pack(anchor="w", pady=(6, 10))
+        ttk.Label(fr, text="Put the new page inside").pack(anchor="w")
+        where = ttk.Combobox(fr, state="readonly", width=48, values=["Loading…"])
+        where.current(0)
+        where.pack(anchor="w", pady=3)
+        ttk.Label(fr, text="…or paste a page link").pack(anchor="w", pady=(6, 0))
+        link = tk.StringVar()
+        ttk.Entry(fr, textvariable=link, width=50).pack(anchor="w", pady=3)
+        msg = ttk.Label(fr, text="", foreground="#b00020", wraplength=520)
+        msg.pack(anchor="w")
+        parents = []
+
+        def loaded(r, e):
+            def ui():
+                if e:
+                    where.config(values=["(couldn't load — paste a page link)"])
+                    where.current(0)
+                    return
+                parents[:] = r or []
+                where.config(values=[t for _, t in parents] or ["(none — paste a page link)"])
+                where.current(0)
+            self.events.put(ui)
+        account.run_async(lambda: devices.Registry(self.settings, self.db).candidate_parents(), loaded)
+
+        def go():
+            pid = parse_page_id(link.get()) if link.get().strip() else (parents[where.current()][0] if parents else None)
+            if not pid:
+                msg.config(text="Choose where to put the new page, or paste a page link.")
+                return
+            msg.config(text="Making the page…", foreground="#555")
+            title = f"{name} Backup"
+
+            def work():
+                reg = devices.Registry(self.settings, self.db)
+                new = reg.create_page(pid, title)
+                n = pagefix.move_to(self.settings, self.db, new, title, self.log)
+                reg.register_me(self.device_status())
+                reg.all()
+                return n
+
+            def done(n, e):
+                def ui():
+                    if e:
+                        msg.config(text=f"Couldn't make the page: {e}. Make sure that page is connected to your "
+                                        "integration in Notion (••• → Connections).", foreground="#b00020")
+                        return
+                    self.conflict_open = False
+                    win.destroy()
+                    self._reload_settings_ui()
+                    self._fill_devices()
+                    messagebox.showinfo(TITLE, f"This laptop now backs up to “{title}”. The backup starts now.")
+                    self.sync_now()
+                self.events.put(ui)
+            account.run_async(work, done)
+        ttk.Button(fr, text=f"Make “{name} Backup” and move there", command=go).pack(anchor="w", pady=10)
 
     def notify(self, title, msg):
         if self.tray is not None:
@@ -716,7 +795,7 @@ class App:
 
     def ready(self):
         return bool(self.settings.get("signed_in") and self.settings.get("token") and self.settings.get("root_page")
-                    and self.settings.get("folders"))
+                    and self.settings.get("folders") and not pagefix.conflict(self.settings))
 
     # ---- syncing -----------------------------------------------------------------
 
@@ -745,6 +824,12 @@ class App:
         finally:
             self.settings.set("last_run", time.time())
             self._set_status("", 0, 0)
+        # Moved to its own page: once everything is backed up there, remove its old copies.
+        if pagefix.pending_cleanup() and not self.stop_event.is_set() and getattr(self.syncer, "pending", 0) <= 1:
+            try:
+                pagefix.cleanup(self.settings, self.db, self.log, self.stop_event)
+            except Exception as e:
+                self.log(f"Couldn't finish removing the old copies yet ({e}); will try after the next backup.")
 
     def _set_status(self, text, done, total):
         self.status = {"text": text, "done": done, "total": total}
