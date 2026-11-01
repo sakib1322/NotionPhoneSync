@@ -174,7 +174,8 @@ class SignInActivity : AppCompatActivity() {
         }) { r, e ->
             if (e != null) { stepSignIn("Couldn't reach Notion: ${e.message}"); return@bg }
             @Suppress("UNCHECKED_CAST")
-            val (devs, parents) = r as Pair<List<Devices.Device>, List<Pair<String, String>>>
+            val pair = r as Pair<List<Devices.Device>, List<Pair<String, String>>>
+            val (devs, parents) = pair
             stepChoose(devs, parents)
         }
     }
@@ -268,7 +269,8 @@ class SignInActivity : AppCompatActivity() {
                 return@bg
             }
             @Suppress("UNCHECKED_CAST")
-            val (page, title) = r as Pair<String, String>
+            val pair = r as Pair<String, String>
+            val (page, title) = pair
             SetupSync.newDevice(this, js, name, page, title)
             finishSetup()
         }
