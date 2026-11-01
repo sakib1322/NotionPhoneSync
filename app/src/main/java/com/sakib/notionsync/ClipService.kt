@@ -46,12 +46,28 @@ class ClipService : Service() {
         const val ID_OFFER = 78
         const val ID = 77
         @Volatile var lastFp: String = ""
-        /** The direct Wi-Fi link to the laptop (null when the service isn't running). */
+        /** The direct Wi-Fi links to your laptops (null when the service isn't running). */
         @Volatile var lan: LanServer? = null
+        @Volatile var instance: ClipService? = null
+
+        /** Item ids already handled, so a copy that came over Wi-Fi and through Notion counts once. */
+        private val seenItems = object : LinkedHashMap<String, Long>() {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?) = size > 500
+        }
+
+        /** True if this item id is new (and remembers it). */
+        fun markSeen(id: String): Boolean {
+            if (id.isEmpty()) return true
+            synchronized(seenItems) {
+                if (seenItems.containsKey(id)) return false
+                seenItems[id] = System.currentTimeMillis()
+                return true
+            }
+        }
 
         fun start(ctx: Context) {
             val p = Prefs(ctx)
-            if (!p.clipboardSync || p.token.isEmpty() || p.rootPageId.isEmpty()) return
+            if (p.signedIn.isEmpty() || !p.clipboardSync || p.token.isEmpty() || p.rootPageId.isEmpty()) return
             try {
                 ContextCompat.startForegroundService(ctx, Intent(ctx, ClipService::class.java))
             } catch (e: Exception) {
@@ -124,7 +140,8 @@ class ClipService : Service() {
         if (lan == null) {
             val p = Prefs(this)
             val app = applicationContext
-            lan = LanServer({ p.token }, { p.clipboardSync && p.token.isNotEmpty() }, ::lanItem, { Logger.log(app, it) }, ::lanNote).also { it.start() }
+            lan = LanServer({ p.token }, { p.signedIn.isNotEmpty() && p.clipboardSync && p.token.isNotEmpty() }, ::lanItem,
+                { Logger.log(app, it) }, ::lanNote, { p.deviceId to Devices.myName(app) }).also { it.start() }
             try {
                 val wm = applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
                 multicast = wm.createMulticastLock("notionsync-clip").apply { setReferenceCounted(false); acquire() }
@@ -137,7 +154,13 @@ class ClipService : Service() {
         return START_STICKY
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
     override fun onDestroy() {
+        if (instance === this) instance = null
         lan?.stop()
         lan = null
         try { multicast?.release() } catch (e: Exception) { }
@@ -157,7 +180,13 @@ class ClipService : Service() {
         val pm = getSystemService(PowerManager::class.java)
         while (alive) {
             try {
-                if (prefs.token.isEmpty() || !prefs.clipboardSync) break
+                if (prefs.token.isEmpty() || !prefs.clipboardSync || prefs.signedIn.isEmpty()) break
+                // Keep this phone in your devices list, and the list fresh.
+                if (System.currentTimeMillis() - prefs.devicesSeenAt > 6 * 3600_000L) {
+                    try { Registry(this).apply { registerMe(); all() } } catch (e: Exception) {
+                        prefs.devicesSeenAt = System.currentTimeMillis() - 6 * 3600_000L + 600_000L
+                    }
+                }
                 val relay = ClipRelay(this)
                 for (item in relay.poll(since)) {
                     if (item.id in seen) continue
@@ -171,11 +200,11 @@ class ClipService : Service() {
                     lastCleanup = System.currentTimeMillis()
                     try { relay.cleanup() } catch (e: Exception) { }
                 }
-                if (failures > 0 || !prefs.clipStatus.startsWith("✓")) prefs.clipStatus = "✓ Working — waiting for things copied on the laptop."
+                if (failures > 0 || !prefs.clipStatus.startsWith("✓")) prefs.clipStatus = "✓ Working — waiting for things copied on your other devices."
                 val fast = lan?.connected == true
                 if (fast != lastFast) {
                     lastFast = fast
-                    status(this, if (fast) "Fast mode: connected to the laptop over Wi-Fi." else "Copy on the laptop → paste here. Tap to send what you copied here.")
+                    status(this, if (fast) "Fast mode over Wi-Fi with ${lan?.connectedNames()?.joinToString(", ")}." else "Copy on another device → paste here. Tap to send what you copied here.")
                 }
                 failures = 0
             } catch (e: InterruptedException) {
@@ -201,20 +230,20 @@ class ClipService : Service() {
 
     private fun now() = java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
 
-    private fun putText(text: String, via: String) {
+    private fun putText(text: String, via: String, from: String = "another device") {
         val cm = getSystemService(ClipboardManager::class.java)
         lastFp = ClipRelay.fingerprint("text", text, null)
         main.post {
-            cm.setPrimaryClip(ClipData.newPlainText("From laptop", text))
-            toast("Copied from laptop: ${text.trim().take(40)}")
+            cm.setPrimaryClip(ClipData.newPlainText("From $from", text))
+            toast("Copied from $from: ${text.trim().take(40)}")
         }
-        status(this, "Got text from the laptop — paste it anywhere.")
-        Prefs(this).clipStatus = "✓ Working$via — last received text at ${now()}"
-        Logger.log(this, "Shared clipboard: got text from the laptop$via.")
+        status(this, "Got text from $from — paste it anywhere.")
+        Prefs(this).clipStatus = "✓ Working$via — last received text from $from at ${now()}"
+        Logger.log(this, "Shared clipboard: got text from $from$via.")
     }
 
     /** Free file names in Download › From laptop. */
-    private fun targets(names: List<String>): List<File> {
+    fun targets(names: List<String>): List<File> {
         val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "From laptop")
         dir.mkdirs()
         val out = ArrayList<File>()
@@ -231,7 +260,7 @@ class ClipService : Service() {
         return out
     }
 
-    private fun putFiles(files: List<File>, via: String, forId: String = "") {
+    fun putFiles(files: List<File>, via: String, forId: String = "") {
         if (files.isEmpty()) return
         val cm = getSystemService(ClipboardManager::class.java)
         lastFp = ClipRelay.fingerprint("files", null, files)
@@ -299,21 +328,25 @@ class ClipService : Service() {
         } catch (e: SecurityException) { }
     }
 
-    /** An item the laptop sent over Wi-Fi. */
-    private fun lanItem(meta: org.json.JSONObject, link: LanLink): Boolean {
-        if (meta.optString("kind") == "text") {
-            putText(meta.optString("text"), " (Wi-Fi)")
-            return true
-        }
-        val arr = meta.optJSONArray("files") ?: return true
+    /** An item a laptop sent over Wi-Fi. */
+    private fun lanItem(meta: org.json.JSONObject, link: LanLink, peer: String): Boolean {
+        val arr = meta.optJSONArray("files")
         val forId = meta.optString("for")
-        val names = (0 until arr.length()).map { arr.getJSONObject(it).optString("name", "file") }
-        if (forId.isNotEmpty() && forId in ClipFetch.finished) {
-            // Already got these (e.g. through Notion): read and throw away.
-            val tmp = File(cacheDir, "discard").apply { mkdirs() }
-            link.recvFiles(arr) { File(tmp, "x") }.forEach { it.delete() }
+        if (!markSeen(meta.optString("item")) || (forId.isNotEmpty() && forId in ClipFetch.finished)) {
+            // Already got it (e.g. through Notion): read and throw away.
+            if (arr != null && arr.length() > 0) {
+                val tmp = File(cacheDir, "discard").apply { mkdirs() }
+                link.recvFiles(arr) { File(tmp, "x") }.forEach { it.delete() }
+            }
             return true
         }
+        val from = meta.optString("from_name").ifEmpty { Devices.nameOf(this, peer) ?: "laptop" }
+        if (meta.optString("kind") == "text") {
+            putText(meta.optString("text"), " (Wi-Fi)", from)
+            return true
+        }
+        if (arr == null) return true
+        val names = (0 until arr.length()).map { arr.getJSONObject(it).optString("name", "file") }
         val dest = targets(names)
         var i = 0
         val files = link.recvFiles(arr, { n -> if (forId.isNotEmpty()) ClipFetch.progress(forId, n) }) { dest[i++] }
@@ -321,10 +354,14 @@ class ClipService : Service() {
         return true
     }
 
-    /** Small messages from the laptop over Wi-Fi: a new offer, or "can't send that". */
-    private fun lanNote(msg: org.json.JSONObject) {
+    /** Small messages from a laptop over Wi-Fi: a new offer, or "can't send that". */
+    private fun lanNote(msg: org.json.JSONObject, peer: String) {
         when (msg.optString("t")) {
-            "offer" -> showOffer(msg)
+            "offer" -> if (markSeen(msg.optString("item").ifEmpty { msg.optString("id") })) {
+                if (msg.optString("dev").isEmpty()) msg.put("dev", peer)
+                if (msg.optString("devName").isEmpty()) msg.put("devName", Devices.nameOf(this, peer) ?: "laptop")
+                showOffer(msg)
+            }
             "gone" -> failedFetch(msg.optString("id"), msg.optString("why"))
         }
     }
@@ -354,7 +391,7 @@ class ClipService : Service() {
             )
             val n = NotificationCompat.Builder(this, CHANNEL_OFFER)
                 .setSmallIcon(R.drawable.ic_stat)
-                .setContentTitle("Copied on laptop: ${ClipFetch.describe(offer)}")
+                .setContentTitle("Copied on ${offer.optString("devName").ifEmpty { "another device" }}: ${ClipFetch.describe(offer)}")
                 .setContentText("Not downloaded. Tap Get to copy it here, or Share to send it on.")
                 .setSilent(true)
                 .setAutoCancel(true)
@@ -364,31 +401,62 @@ class ClipService : Service() {
                 .build()
             NotificationManagerCompat.from(this).notify(ID_OFFER, n)
         } catch (e: SecurityException) { }
-        Prefs(this).clipStatus = "✓ Working — laptop offered ${ClipFetch.describe(offer)} at ${now()} (tap Get in the notification)"
+        Prefs(this).clipStatus = "✓ Working — ${offer.optString("devName").ifEmpty { "another device" }} offered ${ClipFetch.describe(offer)} at ${now()} (tap Get in the notification)"
     }
 
     private fun receive(relay: ClipRelay, item: ClipRelay.Item) {
-        if (item.kind == "text") { putText(item.text, ""); return }
+        if (item.kind == "request") return  // phones don't offer files; laptops answer these
+        if (!markSeen(item.item)) return    // already got it over Wi-Fi
+        if (item.kind == "text") { putText(item.text, "", item.senderName); return }
         if (item.kind == "offer") {
-            try { showOffer(org.json.JSONObject(item.text)) } catch (e: Exception) { }
+            try {
+                val o = org.json.JSONObject(item.text)
+                if (o.optString("dev").isEmpty()) o.put("dev", item.sender)
+                if (o.optString("devName").isEmpty()) o.put("devName", item.senderName)
+                showOffer(o)
+            } catch (e: Exception) { }
             return
         }
         if (item.kind == "failed") {
             try { val j = org.json.JSONObject(item.text); failedFetch(j.optString("id"), j.optString("why")) } catch (e: Exception) { }
             return
         }
-        if (item.kind == "request") return
+        if (item.to.isEmpty()) {
+            // Files another device sent to everyone: like an offer, nothing downloads until you tap Get.
+            val links = relay.filesOf(item)
+            if (links.isEmpty()) return
+            val note = try { org.json.JSONObject(item.text) } catch (e: Exception) { org.json.JSONObject() }
+            val sizes = HashMap<String, Long>()
+            note.optJSONArray("files")?.let { a -> for (k in 0 until a.length()) a.getJSONObject(k).let { sizes[it.optString("name")] = it.optLong("size") } }
+            val files = org.json.JSONArray()
+            val urls = org.json.JSONArray()
+            var total = 0L
+            for ((n, u) in links) {
+                val sz = sizes[n] ?: 0L
+                total += sz
+                files.put(org.json.JSONObject().put("name", n).put("size", sz))
+                urls.put(u)
+            }
+            showOffer(org.json.JSONObject().put("t", "offer").put("id", item.item).put("kind", item.kind)
+                .put("files", files).put("count", links.size).put("total", total).put("urls", urls)
+                .put("dev", item.sender).put("devName", item.senderName))
+            return
+        }
         val forId = item.text.trim()
         if (forId.isNotEmpty() && forId in ClipFetch.finished) return
         val links = relay.filesOf(item)
         if (links.isEmpty()) return
         if (forId.isEmpty() || ClipFetch.jobs[forId]?.watched != true) {
-            main.post { toast(if (links.size == 1) "Receiving ${links[0].first} from the laptop…" else "Receiving ${links.size} files from the laptop…") }
+            main.post { toast(if (links.size == 1) "Receiving ${links[0].first} from ${item.senderName}…" else "Receiving ${links.size} files from ${item.senderName}…") }
         }
+        putFiles(downloadAll(links), "", forId)
+    }
+
+    /** Downloads files (name, url) into Download › From laptop, side by side. */
+    fun downloadAll(links: List<Pair<String, String>>): List<File> {
         val dest = targets(links.map { it.first })
-        // Download all files side by side.
-        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(4, links.size))
-        val files = try {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(4, maxOf(1, links.size)))
+        return try {
             links.indices.map { i ->
                 pool.submit<File> {
                     val f = dest[i]
@@ -402,7 +470,6 @@ class ClipService : Service() {
         } finally {
             pool.shutdown()
         }
-        putFiles(files, "", forId)
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -473,53 +540,51 @@ object ClipSend {
         return out
     }
 
-    /** Sends in the background; reports with toasts. */
+    /** Sends to your other devices in the background (Wi-Fi first, Notion for the rest); reports with toasts. */
     fun send(ctx: Context, text: String?, uris: List<Uri>) {
         val app = ctx.applicationContext
         val main = Handler(Looper.getMainLooper())
         fun toast(s: String) = main.post { Toast.makeText(app, s, Toast.LENGTH_SHORT).show() }
         val p = Prefs(app)
-        if (p.token.isEmpty() || p.rootPageId.isEmpty()) { toast("Connect Notion in the app first."); return }
+        if (p.signedIn.isEmpty() || p.token.isEmpty() || p.rootPageId.isEmpty()) { toast("Sign in to the app first."); return }
+        fun stamp() = java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
         Thread {
             try {
+                val iid = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+                ClipService.markSeen(iid)
                 if (uris.isNotEmpty()) {
                     val files = copyIn(app, uris)
                     if (files.isEmpty()) { toast("Couldn't read what you copied."); return@Thread }
                     val fp = ClipRelay.fingerprint("files", null, files)
                     val images = files.all { FileTypes.blockType(it.name) == "image" }
                     val kind = if (images) "image" else "files"
-                    if (ClipService.lan?.send(kind, null, files) == true) {
-                        ClipService.lastFp = fp
-                        files.forEach { it.delete() }
-                        toast("✓ On the laptop's clipboard — press Ctrl+V")
-                        Logger.log(app, "Shared clipboard: sent ${files.size} file(s) to the laptop over Wi-Fi.")
-                        p.clipStatus = "✓ Working (Wi-Fi) — last sent ${files.size} file(s) at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
-                        return@Thread
+                    toast(if (files.size == 1) "Sending ${files.first().name}…" else "Sending ${files.size} files…")
+                    val reached = ClipService.lan?.send(kind, null, files, null, iid) ?: emptySet()
+                    if (Devices.needNotion(app, reached)) {
+                        if (files.any { it.length() > ClipRelay.MAX_FILE }) {
+                            toast(if (reached.isEmpty()) "Files over 100 MB can only be sent to devices on the same Wi-Fi."
+                                  else "Sent over Wi-Fi. Files over 100 MB can't reach your other devices through Notion.")
+                        } else {
+                            val note = org.json.JSONObject().put("push", true).put("files", org.json.JSONArray().apply {
+                                files.forEach { put(org.json.JSONObject().put("name", it.name).put("size", it.length())) }
+                            })
+                            ClipRelay(app).send(kind, note.toString(), files, item = iid)
+                        }
                     }
-                    if (files.any { it.length() > ClipRelay.MAX_FILE }) {
-                        toast("Files over 100 MB can only be sent when the laptop is on the same Wi-Fi.")
-                        return@Thread
-                    }
-                    toast(if (files.size == 1) "Sending ${files.first().name} to the laptop…" else "Sending ${files.size} files to the laptop…")
-                    ClipRelay(app).send(kind, null, files)
                     ClipService.lastFp = fp
                     files.forEach { it.delete() }
-                    toast("✓ On the laptop's clipboard — press Ctrl+V")
-                    Logger.log(app, "Shared clipboard: sent ${files.size} file(s) to the laptop.")
-                    p.clipStatus = "✓ Working — last sent ${files.size} file(s) at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
+                    toast("✓ Sent — on a laptop press Ctrl+V; other phones get a notification")
+                    Logger.log(app, "Shared clipboard: sent ${files.size} file(s) to your other devices" +
+                        (if (reached.isNotEmpty()) " (Wi-Fi to ${reached.size})" else "") + ".")
+                    p.clipStatus = "✓ Working — last sent ${files.size} file(s) at ${stamp()}"
                 } else if (!text.isNullOrEmpty()) {
-                    if (ClipService.lan?.send("text", text, emptyList()) == true) {
-                        ClipService.lastFp = ClipRelay.fingerprint("text", text, null)
-                        toast("✓ On the laptop's clipboard — press Ctrl+V")
-                        Logger.log(app, "Shared clipboard: sent text to the laptop over Wi-Fi.")
-                        p.clipStatus = "✓ Working (Wi-Fi) — last sent text at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
-                        return@Thread
-                    }
-                    ClipRelay(app).send("text", text, emptyList())
+                    val reached = ClipService.lan?.send("text", text, emptyList(), null, iid) ?: emptySet()
+                    if (Devices.needNotion(app, reached)) ClipRelay(app).send("text", text, emptyList(), item = iid)
                     ClipService.lastFp = ClipRelay.fingerprint("text", text, null)
-                    toast("✓ On the laptop's clipboard — press Ctrl+V")
-                    Logger.log(app, "Shared clipboard: sent text to the laptop.")
-                    p.clipStatus = "✓ Working — last sent text at " + java.text.SimpleDateFormat("h:mm a").format(java.util.Date())
+                    toast("✓ On your other devices' clipboards")
+                    Logger.log(app, "Shared clipboard: sent text to your other devices" +
+                        (if (reached.isNotEmpty()) " (Wi-Fi to ${reached.size})" else "") + ".")
+                    p.clipStatus = "✓ Working — last sent text at ${stamp()}"
                 } else {
                     toast("Nothing copied yet.")
                 }

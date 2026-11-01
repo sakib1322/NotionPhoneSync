@@ -1,5 +1,7 @@
-"""The shared clipboard's mailbox: a small Notion database both apps use to hand
-copied items (text, images, files) to the other device. Items are removed after a day."""
+"""The shared clipboard's mailbox: a small Notion database all your devices use to hand
+copied items (text, images, files) to each other. Each item says which device sent it
+(Sender), which device it is for when it's meant for one (To), and carries an item id so a
+copy that also went over Wi-Fi isn't applied twice. Items are removed after a day."""
 import hashlib
 import os
 import time
@@ -39,10 +41,13 @@ def fingerprint(kind, payload):
 
 
 class Relay:
-    def __init__(self, settings, db, device="Laptop", stop=None):
+    def __init__(self, settings, db, device="Laptop", stop=None, dev_id=None, dev_name=None):
+        import devices
         self.settings = settings
         self.db = db
-        self.device = device
+        self.device = device  # the device type ("Laptop" / "Phone"), as older versions used
+        self.dev_id = dev_id or devices.my_id(settings)
+        self.dev_name = dev_name or devices.my_name(settings)
         # Sending and fetching go first; the background checks queue normally.
         self.client = NotionClient(settings.get("token"), stop, priority=True)
         self.bg = NotionClient(settings.get("token"), stop)
@@ -105,16 +110,22 @@ class Relay:
 
     # ---- sending -------------------------------------------------------------------------
 
-    def _ensure_attachments(self, dbid):
-        """Adds the 'Attachments' files column (one request per mailbox, ever)."""
-        if self.db.get_meta("clip_att") == dbid:
+    COLUMNS = {"Attachments": {"files": {}}, "Sender": {"rich_text": {}}, "Sender name": {"rich_text": {}},
+               "Item": {"rich_text": {}}, "To": {"rich_text": {}}}
+
+    def _ensure_columns(self, dbid):
+        """Adds the newer columns (files, sender, recipient, item id): one request per mailbox, ever."""
+        if self.db.get_meta("clip_cols") == dbid:
             return True
         try:
-            self.client._call("PATCH", f"/databases/{dbid}", json_body={"properties": {"Attachments": {"files": {}}}})
+            self.client._call("PATCH", f"/databases/{dbid}", json_body={"properties": self.COLUMNS})
         except NotionError:
             return False
-        self.db.set_meta("clip_att", dbid)
+        self.db.set_meta("clip_cols", dbid)
         return True
+
+    def _ensure_attachments(self, dbid):
+        return self._ensure_columns(dbid)
 
     def _upload_all(self, paths):
         """Uploads files side by side; returns [(name, upload id)] in order."""
@@ -129,7 +140,7 @@ class Relay:
 
     NOTE_KINDS = ("text", "offer", "request", "failed")
 
-    def send(self, kind, payload, note=None):
+    def send(self, kind, payload, note=None, to=None, item=None):
         """kind 'text' (payload: str), 'image'/'files' (payload: list of file paths), or one of the
         small notes 'offer' / 'request' / 'failed' (payload: str). `note` rides along with files
         (the offer they answer). Everything goes in ONE request: the item appears complete and
@@ -145,6 +156,10 @@ class Relay:
         props = {"Name": {"title": [{"text": {"content": name or "Clipboard"}}]},
                  "Kind": {"select": {"name": kind}}, "From": {"select": {"name": self.device}},
                  "Ready": {"checkbox": True}, "Files": {"number": 0 if textual else len(payload)}}
+        if self._ensure_columns(dbid):
+            rt = lambda v: {"rich_text": [{"text": {"content": (v or "")[:1900]}}]}
+            props.update({"Sender": rt(self.dev_id), "Sender name": rt(self.dev_name),
+                          "Item": rt(item or os.urandom(8).hex()), "To": rt(to or "")})
         uploads = []
         if textual:
             props["Text"] = {"rich_text": _text_chunks(payload)}
@@ -161,13 +176,16 @@ class Relay:
             except NotionError as e:
                 if e.status == 404:  # mailbox was deleted: make or find a new one
                     self._forget(dbid)
-                    return self.send(kind, payload, note)
+                    return self.send(kind, payload, note, to, item)
                 if e.status != 400 or "Attachments" not in props:
                     raise
                 self.db.set_meta("clip_att", "")
         # Older way (if the files column can't be used): files as blocks, then mark ready.
         props.pop("Attachments", None)
         props["Ready"] = {"checkbox": False}
+        for k in ("Sender", "Sender name", "Item", "To"):
+            if self.db.get_meta("clip_cols") != dbid:
+                props.pop(k, None)
         row = self.client.create_row(dbid, props)
         for n, fid in uploads:
             btype = core.block_type(core.upload_name(n))
@@ -204,8 +222,12 @@ class Relay:
                 raise
             for p in res.get("results", []):
                 pr = p.get("properties") or {}
-                if (((pr.get("From") or {}).get("select") or {}).get("name")) == self.device:
-                    continue
+                sender = self._plain(pr, "Sender")
+                to = self._plain(pr, "To")
+                if sender == self.dev_id or (not sender and self._from(pr) == self.device):
+                    continue  # sent by this device (or, from an older version, by this kind of device)
+                if to and to != self.dev_id:
+                    continue  # meant for another device
                 if not (pr.get("Ready") or {}).get("checkbox"):
                     continue
                 kind = ((pr.get("Kind") or {}).get("select") or {}).get("name") or "text"
@@ -217,9 +239,19 @@ class Relay:
                         files.append((f.get("name") or "file", url))
                 count = (pr.get("Files") or {}).get("number") or 0
                 out.append({"id": p["id"], "kind": kind, "text": text, "created": p.get("created_time", ""),
-                            "files": files if len(files) >= count else None})
+                            "files": files if len(files) >= count else None, "sender": sender,
+                            "sender_name": self._plain(pr, "Sender name") or self._from(pr) or "another device",
+                            "item": self._plain(pr, "Item") or p["id"], "to": to})
         out.sort(key=lambda x: x["created"])
         return out
+
+    @staticmethod
+    def _plain(pr, name):
+        return "".join(t.get("plain_text", "") for t in (pr.get(name) or {}).get("rich_text", []) or [])
+
+    @staticmethod
+    def _from(pr):
+        return ((pr.get("From") or {}).get("select") or {}).get("name") or ""
 
     def files_of(self, item):
         """(name, url) of the files attached to an item."""
@@ -251,7 +283,10 @@ class Relay:
                 created = datetime.fromisoformat(p.get("created_time", "").replace("Z", "+00:00"))
             except ValueError:
                 continue
-            if created >= cutoff or (((p.get("properties") or {}).get("From") or {}).get("select") or {}).get("name") != self.device:
+            pr = p.get("properties") or {}
+            sender = self._plain(pr, "Sender")
+            mine = sender == self.dev_id or (not sender and self._from(pr) == self.device)
+            if created >= cutoff or not mine:
                 continue
             try:
                 self.bg.archive_page(p["id"])

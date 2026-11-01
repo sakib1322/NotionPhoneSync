@@ -131,6 +131,14 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        // The app needs you to be signed in. A phone already signed in with Google before this
+        // version counts as signed in (it keeps its name, page and backup).
+        if (prefs.signedIn.isEmpty() && prefs.googleEmail.isNotEmpty() && prefs.token.isNotEmpty()) prefs.signedIn = "google"
+        if (prefs.signedIn.isEmpty()) {
+            startActivity(Intent(this, SignInActivity::class.java))
+            finish()
+            return
+        }
         Notif.ensureChannel(this)
         setContentView(R.layout.activity_main)
         bindViews()
@@ -141,6 +149,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.btn_transfer_out).setOnClickListener { account.showTransfer() }
         findViewById<View>(R.id.btn_transfer_in).setOnClickListener { account.receiveTransfer() }
         findViewById<MaterialButton>(R.id.acct_manage).setOnClickListener { account.signInOrOut() }
+        findViewById<MaterialButton>(R.id.btn_rename).setOnClickListener { renameDevice() }
+        refreshDevices()
         ClipService.start(this)
         reloadSettingsUi()
         space = SpaceTools(this)
@@ -478,6 +488,7 @@ class MainActivity : AppCompatActivity() {
         sync(R.id.sw_charging, prefs.chargingOnly)
         sync(R.id.sw_hidden, prefs.skipHidden)
         sync(R.id.sw_clip, prefs.clipboardSync)
+        showDevices()
         ClipService.start(this)
         if (swAuto.isChecked != prefs.autoSync) swAuto.isChecked = prefs.autoSync
         showAccount()
@@ -527,12 +538,61 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** "This phone" card: its name and page, and your other devices. */
+    private fun showDevices() {
+        findViewById<TextView>(R.id.dev_name)?.text = Devices.myName(this)
+        findViewById<TextView>(R.id.dev_page)?.text = "Backs up to “${prefs.rootTitle.ifEmpty { "Phone Backup" }}”"
+        val me = prefs.deviceId
+        val others = Devices.cached(this).filter { it.id != me }
+        findViewById<TextView>(R.id.dev_list)?.text = if (others.isEmpty())
+            "They'll show up here once they're signed in."
+        else others.joinToString("\n") { "• ${it.name} (${it.type}, seen ${it.seenAgo()})" }
+    }
+
+    private fun refreshDevices() {
+        showDevices()
+        Thread {
+            try {
+                Registry(this).apply { registerMe(); all() }
+                runOnUiThread { showDevices() }
+            } catch (e: Exception) { }
+        }.start()
+    }
+
+    private fun renameDevice() {
+        val input = android.widget.EditText(this).apply { setText(Devices.myName(this@MainActivity)); setSelectAllOnFocus(true) }
+        val box = android.widget.FrameLayout(this).apply {
+            val p = (20 * resources.displayMetrics.density).toInt()
+            setPadding(p, p / 2, p, 0)
+            addView(input)
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("Name this phone")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val n = input.text.toString().trim()
+                if (n.isEmpty()) return@setPositiveButton
+                prefs.deviceName = n.take(60)
+                showDevices()
+                Thread {
+                    try {
+                        Registry(this).renameMe(n)
+                        runOnUiThread { showDevices(); account.saveNow(interactive = false) }
+                    } catch (e: Exception) {
+                        runOnUiThread { toast("Renamed here, but couldn't update Notion: ${e.message}") }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun showClipStatus() {
         val tv = findViewById<TextView>(R.id.clip_status) ?: return
         val t = when {
             !prefs.clipboardSync -> "Off."
             prefs.token.isEmpty() || prefs.rootPageId.isEmpty() -> "Connect Notion first."
-            else -> (if (ClipService.lan?.connected == true) "⚡ Fast mode: the laptop is on the same Wi-Fi.\n" else "") +
+            else -> (if (ClipService.lan?.connected == true) "⚡ Fast mode over Wi-Fi with ${ClipService.lan?.connectedNames()?.joinToString(", ")}.\n" else "") +
                 prefs.clipStatus.ifEmpty { "Starting…" } +
                 (if (!Perms.notifications(this)) "\nAllow notifications (above) to get the “Send copied to laptop” button." else "")
         }

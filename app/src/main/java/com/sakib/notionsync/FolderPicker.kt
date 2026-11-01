@@ -10,7 +10,19 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 object Sources {
     fun list(prefs: Prefs): List<Pair<String, String>> {
         val out = LinkedHashMap<String, String>()
-        if (prefs.rootPageId.isNotBlank()) out[prefs.rootPageId] = prefs.rootTitle.ifBlank { "Phone Backup" }
+        if (prefs.rootPageId.isNotBlank()) {
+            val me = prefs.deviceName.ifBlank { prefs.rootTitle.ifBlank { "Phone Backup" } }
+            out[prefs.rootPageId] = if (prefs.deviceName.isBlank()) me else "$me (this phone)"
+        }
+        // Every device on your account, by its name.
+        try {
+            val arr = org.json.JSONArray(prefs.devicesCache)
+            for (i in 0 until arr.length()) {
+                val d = arr.getJSONObject(i)
+                val page = d.optString("page")
+                if (page.isNotEmpty() && page !in out) out[page] = d.optString("name").ifBlank { d.optString("page_title", "Backup") }
+            }
+        } catch (e: Exception) { }
         for (line in prefs.extraSources.lines()) {
             val id = line.substringBefore('|').trim()
             if (id.isNotEmpty() && id !in out) out[id] = line.substringAfter('|', "Backup").trim()

@@ -37,6 +37,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SignInActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="barcode_ui" />

@@ -40,7 +40,12 @@ class Settings:
         "google_refresh": "",
         "google_email": "",
         "google_saved_at": 0,
-        "google_saved_hash": "",   # most space files opened from the cloud may use      # other backup pages to browse, as "id|title"
+        "google_saved_hash": "",
+        "device_id": "",          # this laptop's id among your devices
+        "device_name": "",        # its name (default: the computer's name)
+        "signed_in": "",          # "google" or "code" once signed in (the app needs it)
+        "devices_cache": [],      # your devices, as last read from Notion
+        "devices_seen_at": 0.0,   # most space files opened from the cloud may use      # other backup pages to browse, as "id|title"
     }
 
     def __init__(self):

@@ -120,6 +120,41 @@ class Prefs(ctx: Context) {
         get() = sp.getString("clip_status", "") ?: ""
         set(v) { sp.edit().putString("clip_status", v).apply() }
 
+    /** This phone's id among your devices (made once). */
+    var deviceId: String
+        get() {
+            var v = sp.getString("device_id", "") ?: ""
+            if (v.isEmpty()) {
+                v = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+                sp.edit().putString("device_id", v).apply()
+            }
+            return v
+        }
+        set(v) { sp.edit().putString("device_id", v).apply() }
+
+    /** Its name (empty = the phone's own name). */
+    var deviceName: String
+        get() = sp.getString("device_name", "") ?: ""
+        set(v) { sp.edit().putString("device_name", v).apply() }
+
+    /** "google" or "code" once signed in (the app needs it). */
+    var signedIn: String
+        get() = sp.getString("signed_in", "") ?: ""
+        set(v) { sp.edit().putString("signed_in", v).apply() }
+
+    /** Your devices, as last read from Notion (JSON array). */
+    var devicesCache: String
+        get() = sp.getString("devices_cache", "[]") ?: "[]"
+        set(v) { sp.edit().putString("devices_cache", v).apply() }
+
+    var devicesDb: String
+        get() = sp.getString("devices_db", "") ?: ""
+        set(v) { sp.edit().putString("devices_db", v).apply() }
+
+    var devicesSeenAt: Long
+        get() = sp.getLong("devices_seen_at", 0L)
+        set(v) { sp.edit().putLong("devices_seen_at", v).apply() }
+
     var filesGrid: Boolean
         get() = sp.getBoolean("files_grid", true)
         set(v) { sp.edit().putBoolean("files_grid", v).apply() }

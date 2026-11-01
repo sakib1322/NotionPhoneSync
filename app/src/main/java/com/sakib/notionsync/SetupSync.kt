@@ -40,9 +40,13 @@ object SetupSync {
             .put("cache_limit_mb", p.cacheLimitMb).put("cloud_previews", p.cloudPreviews)
         val sources = JSONArray()
         Sources.list(p).forEach { (id, t) -> sources.put(JSONObject().put("id", id).put("title", t)) }
+        // Each device's own settings, by device id (several phones can share one account).
+        val devs = base.optJSONObject("devices") ?: JSONObject()
+        devs.put(p.deviceId, JSONObject(phone.toString()).put("name", Devices.myName(ctx)).put("type", "phone"))
         return base.put("version", 1)
             .put("notion_token", p.token)
             .put("phone", phone)
+            .put("devices", devs)
             .put("sources", mergeSources(base.optJSONArray("sources"), sources))
             .put("updated", System.currentTimeMillis())
     }
@@ -96,6 +100,42 @@ object SetupSync {
         p.cloudPreviews = phone.optBoolean("cloud_previews", p.cloudPreviews)
         p.autoSync = phone.optBoolean("auto_sync", p.autoSync)
         return true
+    }
+
+    /** Continues an existing phone (from your devices list) on this phone. */
+    fun applyDevice(ctx: Context, json: JSONObject?, dev: Devices.Device) {
+        val p = Prefs(ctx)
+        json?.optString("notion_token")?.takeIf { it.isNotEmpty() }?.let { p.token = it }
+        p.deviceId = dev.id
+        p.deviceName = dev.name
+        var section = json?.optJSONObject("devices")?.optJSONObject(dev.id)
+        if (section == null && json?.optJSONObject("phone")?.optString("root_page") == dev.page) section = json.optJSONObject("phone")
+        if (p.rootPageId.isNotEmpty() && p.rootPageId != dev.page) Db.get(ctx).resetAll()
+        p.rootPageId = dev.page
+        p.rootTitle = dev.pageTitle.ifEmpty { section?.optString("root_title").orEmpty().ifEmpty { "${dev.name} Backup" } }
+        section?.let { applyOptions(p, it) }
+    }
+
+    /** Sets this phone up as a new device with its own backup page. */
+    fun newDevice(ctx: Context, json: JSONObject?, name: String, page: String, title: String) {
+        val p = Prefs(ctx)
+        json?.optString("notion_token")?.takeIf { it.isNotEmpty() }?.let { p.token = it }
+        p.deviceId = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+        p.deviceName = name
+        if (p.rootPageId.isNotEmpty() && p.rootPageId != page) Db.get(ctx).resetAll()
+        p.rootPageId = page
+        p.rootTitle = title
+    }
+
+    private fun applyOptions(p: Prefs, phone: JSONObject) {
+        p.wifiOnly = phone.optBoolean("wifi_only", p.wifiOnly)
+        p.chargingOnly = phone.optBoolean("charging_only", p.chargingOnly)
+        p.skipHidden = phone.optBoolean("skip_hidden", p.skipHidden)
+        p.excluded = phone.optString("excluded", p.excluded)
+        p.intervalMinutes = phone.optInt("interval", p.intervalMinutes)
+        p.cacheLimitMb = phone.optInt("cache_limit_mb", p.cacheLimitMb)
+        p.cloudPreviews = phone.optBoolean("cloud_previews", p.cloudPreviews)
+        p.autoSync = phone.optBoolean("auto_sync", p.autoSync)
     }
 
     // ---- transfer code / QR ---------------------------------------------------------------

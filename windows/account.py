@@ -76,8 +76,13 @@ def _merge_sources(a, b):
 
 
 def payload(settings, base=None):
+    import devices
     base = dict(base or {})
     laptop = {k: settings.get(k) for k in LAPTOP_KEYS}
+    # Each device's own settings, by device id (several laptops can share one account).
+    devs = dict(base.get("devices") or {})
+    devs[devices.my_id(settings)] = dict(laptop, name=devices.my_name(settings), type="laptop")
+    base["devices"] = devs
     srcs = []
     if settings.get("root_page"):
         srcs.append({"id": settings.get("root_page"), "title": settings.get("root_title") or "Laptop Backup"})
@@ -103,6 +108,49 @@ def sources_in(js):
             seen.add(sid)
             res.append((sid, t or "Backup"))
     return res
+
+
+def apply_device(settings, js, dev):
+    """Continues an existing laptop (from your devices list) on this computer."""
+    if js and js.get("notion_token"):
+        settings.set("token", js["notion_token"])
+    settings.set("device_id", dev.id)
+    settings.set("device_name", dev.name)
+    section = ((js or {}).get("devices") or {}).get(dev.id)
+    if not section and ((js or {}).get("laptop") or {}).get("root_page") == dev.page:
+        section = js["laptop"]
+    section = dict(section or {})
+    section["root_page"] = dev.page
+    section["root_title"] = dev.page_title or section.get("root_title") or f"{dev.name} Backup"
+    _apply_section(settings, section)
+
+
+def new_device(settings, js, name, page_id, page_title):
+    """Sets this computer up as a new laptop with its own backup page."""
+    import devices
+    if js and js.get("notion_token"):
+        settings.set("token", js["notion_token"])
+    settings.set("device_id", os.urandom(6).hex())
+    settings.set("device_name", name)
+    _apply_section(settings, {"root_page": page_id, "root_title": page_title})
+    devices.my_id(settings)
+
+
+def _apply_section(settings, lap):
+    for k in LAPTOP_KEYS:
+        if k in lap and lap[k] is not None and k not in ("folders", "labels"):
+            settings.set(k, lap[k])
+    folders = [f for f in (lap.get("folders") or []) if os.path.isdir(f)]
+    labels = dict(lap.get("labels") or {})
+    if not folders:
+        import winutil
+        folders = winutil.default_folders()
+        by_name = {v.lower(): v for v in labels.values()}
+        for f in folders:
+            n = os.path.basename(f.rstrip("\\/"))
+            labels.setdefault(core.norm(f), by_name.get(n.lower(), n))
+    settings.set("folders", folders)
+    settings.set("labels", labels)
 
 
 def apply(settings, js):

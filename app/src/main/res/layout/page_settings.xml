@@ -138,6 +138,31 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- This phone and your devices -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout style="@style/CardBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="This phone" />
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                        <TextView android:id="@+id/dev_name" style="@style/Body" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textStyle="bold" />
+                        <TextView android:id="@+id/dev_page" style="@style/Muted" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textSize="12sp" />
+                    </LinearLayout>
+                    <com.google.android.material.button.MaterialButton android:id="@+id/btn_rename" style="@style/Widget.Material3.Button.TonalButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Rename" />
+                </LinearLayout>
+
+                <TextView style="@style/Label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Your other devices" />
+                <TextView android:id="@+id/dev_list" style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Notion -->
         <com.google.android.material.card.MaterialCardView
             style="@style/Card"
@@ -325,12 +350,12 @@
 
                 <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Shared clipboard" />
 
-                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_clip" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Share the clipboard with the laptop" />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_clip" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Share the clipboard with my other devices" />
 
                 <TextView android:id="@+id/clip_status" style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" />
 
                 <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
-                    android:text="Text you copy on the laptop is on the phone a few seconds later — just paste. Files and pictures aren't downloaded automatically (to save space): a quiet notification shows them, and you tap Get to copy them here or Share to send them on (e.g. WhatsApp). To send from the phone, copy, then tap “Send copied to laptop” in the notification, the “Send clipboard” Quick Settings tile, or Share › Copy to laptop. On the same Wi-Fi everything goes straight across (much faster)." />
+                    android:text="Text you copy on any of your devices is on this phone a few seconds later — just paste. Files and pictures aren\'t downloaded automatically (to save space): a quiet notification shows them, and you tap Get to copy them here or Share to send them on (e.g. WhatsApp). To send from this phone, copy, then tap “Send copied” in the notification, the “Send clipboard” Quick Settings tile, or Share › Copy to laptop. On the same Wi-Fi as a laptop everything goes straight across (much faster)." />
 
                 <com.google.android.material.button.MaterialButton android:id="@+id/btn_clip_send" style="@style/Widget.Material3.Button.TonalButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Send what I copied" />
             </LinearLayout>

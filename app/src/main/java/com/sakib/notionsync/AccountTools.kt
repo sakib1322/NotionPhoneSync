@@ -114,19 +114,39 @@ class AccountTools(
         res.toGoogleSignInAccount()?.email?.let { if (it.isNotEmpty()) prefs.googleEmail = it }
     }
 
+    /** Signs out: the app stops syncing and shows the sign-in screen until you sign in again. */
+    fun signOut() {
+        MaterialAlertDialogBuilder(act)
+            .setTitle("Sign out?")
+            .setMessage("The app stops syncing until you sign in again. Your files on this phone and in the cloud are unchanged.")
+            .setPositiveButton("Sign out") { _, _ ->
+                prefs.googleEmail = ""
+                prefs.googleName = ""
+                prefs.googlePhoto = ""
+                prefs.googleSavedAt = 0
+                prefs.signedIn = ""
+                ClipService.stop(act)
+                Scheduler.stop(act)
+                act.startActivity(android.content.Intent(act, SignInActivity::class.java))
+                act.finish()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     fun signInOrOut() {
+        if (prefs.googleEmail.isEmpty() && prefs.signedIn.isNotEmpty()) {
+            MaterialAlertDialogBuilder(act)
+                .setTitle("Signed in with a setup code")
+                .setItems(arrayOf("Sign out")) { _, _ -> signOut() }
+                .show()
+            return
+        }
         if (prefs.googleEmail.isNotEmpty()) {
             MaterialAlertDialogBuilder(act)
                 .setTitle(prefs.googleEmail)
                 .setItems(arrayOf("Save setup now", "Sign out")) { _, i ->
-                    if (i == 0) saveNow(interactive = true) else {
-                        prefs.googleEmail = ""
-                        prefs.googleName = ""
-                        prefs.googlePhoto = ""
-                        prefs.googleSavedAt = 0
-                        onChanged()
-                        toast("Signed out. Your files and setup on this phone are unchanged.")
-                    }
+                    if (i == 0) saveNow(interactive = true) else signOut()
                 }
                 .show()
             return
@@ -152,6 +172,33 @@ class AccountTools(
             }.start()
         }
     }
+
+    /**
+     * For the sign-in screen: Google sign-in, then reads the saved setup.
+     * done(cloud setup or empty JSON, error message or null) on the main thread.
+     */
+    fun signInGetSetup(done: (JSONObject?, String?) -> Unit) {
+        token(interactive = true) { t ->
+            if (t == null) { done(null, "Sign-in was cancelled or didn't work."); return@token }
+            Thread {
+                loadProfile(t)
+                var err: String? = null
+                val cloud = try { SetupSync.download(t) } catch (e: Exception) { err = e.message; null }
+                main.post { done(cloud ?: JSONObject(), err) }
+            }.start()
+        }
+    }
+
+    /** For the sign-in screen: scan or paste a setup code, then cb(setup). */
+    fun pickCode(cb: (JSONObject) -> Unit) {
+        codeCallback = cb
+        MaterialAlertDialogBuilder(act)
+            .setTitle("Use a setup code")
+            .setItems(arrayOf("Scan the QR code", "Paste a code")) { _, i -> if (i == 0) scan() else paste() }
+            .show()
+    }
+
+    private var codeCallback: ((JSONObject) -> Unit)? = null
 
     private fun askRestore(cloud: JSONObject) {
         val title = cloud.optJSONObject("phone")?.optString("root_title") ?: "your backup"
@@ -259,10 +306,11 @@ class AccountTools(
 
     private fun useCode(text: String) {
         val json = SetupSync.readCode(text)
-        if (json == null) {
+        if (json == null || json.optString("notion_token").isEmpty()) {
             toast("That isn't a Notion Sync setup code.")
             return
         }
+        codeCallback?.let { codeCallback = null; it(json); return }
         MaterialAlertDialogBuilder(act)
             .setTitle("Use this setup?")
             .setMessage("This phone will connect to the same Notion account. Files already in the cloud won't be uploaded again.")

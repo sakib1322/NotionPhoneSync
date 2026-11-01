@@ -196,6 +196,8 @@ class NotionClient(private val token: String, private val priority: Boolean = fa
 
     fun patchDatabase(dbId: String, body: JSONObject): JSONObject = patch("/databases/$dbId", body)
 
+    fun patchPage(pageId: String, body: JSONObject): JSONObject = patch("/pages/$pageId", body)
+
     fun createDatabase(body: JSONObject): String = post("/databases", body).getString("id")
 
     fun createRow(dbId: String, properties: JSONObject): String =

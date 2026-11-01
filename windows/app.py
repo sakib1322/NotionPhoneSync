@@ -14,6 +14,8 @@ import requests
 
 import account
 import clip_sync
+import device_setup
+import devices
 import core
 import winutil
 from files_tab import FilesTab
@@ -72,6 +74,11 @@ class App:
         threading.Thread(target=self._scheduler, daemon=True).start()
         self.clip = clip_sync.ClipSync(self)
         self.clip.start()
+        self.signin = None
+        if not self.settings.get("signed_in"):
+            self.signin = device_setup.SignInScreen(self, self._signed_in)
+            minimized = False
+        threading.Thread(target=self._devices_loop, daemon=True).start()
         if minimized:
             self.root.withdraw()
         self.root.after(300, self._tick)
@@ -200,22 +207,35 @@ class App:
         self.acct_lbl = self._p(f, "", foreground="#555")
         row = ttk.Frame(f)
         row.pack(anchor="w", pady=4)
-        self.google_btn = ttk.Button(row, command=self.google_click)
+        self.google_btn = ttk.Button(row, text="Sign out", command=self.sign_out_click)
         self.google_btn.pack(side="left", padx=(0, 6))
         ttk.Button(row, text="Move to a new device…", command=self.show_transfer).pack(side="left", padx=6)
-        ttk.Button(row, text="Set up from code…", command=self.receive_transfer).pack(side="left", padx=6)
+
+        self._h(f, "This laptop and your devices")
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=2)
+        self.dev_lbl = ttk.Label(row, text="", font=("Segoe UI", 10, "bold"))
+        self.dev_lbl.pack(side="left")
+        ttk.Button(row, text="Rename…", command=self.rename_device).pack(side="left", padx=10)
+        self.devs_lbl = self._p(f, "", foreground="#555")
         self._account_ui()
 
         self._h(f, "Shared clipboard")
         self.clip_var = tk.BooleanVar(value=self.settings.get("clipboard_sync"))
-        ttk.Checkbutton(f, text="Share my clipboard with my phone (text, images and files up to 100 MB)",
+        ttk.Checkbutton(f, text="Share my clipboard with my other devices",
                         variable=self.clip_var,
                         command=lambda: self.settings.set("clipboard_sync", self.clip_var.get())).pack(anchor="w")
-        self._p(f, "Text you copy here is on your phone's clipboard a few seconds later. Files and pictures aren't sent "
-                   "automatically (to save the phone's space): the phone shows what you copied, and downloads it only when "
-                   "you tap Get or Share there. Things sent from the phone land here, ready for Ctrl+V (files are also saved "
-                   "in Downloads\\From phone). Passwords copied from password managers are never sent. ", foreground="#666")
+        self._p(f, "Text you copy here is on your other devices' clipboards a few seconds later. Files and pictures "
+                   "aren't sent automatically (to save space): the other devices show what you copied and download it "
+                   "only when you tap Get there. Things sent from a phone land here, ready for Ctrl+V (files are also "
+                   "saved in Downloads\\From phone). Passwords copied from password managers are never sent.", foreground="#666")
         self.clip_status = self._p(f, "Starting…")
+        orow = ttk.Frame(f)
+        orow.pack(anchor="w", pady=2)
+        self.offer_lbl = ttk.Label(orow, text="", wraplength=600)
+        self.offer_lbl.pack(side="left")
+        self.offer_btn = ttk.Button(orow, text="Get", command=self._get_offer)
+        self.offer_shown = None
 
         self._h(f, "1. Integration secret")
         self._p(f, "From notion.so/profile/integrations (Developer tools → Connections). "
@@ -379,16 +399,86 @@ class App:
 
     def _account_ui(self):
         email = self.settings.get("google_email")
-        if not account.available():
-            text = "Google sign-in will be available after the next update. Until then, use a transfer code."
-        elif email:
+        how = self.settings.get("signed_in")
+        if email:
             saved = self.settings.get("google_saved_at")
-            text = f"Signed in as {email}" + (time.strftime(" · setup saved %d %b, %I:%M %p", time.localtime(saved)) if saved else "")
+            text = f"Signed in with Google as {email}" + (time.strftime(" · setup saved %d %b, %I:%M %p", time.localtime(saved)) if saved else "")
+        elif how:
+            text = "Signed in with a setup code."
         else:
-            text = "Sign in with Google to keep your setup in your Google account. On a new laptop, just sign in and everything comes back."
+            text = "Not signed in."
         self.acct_lbl.config(text=text)
-        self.google_btn.config(text="Sign out of Google" if email else "Sign in with Google",
-                               state="normal" if account.available() else "disabled")
+        try:
+            self.dev_lbl.config(text=f"This laptop: {devices.my_name(self.settings)}"
+                                     f"  ·  backs up to “{self.settings.get('root_title') or 'its page'}”")
+            me = devices.my_id(self.settings)
+            others = [d for d in devices.cached(self.settings) if d.id != me]
+            self.devs_lbl.config(text=("Your other devices: " + ", ".join(
+                f"{d.name} ({d.type}, seen {d.seen_ago()})" for d in others)) if others else
+                "Your other devices will show up here once they're signed in.")
+        except Exception:
+            pass
+
+    def sign_out_click(self):
+        if not messagebox.askyesno(TITLE, "Sign out? The app stops syncing until you sign in again. "
+                                          "Your files on this laptop and in the cloud are unchanged."):
+            return
+        account.sign_out(self.settings)
+        self.settings.set("signed_in", "")
+        self.stop_sync()
+        self.signin = device_setup.SignInScreen(self, self._signed_in)
+
+    def _signed_in(self):
+        if self.signin:
+            self.signin.close()
+            self.signin = None
+        self._reload_settings_ui()
+        try:
+            winutil.set_startup(self.settings.get("startup"))
+        except OSError:
+            pass
+        self.log(f"Signed in. This laptop is “{devices.my_name(self.settings)}”, backing up to "
+                 f"“{self.settings.get('root_title')}”.")
+
+    def rename_device(self):
+        new = simpledialog.askstring(TITLE, "Name this laptop:", initialvalue=devices.my_name(self.settings), parent=self.root)
+        if not new or not new.strip():
+            return
+
+        def work():
+            devices.Registry(self.settings, self.db).rename_me(new)
+        account.run_async(work, lambda r, e: self.events.put(lambda: (
+            self._account_ui(), e and messagebox.showerror(TITLE, f"Renamed here, but couldn't update Notion: {e}"))))
+        self.settings.set("device_name", new.strip()[:60])
+        self._account_ui()
+
+    def _devices_loop(self):
+        """Keeps this laptop in your devices list and the list fresh."""
+        last = 0
+        while not self.stop_event.is_set():
+            if self.settings.get("signed_in") and self.settings.get("token") and \
+                    (time.time() - last > 6 * 3600 or not self.settings.get("devices_cache")):
+                try:
+                    reg = devices.Registry(self.settings, self.db)
+                    reg.register_me()
+                    reg.all()
+                    last = time.time()
+                    self.events.put(self._account_ui)
+                except Exception as e:
+                    self.log(f"Couldn't update your devices list ({e}).")
+                    last = time.time() - 6 * 3600 + 600
+            self.stop_event.wait(60)
+
+    def notify(self, title, msg):
+        if self.tray is not None:
+            try:
+                self.tray.notify(msg, title)
+            except Exception:
+                pass
+
+    def _get_offer(self):
+        if self.offer_shown:
+            self.clip.get_offer(self.offer_shown)
 
     def _reload_settings_ui(self):
         self.token_var.set(self.settings.get("token"))
@@ -505,7 +595,8 @@ class App:
             self._apply_setup(js)
 
     def ready(self):
-        return bool(self.settings.get("token") and self.settings.get("root_page") and self.settings.get("folders"))
+        return bool(self.settings.get("signed_in") and self.settings.get("token") and self.settings.get("root_page")
+                    and self.settings.get("folders"))
 
     # ---- syncing -----------------------------------------------------------------
 
@@ -620,6 +711,20 @@ class App:
             st = "Shared clipboard: " + self.clip.status()
             if self.clip_status.cget("text") != st:
                 self.clip_status.config(text=st)
+            off = self.clip.latest_offer()
+            if self.clip.get_note:
+                t, show = self.clip.get_note, False
+            elif off:
+                t, show = f"Copied on {off.get('devName') or 'another device'}: {self.clip._describe(off)}", True
+            else:
+                t, show = "", False
+            if self.offer_lbl.cget("text") != t:
+                self.offer_lbl.config(text=t)
+            self.offer_shown = off.get("id") if (off and show) else None
+            if show and not self.offer_btn.winfo_ismapped():
+                self.offer_btn.pack(side="left", padx=10)
+            elif not show and self.offer_btn.winfo_ismapped():
+                self.offer_btn.pack_forget()
         except Exception:
             pass
         while True:
@@ -838,10 +943,19 @@ def selftest():
         app._set_custom_interval,
         app._refresh_folder_lists,
         lambda: app.nb.select(0),
+        app._account_ui,
+        # The sign-in screen and its steps draw without errors.
+        lambda: app.signin and app.signin._step_connect(),
+        lambda: app.signin and app.signin._step_choose([], [("p1", "Backups")]),
+        lambda: app.signin and app.signin._step_choose(
+            [devices.Device("r", "d1", "Office Dell", "laptop", "pg", "Office Dell Backup", "2026-11-01T00:00:00Z")],
+            [("p1", "Backups")]),
+        lambda: app.signin and app.signin._step_name_existing(),
+        lambda: app.signin and app.signin._step_sign_in("test note"),
     ]
     for i, step in enumerate(steps):
         app.root.after(1500 + i * 300, step)
-    app.root.after(6000, app.quit)
+    app.root.after(9000, app.quit)
     app.run()
     if errors:
         import traceback

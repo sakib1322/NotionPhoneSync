@@ -145,10 +145,11 @@ def _local_ipv4s():
     return [i for i in ips if not i.startswith("127.") and not i.startswith("169.254.")]
 
 
-def find_phone(key, timeout=1.2, also=()):
-    """Asks the local network where the phone is. Returns (ip, port) or None."""
+def find_phones(key, timeout=1.2, also=()):
+    """Asks the local network where your phones are. Returns [(ip, port, device id)]."""
     kid = key_id(key)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    found = {}
     try:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         s.bind(("", 0))
@@ -176,26 +177,36 @@ def find_phone(key, timeout=1.2, also=()):
             except ValueError:
                 continue
             if j.get("t") == "here" and j.get("id") == kid:
-                return addr[0], int(j.get("port") or TCP_PORT)
-        return None
+                found[addr[0]] = (addr[0], int(j.get("port") or TCP_PORT), j.get("dev") or addr[0])
+        return list(found.values())
     finally:
         s.close()
 
 
+def find_phone(key, timeout=1.2, also=()):
+    got = find_phones(key, timeout, also)
+    return (got[0][0], got[0][1]) if got else None
+
+
 class LanClient:
-    """The laptop's side: keeps a link to the phone whenever it's on the same network.
+    """The laptop's side: keeps a link to each of your phones on the same network.
 
-    on_item(meta, link) is called (on the link's thread) for each item the phone sends;
-    it must read the item's files from the link and return True when it's applied."""
+    on_item(meta, link, peer) is called (on that link's thread) for each item a phone sends;
+    it must read the item's files from the link and return True when it's applied.
+    on_fetch(meta, peer) is called when a phone asks for an offer's files."""
 
-    def __init__(self, get_token, enabled, on_item, log=lambda m: None, on_fetch=lambda msg: None):
+    def __init__(self, get_token, enabled, on_item, log=lambda m: None, on_fetch=lambda msg, peer=None: None,
+                 me=lambda: ("", "")):
         self.get_token = get_token
         self.enabled = enabled
         self.on_item = on_item
         self.on_fetch = on_fetch
         self.log = log
-        self.link = None
-        self.peer = None
+        self.me = me  # () -> (device id, device name)
+        self.links = {}     # phone device id -> Link
+        self.names = {}     # phone device id -> name
+        self.peers = {}     # phone device id -> (ip, port)
+        self.lock = threading.Lock()
         self.stop = threading.Event()
         self.acks = {}
         self.acks_lock = threading.Lock()
@@ -205,44 +216,83 @@ class LanClient:
 
     @property
     def connected(self):
-        return self.link is not None
+        return bool(self.links)
+
+    @property
+    def link(self):  # (older callers) any link
+        with self.lock:
+            return next(iter(self.links.values()), None)
+
+    @property
+    def peer(self):
+        with self.lock:
+            return next(iter(self.peers.values()), None)
+
+    @peer.setter
+    def peer(self, v):
+        with self.lock:
+            self.peers["?"] = v
+
+    def connected_ids(self):
+        with self.lock:
+            return set(self.links)
+
+    def connected_names(self):
+        with self.lock:
+            return [self.names.get(i) or "phone" for i in self.links]
 
     def _run(self):
-        backoff = 1.0
         while not self.stop.is_set():
             token = self.get_token()
             if not token or not self.enabled():
                 self.stop.wait(3)
                 continue
             key = key_for(token)
-            found = find_phone(key, also=[self.peer[0]] if self.peer else [])
-            if not found:
-                self.stop.wait(min(backoff, 5))
-                backoff = min(backoff * 1.5, 5)
-                continue
-            backoff = 1.0
-            try:
-                sock = socket.create_connection(found, timeout=3)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                link = Link(sock, key, initiator=True)
-                link.send_msg({"t": "hello", "from": "Laptop"})
-                sock.settimeout(15)
-                hello = link.recv_msg()
-                if hello.get("t") != "hello":
-                    raise ConnectionError("unexpected reply")
-            except Exception as e:
-                self.log(f"Shared clipboard: found the phone on Wi-Fi but couldn't connect ({e}).")
-                self.stop.wait(3)
-                continue
-            self.peer = found
-            self.link = link
-            self.log(f"Shared clipboard: connected to the phone over Wi-Fi ({found[0]}) — fast mode.")
-            self._serve(link)
-            self.link = None
-            link.close()
-            self.log("Shared clipboard: Wi-Fi link to the phone closed; using Notion until it's back.")
+            with self.lock:
+                also = [p[0] for p in self.peers.values()]
+            for ip, port, dev in find_phones(key, also=also):
+                with self.lock:
+                    busy = dev in self.links or any(dev == d for d in self.links) or \
+                        any(self.peers.get(d, (None,))[0] == ip for d in self.links)
+                if not busy:
+                    threading.Thread(target=self._connect, args=(key, ip, port, dev), daemon=True).start()
+            self.stop.wait(4 if self.links else 2.5)
 
-    def _serve(self, link):
+    def _connect(self, key, ip, port, dev):
+        try:
+            sock = socket.create_connection((ip, port), timeout=3)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            link = Link(sock, key, initiator=True)
+            mid, mname = self.me()
+            link.send_msg({"t": "hello", "from": "Laptop", "id": mid, "name": mname, "type": "laptop"})
+            sock.settimeout(15)
+            hello = link.recv_msg()
+            if hello.get("t") != "hello":
+                raise ConnectionError("unexpected reply")
+        except Exception as e:
+            self.log(f"Shared clipboard: found a phone on Wi-Fi but couldn't connect ({e}).")
+            return
+        pid = hello.get("id") or dev
+        name = hello.get("name") or "phone"
+        with self.lock:
+            if pid in self.links:
+                link.close()
+                return
+            self.links[pid] = link
+            self.names[pid] = name
+            self.peers[pid] = (ip, port)
+            self.peers.pop("?", None)
+        self.log(f"Shared clipboard: connected to {name} over Wi-Fi ({ip}) — fast mode.")
+        try:
+            self._serve(link, pid)
+        finally:
+            with self.lock:
+                if self.links.get(pid) is link:
+                    del self.links[pid]
+            link.close()
+            self.log(f"Shared clipboard: Wi-Fi link to {name} closed; using Notion for it until it's back.")
+
+    def _serve(self, link, pid):
         missed = 0
         while not self.stop.is_set() and self.enabled():
             try:
@@ -271,53 +321,60 @@ class LanClient:
                 if ev:
                     ev.set()
             elif t == "fetch":
-                # The phone wants the files of an offer: send them from another thread.
-                threading.Thread(target=self.on_fetch, args=(msg,), daemon=True).start()
+                # A phone wants the files of an offer: send them from another thread.
+                threading.Thread(target=self.on_fetch, args=(msg, pid), daemon=True).start()
             elif t == "item":
                 try:
                     link.sock.settimeout(60)
-                    ok = self.on_item(msg, link)
+                    ok = self.on_item(msg, link, pid)
                     link.sock.settimeout(15)
                     link.send_msg({"t": "ack", "id": msg.get("id"), "ok": bool(ok)})
                 except Exception as e:
-                    self.log(f"Shared clipboard: couldn't take an item from the phone over Wi-Fi ({e}).")
+                    self.log(f"Shared clipboard: couldn't take an item from a phone over Wi-Fi ({e}).")
                     return
 
-    def note(self, msg):
-        """Sends a small message (offer / gone). True if it went out."""
-        link = self.link
-        if link is None:
-            return False
-        try:
-            link.send_msg(msg)
-            return True
-        except OSError:
-            link.close()
-            return False
+    def _targets(self, to):
+        with self.lock:
+            if to:
+                return [(to, self.links[to])] if to in self.links else []
+            return list(self.links.items())
 
-    def send(self, kind, text=None, paths=(), for_id=None):
-        """Sends over Wi-Fi. True if the phone confirmed it; False means use Notion."""
-        link = self.link
-        if link is None:
-            return False
-        iid = os.urandom(8).hex()
+    def note(self, msg, to=None):
+        """Sends a small message (offer / gone) to one phone or all. Returns the ids reached."""
+        reached = set()
+        for pid, link in self._targets(to):
+            try:
+                link.send_msg(msg)
+                reached.add(pid)
+            except OSError:
+                link.close()
+        return reached
+
+    def send(self, kind, text=None, paths=(), for_id=None, to=None, item=None):
+        """Sends over Wi-Fi to one phone or all of them. Returns the ids that confirmed it
+        (empty = use Notion)."""
         files = [{"name": os.path.basename(p), "size": os.path.getsize(p)} for p in paths]
-        ev = threading.Event()
-        with self.acks_lock:
-            self.acks[iid] = ev
-        try:
-            meta = {"t": "item", "id": iid, "kind": kind, "text": text or "", "files": files}
-            if for_id:
-                meta["for"] = for_id
-            link.send_msg(meta, paths)
-            total = sum(f["size"] for f in files)
-            if ev.wait(4 + total / (1024 * 1024)):
-                return True
-            link.close()  # no answer: drop the link so the next item goes through Notion right away
-            return False
-        except OSError:
-            link.close()
-            return False
-        finally:
+        total = sum(f["size"] for f in files)
+        mid, mname = self.me()
+        reached = set()
+        for pid, link in self._targets(to):
+            iid = os.urandom(8).hex()
+            ev = threading.Event()
             with self.acks_lock:
-                self.acks.pop(iid, None)
+                self.acks[iid] = ev
+            try:
+                meta = {"t": "item", "id": iid, "kind": kind, "text": text or "", "files": files,
+                        "item": item or iid, "from_id": mid, "from_name": mname}
+                if for_id:
+                    meta["for"] = for_id
+                link.send_msg(meta, paths)
+                if ev.wait(4 + total / (1024 * 1024)):
+                    reached.add(pid)
+                else:
+                    link.close()  # no answer: drop it so the next item goes through Notion right away
+            except OSError:
+                link.close()
+            finally:
+                with self.acks_lock:
+                    self.acks.pop(iid, None)
+        return reached

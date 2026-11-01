@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
  * (over Wi-Fi when possible, otherwise through Notion).
  */
 object ClipFetch {
-    class Job(val id: String, val total: Long) {
+    class Job(val id: String, val total: Long, val dev: String = "", val direct: Boolean = false) {
         @Volatile var got = 0L
         @Volatile var files: List<File>? = null
         @Volatile var error: String? = null
@@ -44,23 +44,43 @@ object ClipFetch {
     fun start(ctx: Context, offer: JSONObject): Job {
         val id = offer.optString("id")
         jobs[id]?.let { if (!it.done) { it.watched = true; return it } }
-        val job = Job(id, offer.optLong("total"))
+        val urls = offer.optJSONArray("urls")
+        val job = Job(id, offer.optLong("total"), offer.optString("dev"), urls != null)
         jobs[id] = job
-        ask(ctx, job, false)
+        if (urls != null) {
+            // Already in the cloud (sent to everyone): just download it.
+            job.viaNotion = true
+            val files = offer.optJSONArray("files")
+            val links = (0 until urls.length()).map { i -> (files?.optJSONObject(i)?.optString("name") ?: "file") to urls.getString(i) }
+            Thread {
+                val svc = ClipService.instance
+                if (svc == null) { job.error = "Turn on the shared clipboard in Settings first."; return@Thread }
+                try {
+                    svc.putFiles(svc.downloadAll(links), "", id)
+                } catch (e: Exception) {
+                    job.error = "Couldn't download it (links from Notion last about an hour; ask for it to be sent again): ${e.message}"
+                }
+            }.start()
+        } else {
+            ask(ctx, job, false)
+        }
         return job
     }
 
-    /** Asks the laptop to send the files: Wi-Fi first, else a note through Notion. */
+    /** Asks the device that offered it to send the files: Wi-Fi first, else a note through Notion. */
     fun ask(ctx: Context, job: Job, notionOnly: Boolean) {
+        if (job.direct) return
         job.askedAt = System.currentTimeMillis()
         val app = ctx.applicationContext
         Thread {
-            if (!notionOnly && ClipService.lan?.note(JSONObject().put("t", "fetch").put("id", job.id)) == true) return@Thread
+            val fetch = JSONObject().put("t", "fetch").put("id", job.id)
+            if (!notionOnly && job.dev.isNotEmpty() && ClipService.lan?.note(fetch, job.dev)?.isNotEmpty() == true) return@Thread
+            if (!notionOnly && job.dev.isEmpty() && ClipService.lan?.note(fetch)?.isNotEmpty() == true) return@Thread
             job.viaNotion = true
             try {
-                ClipRelay(app).send("request", job.id, emptyList())
+                ClipRelay(app).send("request", JSONObject().put("id", job.id).toString(), emptyList(), to = job.dev)
             } catch (e: Exception) {
-                job.error = "Couldn't reach the laptop: ${e.message}"
+                job.error = "Couldn't reach the other device: ${e.message}"
             }
         }.start()
     }
@@ -154,15 +174,18 @@ class FetchActivity : AppCompatActivity() {
                 bar.progress = (j.got * 100 / total).toInt().coerceIn(0, 100)
                 msg.text = "${ClipFetch.describe(offer)}\n${ClipFetch.sizeText(j.got)} of ${ClipFetch.sizeText(total)} over Wi-Fi"
             } else if (j.viaNotion) {
-                msg.text = "${ClipFetch.describe(offer)}\nThe laptop is sending it through Notion…"
+                val who = offer.optString("devName").ifEmpty { "The other device" }
+                msg.text = if (j.direct) "${ClipFetch.describe(offer)}\nDownloading…"
+                           else "${ClipFetch.describe(offer)}\n$who is sending it through Notion…"
             }
             // The Wi-Fi link dropped before anything arrived: ask through Notion instead.
-            if (!j.viaNotion && ClipService.lan?.connected != true && j.got == 0L &&
-                System.currentTimeMillis() - j.askedAt > 1500) {
+            val linked = if (j.dev.isNotEmpty()) ClipService.lan?.isConnected(j.dev) == true else ClipService.lan?.connected == true
+            if (!j.viaNotion && !linked && j.got == 0L && System.currentTimeMillis() - j.askedAt > 1500) {
                 ClipFetch.ask(this@FetchActivity, j, true)
             }
-            if (j.viaNotion && j.got == 0L && System.currentTimeMillis() - j.askedAt > 120_000) {
-                failed("The laptop didn't answer. Make sure Notion Laptop Sync is running and online, then try again.")
+            if (j.viaNotion && !j.direct && j.got == 0L && System.currentTimeMillis() - j.askedAt > 120_000) {
+                val who = offer.optString("devName").ifEmpty { "The other device" }
+                failed("$who didn't answer. Make sure its Notion Sync app is running and online, then try again.")
                 return
             }
             h.postDelayed(this, 300)

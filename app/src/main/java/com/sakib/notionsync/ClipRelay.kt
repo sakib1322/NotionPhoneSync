@@ -11,8 +11,10 @@ import java.time.Instant
  * The shared clipboard's mailbox: a small Notion database the phone and laptop use to
  * hand copied items to each other. Same design as the laptop's clip_relay.py.
  */
-class ClipRelay(ctx: Context, private val device: String = "Phone") {
+class ClipRelay(private val ctx: Context, private val device: String = "Phone") {
     private val prefs = Prefs(ctx)
+    private val devId = prefs.deviceId
+    private val devName = Devices.myName(ctx)
     private val prefsRaw = ctx.applicationContext.getSharedPreferences("clip", Context.MODE_PRIVATE)
     // Sending and fetching go first; the background checks queue normally.
     private val client = NotionClient(prefs.token, priority = true)
@@ -20,7 +22,8 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
 
     /** files: (name, url) straight from the row, or null to look them up the older way. */
     data class Item(val id: String, val kind: String, val text: String, val created: String,
-                    val files: List<Pair<String, String>>? = null)
+                    val files: List<Pair<String, String>>? = null, val sender: String = "",
+                    val senderName: String = "", val item: String = "", val to: String = "")
 
     companion object {
         const val TITLE = "Clipboard (used by Notion Sync apps - please don't edit)"
@@ -116,15 +119,23 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
     fun dbId(): String = mailboxes().first()
 
     /** Adds the "Attachments" files column (one request per mailbox, ever). */
-    private fun ensureAttachments(db: String): Boolean {
+    /** Adds the newer columns (files, sender, recipient, item id): one request per mailbox, ever. */
+    private fun ensureColumns(db: String): Boolean {
         val sp = prefsRaw
-        if (sp.getString("clip_att", "") == db) return true
+        if (sp.getString("clip_cols", "") == db) return true
+        fun rtc() = JSONObject().put("rich_text", JSONObject())
         return try {
-            client.patchDatabase(db, JSONObject().put("properties", JSONObject().put("Attachments", JSONObject().put("files", JSONObject()))))
-            sp.edit().putString("clip_att", db).apply()
+            client.patchDatabase(db, JSONObject().put("properties", JSONObject()
+                .put("Attachments", JSONObject().put("files", JSONObject()))
+                .put("Sender", rtc()).put("Sender name", rtc()).put("Item", rtc()).put("To", rtc())))
+            sp.edit().putString("clip_cols", db).apply()
             true
         } catch (e: Exception) { false }
     }
+
+    private fun ensureAttachments(db: String) = ensureColumns(db)
+
+    private fun rt(v: String) = JSONObject().put("rich_text", JSONArray().put(JSONObject().put("text", JSONObject().put("content", v.take(1900)))))
 
     /** Uploads files side by side; returns (name, upload id) in order. */
     private fun uploadAll(files: List<File>): List<Pair<String, String>> {
@@ -153,7 +164,7 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
      * "request" / "offer" / "failed" (text only). For files, text is an optional note
      * (the offer they answer).
      */
-    fun send(kind: String, text: String?, files: List<File>) {
+    fun send(kind: String, text: String?, files: List<File>, to: String = "", item: String = "") {
         val textual = kind in setOf("text", "request", "offer", "failed")
         val db = dbId()
         val name = if (kind == "text") (text ?: "").trim().lineSequence().firstOrNull()?.take(80).orEmpty().ifEmpty { "Text" }
@@ -165,6 +176,11 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
             .put("From", JSONObject().put("select", JSONObject().put("name", device)))
             .put("Ready", JSONObject().put("checkbox", true))
             .put("Files", JSONObject().put("number", files.size))
+        if (ensureColumns(db)) {
+            props.put("Sender", rt(devId)).put("Sender name", rt(devName))
+                .put("Item", rt(item.ifEmpty { java.util.UUID.randomUUID().toString().replace("-", "").take(16) }))
+                .put("To", rt(to))
+        }
         var uploads: List<Pair<String, String>> = emptyList()
         if (textual) {
             props.put("Text", JSONObject().put("rich_text", chunks(text ?: "")))
@@ -196,6 +212,7 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
         }
         // Older way (if the files column can't be used): files as blocks, then mark ready.
         props.put("Ready", JSONObject().put("checkbox", false))
+        if (prefsRaw.getString("clip_cols", "") != db) for (k in listOf("Sender", "Sender name", "Item", "To")) props.remove(k)
         val row = client.createRow(dbId(), props)
         for ((n, id) in uploads) {
             val type = FileTypes.blockType(FileTypes.uploadName(n))
@@ -235,7 +252,12 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
             for (i in 0 until arr.length()) {
                 val p = arr.getJSONObject(i)
                 val pr = p.optJSONObject("properties") ?: continue
-                if (pr.optJSONObject("From")?.optJSONObject("select")?.optString("name") == device) continue
+                val sender = plainRt(pr, "Sender")
+                val to = plainRt(pr, "To")
+                val from = pr.optJSONObject("From")?.optJSONObject("select")?.optString("name").orEmpty()
+                // Sent by this phone (or, from an older version, by a phone) -> skip; meant for another device -> skip.
+                if (sender == devId || (sender.isEmpty() && from == device)) continue
+                if (to.isNotEmpty() && to != devId) continue
                 if (pr.optJSONObject("Ready")?.optBoolean("checkbox") != true) continue
                 val kind = pr.optJSONObject("Kind")?.optJSONObject("select")?.optString("name") ?: "text"
                 val t = pr.optJSONObject("Text")?.optJSONArray("rich_text")
@@ -250,11 +272,18 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
                 }
                 val count = pr.optJSONObject("Files")?.optInt("number", 0) ?: 0
                 out.add(Item(p.getString("id"), kind, text, p.optString("created_time"),
-                    if (links.isNotEmpty() && links.size >= count) links else null))
+                    if (links.isNotEmpty() && links.size >= count) links else null, sender,
+                    plainRt(pr, "Sender name").ifEmpty { from.ifEmpty { "another device" } },
+                    plainRt(pr, "Item").ifEmpty { p.getString("id") }, to))
             }
         }
         out.sortBy { it.created }
         return out
+    }
+
+    private fun plainRt(pr: JSONObject, name: String): String {
+        val arr = pr.optJSONObject(name)?.optJSONArray("rich_text") ?: return ""
+        return (0 until arr.length()).joinToString("") { arr.getJSONObject(it).optString("plain_text") }
     }
 
     /** (name, url) of an item's files. */
@@ -299,7 +328,10 @@ class ClipRelay(ctx: Context, private val device: String = "Phone") {
             val p = arr.getJSONObject(i)
             val created = try { Instant.parse(p.optString("created_time")) } catch (e: Exception) { continue }
             if (created.isAfter(cutoff)) continue
-            if (p.optJSONObject("properties")?.optJSONObject("From")?.optJSONObject("select")?.optString("name") != device) continue
+            val pr = p.optJSONObject("properties") ?: continue
+            val sender = plainRt(pr, "Sender")
+            val from = pr.optJSONObject("From")?.optJSONObject("select")?.optString("name").orEmpty()
+            if (!(sender == devId || (sender.isEmpty() && from == device))) continue
             try { bg.archivePage(p.getString("id")) } catch (e: Exception) { }
         }
     }

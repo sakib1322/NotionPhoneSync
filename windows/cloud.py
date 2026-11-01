@@ -56,9 +56,14 @@ class Cloud:
     # ---- sources (Laptop Backup, Phone Backup…) ---------------------------------
 
     def sources(self):
+        import devices
         out = {}
         if self.settings.get("root_page"):
-            out[self.settings.get("root_page")] = self.settings.get("root_title") or "Laptop Backup"
+            out[self.settings.get("root_page")] = f"{devices.my_name(self.settings)} (this laptop)"
+        # Every device on your account, by its name.
+        for d in devices.cached(self.settings):
+            if d.page and d.page not in out:
+                out[d.page] = d.name or d.page_title or "Backup"
         for line in (self.settings.get("extra_sources") or []):
             sid, _, title = line.partition("|")
             if sid and sid not in out:

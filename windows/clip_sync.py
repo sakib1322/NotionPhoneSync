@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 
+import devices
 import lan
 import threading
 import time
@@ -191,7 +192,13 @@ class ClipSync:
         self.stop = threading.Event()
         self.last_error = ""
         self.lan = lan.LanClient(lambda: self.settings.get("token"), self.enabled, self._lan_item, self.log,
-                                 on_fetch=self._lan_fetch)
+                                 on_fetch=self._lan_fetch,
+                                 me=lambda: (devices.my_id(self.settings), devices.my_name(self.settings)))
+        self.seen_items = {}      # item id -> time (so a Wi-Fi and a Notion copy count once)
+        self.seen_lock = threading.Lock()
+        self.remote_offers = {}   # offer id -> offer (files copied on another device, not downloaded)
+        self.pending_gets = {}    # offer id -> time asked
+        self.get_note = ""        # last message about a Get, for the window
         self.offers = {}
         self.offers_lock = threading.Lock()
         self.fulfilling = set()
@@ -210,8 +217,9 @@ class ClipSync:
             return f"⚠ Problem: {self.last_error[:150]}"
         if not self.checked:
             return "Starting…"
-        parts = ["✓ Working" + (" — fast mode: connected to the phone over Wi-Fi" if self.lan.connected
-                                else " (through Notion; fast mode turns on when the phone is on the same Wi-Fi)")]
+        names = self.lan.connected_names()
+        parts = ["✓ Working" + (f" — fast mode over Wi-Fi with {', '.join(names)}" if names
+                                else " (through Notion; fast mode turns on when a phone is on the same Wi-Fi)")]
         if self.last_sent:
             parts.append("last sent " + time.strftime("%I:%M %p", time.localtime(self.last_sent)))
         if self.last_received:
@@ -219,7 +227,8 @@ class ClipSync:
         return " · ".join(parts)
 
     def enabled(self):
-        return bool(self.settings.get("clipboard_sync") and self.settings.get("token") and self.settings.get("root_page"))
+        return bool(self.settings.get("signed_in") and self.settings.get("clipboard_sync") and self.settings.get("token")
+                    and self.settings.get("root_page"))
 
     def start(self):
         if not WINDOWS:
@@ -268,49 +277,73 @@ class ClipSync:
             if kind != "text":
                 self._offer(kind, payload)
                 return
-            if self.lan.send("text", text=payload):
-                self.last_sent = time.time()
-                self.last_error = ""
-                self.log(f"Shared clipboard: sent text to the phone over Wi-Fi ({time.time() - t0:.1f}s).")
-                return
-            Relay(self.settings, self.db, "Laptop").send("text", payload)
+            iid = os.urandom(8).hex()
+            self._mark_seen(iid)
+            reached = self.lan.send("text", text=payload, item=iid)
+            if self._need_notion(reached):
+                Relay(self.settings, self.db, "Laptop").send("text", payload, item=iid)
             self.last_sent = time.time()
             self.last_error = ""
-            self.log(f"Shared clipboard: sent text to the phone ({time.time() - t0:.1f}s).")
+            how = f" over Wi-Fi to {len(reached)} phone(s)" if reached else ""
+            self.log(f"Shared clipboard: sent text to your other devices{how} ({time.time() - t0:.1f}s).")
         except Exception as e:
             self.last_error = str(e)
             self.log(f"Shared clipboard: couldn't send ({e}).")
 
     # ---- files: offered, then sent on request --------------------------------------------
 
+    def _need_notion(self, reached):
+        """Notion is needed unless every other recent device already got it over Wi-Fi."""
+        others = devices.others_recent(self.settings)
+        if not others:
+            return not reached
+        return bool(others - set(reached))
+
+    def _mark_seen(self, iid):
+        """True if this item id is new (and remembers it)."""
+        if not iid:
+            return True
+        with self.seen_lock:
+            if iid in self.seen_items:
+                return False
+            self.seen_items[iid] = time.time()
+            if len(self.seen_items) > 500:
+                for k in sorted(self.seen_items, key=self.seen_items.get)[:250]:
+                    self.seen_items.pop(k, None)
+            return True
+
     def _offer(self, kind, paths):
         oid = os.urandom(8).hex()
+        self._mark_seen(oid)
         files = [{"name": os.path.basename(p), "size": os.path.getsize(p)} for p in paths]
         with self.offers_lock:
             self.offers[oid] = {"kind": kind, "paths": list(paths), "time": time.time()}
             while len(self.offers) > 50:
                 self.offers.pop(next(iter(self.offers)))
         meta = {"t": "offer", "id": oid, "kind": kind, "files": files[:200], "count": len(files),
-                "total": sum(f["size"] for f in files)}
+                "total": sum(f["size"] for f in files), "dev": devices.my_id(self.settings),
+                "devName": devices.my_name(self.settings), "item": oid}
         what = files[0]["name"] if len(files) == 1 else f"{len(files)} files"
-        if self.lan.note(meta):
-            self.log(f"Shared clipboard: told the phone about {what} over Wi-Fi (it downloads only if you tap Get).")
-        else:
-            Relay(self.settings, self.db, "Laptop").send("offer", json.dumps(meta))
-            self.log(f"Shared clipboard: told the phone about {what} (it downloads only if you tap Get).")
+        reached = self.lan.note(meta)
+        if self._need_notion(reached):
+            Relay(self.settings, self.db, "Laptop").send("offer", json.dumps(meta), item=oid)
+        self.log(f"Shared clipboard: told your other devices about {what} (they download it only if you tap Get).")
         self.last_sent = time.time()
         self.last_error = ""
 
-    def _lan_fetch(self, msg):
-        self._fulfil(msg.get("id") or "")
+    def _lan_fetch(self, msg, peer=None):
+        self._fulfil(msg.get("id") or "", peer, mine_only=False)
 
-    def _fulfil(self, oid):
-        """The phone asked for an offer's files: send them (Wi-Fi first, else Notion)."""
+    def _fulfil(self, oid, requester=None, mine_only=False):
+        """A device asked for an offer's files: send them to it (Wi-Fi first, else Notion).
+        With mine_only, stay quiet about offers this laptop never made (another device may have)."""
         with self.offers_lock:
+            off = self.offers.get(oid)
+            if mine_only and not off:
+                return
             if oid in self.fulfilling:
                 return
             self.fulfilling.add(oid)
-            off = self.offers.get(oid)
         try:
             why = None
             if not off:
@@ -322,27 +355,58 @@ class ClipSync:
             if not why:
                 paths = off["paths"]
                 t0 = time.time()
-                if self.lan.send(off["kind"], paths=paths, for_id=oid):
-                    self.log(f"Shared clipboard: sent {len(paths)} file(s) to the phone over Wi-Fi ({time.time() - t0:.1f}s).")
+                if self.lan.send(off["kind"], paths=paths, for_id=oid, to=requester):
+                    self.log(f"Shared clipboard: sent {len(paths)} file(s) over Wi-Fi ({time.time() - t0:.1f}s).")
                     return
                 if any(os.path.getsize(p) > MAX_FILE for p in paths):
-                    why = "Files over 100 MB can only be sent when the phone is on the same Wi-Fi as the laptop."
+                    why = "Files over 100 MB can only be sent when both devices are on the same Wi-Fi."
                 else:
-                    Relay(self.settings, self.db, "Laptop").send(off["kind"], paths, note=oid)
-                    self.log(f"Shared clipboard: sent {len(paths)} file(s) to the phone ({time.time() - t0:.1f}s).")
+                    Relay(self.settings, self.db, "Laptop").send(off["kind"], paths, note=oid, to=requester)
+                    self.log(f"Shared clipboard: sent {len(paths)} file(s) ({time.time() - t0:.1f}s).")
                     return
-            if not self.lan.note({"t": "gone", "id": oid, "why": why}):
-                Relay(self.settings, self.db, "Laptop").send("failed", json.dumps({"id": oid, "why": why}))
-            self.log(f"Shared clipboard: couldn't send what the phone asked for: {why}")
+            if not self.lan.note({"t": "gone", "id": oid, "why": why}, to=requester):
+                Relay(self.settings, self.db, "Laptop").send("failed", json.dumps({"id": oid, "why": why}), to=requester)
+            self.log(f"Shared clipboard: couldn't send what was asked for: {why}")
         except Exception as e:
-            self.log(f"Shared clipboard: couldn't send what the phone asked for ({e}).")
+            self.log(f"Shared clipboard: couldn't send what was asked for ({e}).")
             try:
-                Relay(self.settings, self.db, "Laptop").send("failed", json.dumps({"id": oid, "why": str(e)}))
+                Relay(self.settings, self.db, "Laptop").send("failed", json.dumps({"id": oid, "why": str(e)}), to=requester)
             except Exception:
                 pass
         finally:
             with self.offers_lock:
                 self.fulfilling.discard(oid)
+
+    # ---- files offered by another device (shown in the window; Get downloads them) ----------
+
+    def latest_offer(self):
+        if not self.remote_offers:
+            return None
+        return max(self.remote_offers.values(), key=lambda o: o.get("_t", 0))
+
+    def get_offer(self, oid):
+        off = self.remote_offers.get(oid)
+        if not off:
+            return
+        self.pending_gets[oid] = time.time()
+        self.get_note = f"Getting {self._describe(off)} from {off.get('devName') or 'the other device'}…"
+
+        def ask():
+            try:
+                Relay(self.settings, self.db, "Laptop").send("request", json.dumps({"id": oid}), to=off.get("dev") or None)
+            except Exception as e:
+                self.get_note = f"Couldn't ask for it: {e}"
+                self.pending_gets.pop(oid, None)
+        threading.Thread(target=ask, daemon=True).start()
+
+    @staticmethod
+    def _describe(off):
+        files = off.get("files") or []
+        n = off.get("count") or len(files)
+        first = files[0]["name"] if files else "a file"
+        size = off.get("total") or 0
+        mb = f"{size / 1048576:.1f} MB" if size >= 1048576 else f"{max(1, size // 1024)} KB"
+        return (first if n <= 1 else f"{n} files") + f" ({mb})"
 
     # Sent from the phone -> laptop clipboard
     def _receive(self):
@@ -360,13 +424,7 @@ class ClipSync:
                     if item["id"] in seen:
                         continue
                     seen.add(item["id"])
-                    if item["kind"] == "request":
-                        threading.Thread(target=self._fulfil, args=(item["text"].strip(),), daemon=True).start()
-                        continue
-                    if item["kind"] in ("offer", "failed"):
-                        continue
-                    self._apply(relay, item)
-                    self.last_received = time.time()
+                    self._handle(relay, item)
                 if time.time() - last_cleanup > 3600:
                     last_cleanup = time.time()
                     relay.cleanup()
@@ -377,6 +435,55 @@ class ClipSync:
                     self.log(f"Shared clipboard: can't reach the mailbox in Notion ({e}). Will keep trying.")
                 self.last_error = str(e)
                 time.sleep(10)
+
+    def _handle(self, relay, item):
+        """One item from the Notion mailbox (already known to be for this laptop)."""
+        kind = item["kind"]
+        if kind == "request":
+            try:
+                oid = json.loads(item["text"]).get("id", "")
+            except ValueError:
+                oid = item["text"].strip()  # older phones
+            # Meant for this laptop -> always answer; for nobody in particular -> only if it's ours.
+            mine_only = item.get("to") != devices.my_id(self.settings)
+            threading.Thread(target=self._fulfil, args=(oid, item.get("sender") or None, mine_only), daemon=True).start()
+            return
+        if not self._mark_seen(item.get("item")):
+            return  # already got this one over Wi-Fi
+        if kind == "offer":
+            try:
+                off = json.loads(item["text"])
+            except ValueError:
+                return
+            off["_t"] = time.time()
+            off.setdefault("devName", item.get("sender_name"))
+            off.setdefault("dev", item.get("sender"))
+            self.remote_offers[off.get("id")] = off
+            while len(self.remote_offers) > 20:
+                self.remote_offers.pop(min(self.remote_offers, key=lambda k: self.remote_offers[k].get("_t", 0)))
+            self.log(f"Shared clipboard: {off.get('devName')} copied {self._describe(off)} — "
+                     "Get it from the Notion tab if you want it here.")
+            try:
+                self.app.notify(f"Copied on {off.get('devName')}", f"{self._describe(off)} — open Notion Laptop Sync to get it.")
+            except Exception:
+                pass
+            return
+        if kind == "failed":
+            try:
+                j = json.loads(item["text"])
+            except ValueError:
+                return
+            if self.pending_gets.pop(j.get("id"), None):
+                self.get_note = f"Couldn't get it: {j.get('why')}"
+            return
+        if kind in ("image", "files"):
+            oid = (item.get("text") or "").strip()
+            if item.get("to") and oid:
+                self.pending_gets.pop(oid, None)
+                self.remote_offers.pop(oid, None)
+                self.get_note = ""
+        self._apply(relay, item)
+        self.last_received = time.time()
 
     def _put_text(self, text):
         self.last_fp = fingerprint("text", text)
@@ -408,11 +515,22 @@ class ClipSync:
         taken.add(dest)
         return dest
 
-    def _lan_item(self, msg, link):
-        """An item the phone sent over Wi-Fi."""
+    def _lan_item(self, msg, link, peer=None):
+        """An item a phone sent over Wi-Fi."""
+        if not self._mark_seen(msg.get("item")):
+            # Already got it through Notion: read the bytes and throw them away.
+            if msg.get("files"):
+                import tempfile as _t
+                tmp = os.path.join(_t.gettempdir(), "notionsync-discard")
+                for pth in link.recv_files(msg["files"], lambda n: tmp):
+                    try:
+                        os.remove(pth)
+                    except OSError:
+                        pass
+            return True
         if msg.get("kind") == "text":
             self._put_text(msg.get("text") or "")
-            self.log("Shared clipboard: text from the phone (over Wi-Fi) is on the clipboard.")
+            self.log(f"Shared clipboard: text from {msg.get('from_name') or 'the phone'} (over Wi-Fi) is on the clipboard.")
             return True
         taken = set()
         paths = link.recv_files(msg.get("files") or [], lambda n: self._dest(n, taken))
@@ -426,7 +544,7 @@ class ClipSync:
         import requests
         if item["kind"] == "text":
             self._put_text(item["text"])
-            self.log("Shared clipboard: text from the phone is on the clipboard.")
+            self.log(f"Shared clipboard: text from {item.get('sender_name') or 'another device'} is on the clipboard.")
             return
         # Pick names first, then download all files side by side.
         jobs, taken = [], set()
