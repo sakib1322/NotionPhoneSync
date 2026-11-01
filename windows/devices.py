@@ -42,18 +42,34 @@ def _plain(props, name):
 
 
 class Device:
-    __slots__ = ("row", "id", "name", "type", "page", "page_title", "seen")
+    __slots__ = ("row", "id", "name", "type", "page", "page_title", "seen", "status")
 
-    def __init__(self, row, id, name, type, page, page_title, seen):
+    def __init__(self, row, id, name, type, page, page_title, seen, status=""):
         self.row, self.id, self.name, self.type, self.page, self.page_title, self.seen = \
             row, id, name, type, page, page_title, seen
+        self.status = status or ""
+
+    def info(self):
+        """What the device last reported (files, pending, syncing…)."""
+        import json
+        try:
+            return json.loads(self.status) if self.status else {}
+        except ValueError:
+            return {}
+
+    def online(self):
+        try:
+            t = datetime.fromisoformat((self.seen or "").replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return False
+        return time.time() - t < 12 * 60
 
     def as_dict(self):
         return {k: getattr(self, k) for k in self.__slots__}
 
     @staticmethod
     def from_dict(d):
-        return Device(*(d.get(k) for k in Device.__slots__))
+        return Device(*(d.get(k) for k in Device.__slots__[:7]), status=d.get("status") or "")
 
     def seen_ago(self):
         if not self.seen:
@@ -80,10 +96,11 @@ class Registry:
 
     # ---- the database ------------------------------------------------------------
 
-    def db_id(self, parent=None):
-        cached = self.db.get_meta("devices_db")
-        if cached:
-            return cached
+    # Notion's search is slow to notice new databases, so two devices signing in close together
+    # can each make a devices list. We read every one we find (searching again every few
+    # minutes), always write to the oldest, and merge by device id, so they always meet.
+
+    def _search(self):
         found, cursor = [], None
         while True:
             body = {"query": "Devices (used by Notion Sync", "page_size": 50,
@@ -97,45 +114,79 @@ class Registry:
                     found.append((d.get("created_time", ""), d["id"]))
             cursor = res.get("next_cursor") if res.get("has_more") else None
             if not cursor:
-                break
-        if found:
-            dbid = sorted(found)[0][1]
-        else:
+                return found
+
+    def dbs(self, parent=None, refresh=False):
+        known = [tuple(x.split("|", 1)) for x in (self.db.get_meta("devices_dbs") or "").split(",") if "|" in x]
+        old = self.db.get_meta("devices_db")
+        if old and old not in [k[1] for k in known]:
+            known.append(("", old))
+        last = float(self.db.get_meta("devices_search_at") or 0)
+        if refresh or not known or time.time() - last > 300:
+            try:
+                known = list(set(known) | set(self._search()))
+                self.db.set_meta("devices_search_at", str(time.time()))
+            except NotionError:
+                if not known:
+                    raise
+        if not known:
             parent = parent or self.settings.get("root_page")
             if not parent:
-                return None
+                return []
             props = {"Name": {"title": {}}, "Id": {"rich_text": {}}, "Type": {"rich_text": {}},
-                     "Page": {"rich_text": {}}, "Page title": {"rich_text": {}}, "Seen": {"date": {}}}
-            dbid = self.client._call("POST", "/databases", json_body={
+                     "Page": {"rich_text": {}}, "Page title": {"rich_text": {}}, "Seen": {"date": {}},
+                     "Status": {"rich_text": {}}}
+            d = self.client._call("POST", "/databases", json_body={
                 "parent": {"type": "page_id", "page_id": parent},
-                "title": [{"type": "text", "text": {"content": TITLE}}], "properties": props})["id"]
-        self.db.set_meta("devices_db", dbid)
-        return dbid
+                "title": [{"type": "text", "text": {"content": TITLE}}], "properties": props})
+            known = [(d.get("created_time", ""), d["id"])]
+            self.db.set_meta("devices_status_col", d["id"])
+        # Same id seen with and without a date: keep the dated one.
+        by_id = {}
+        for c, i in known:
+            if i not in by_id or (c and not by_id[i]):
+                by_id[i] = c
+        known = sorted(((c, i) for i, c in by_id.items()), key=lambda x: (x[0] == "", x[0]))
+        self.db.set_meta("devices_dbs", ",".join(f"{c}|{i}" for c, i in known))
+        self.db.set_meta("devices_db", known[0][1])
+        return [i for _, i in known]
+
+    def db_id(self, parent=None):
+        ids = self.dbs(parent)
+        return ids[0] if ids else None
+
+    def _forget(self, dbid):
+        known = [x for x in (self.db.get_meta("devices_dbs") or "").split(",") if "|" in x and not x.endswith("|" + dbid)]
+        self.db.set_meta("devices_dbs", ",".join(known))
+        if self.db.get_meta("devices_db") == dbid:
+            self.db.set_meta("devices_db", "")
 
     def _rows(self):
-        dbid = self.db_id()
-        if not dbid:
-            return []
-        out, cursor = [], None
-        while True:
-            body = {"page_size": 100}
-            if cursor:
-                body["start_cursor"] = cursor
-            try:
-                res = self.client.query_database(dbid, body)
-            except NotionError as e:
-                if e.status == 404:
-                    self.db.set_meta("devices_db", "")
-                    return self._rows()
-                raise
-            for p in res.get("results", []):
-                pr = p.get("properties") or {}
-                seen = ((pr.get("Seen") or {}).get("date") or {}).get("start") or ""
-                out.append(Device(p["id"], _plain(pr, "Id"), _plain(pr, "Name"), _plain(pr, "Type"),
-                                  _plain(pr, "Page"), _plain(pr, "Page title"), seen))
-            cursor = res.get("next_cursor") if res.get("has_more") else None
-            if not cursor:
-                return out
+        out = []
+        for dbid in self.dbs():
+            cursor = None
+            while True:
+                body = {"page_size": 100}
+                if cursor:
+                    body["start_cursor"] = cursor
+                try:
+                    res = self.client.query_database(dbid, body)
+                except NotionError as e:
+                    if e.status == 404:
+                        self._forget(dbid)
+                        break
+                    raise
+                for p in res.get("results", []):
+                    pr = p.get("properties") or {}
+                    seen = ((pr.get("Seen") or {}).get("date") or {}).get("start") or ""
+                    d = Device(p["id"], _plain(pr, "Id"), _plain(pr, "Name"), _plain(pr, "Type"),
+                               _plain(pr, "Page"), _plain(pr, "Page title"), seen)
+                    d.status = _plain(pr, "Status")
+                    out.append(d)
+                cursor = res.get("next_cursor") if res.get("has_more") else None
+                if not cursor:
+                    break
+        return out
 
     def all(self):
         """Every device (one per id), newest-seen first; also caches them in settings."""
@@ -157,7 +208,17 @@ class Registry:
     def set_home(self, page_id):
         self._upsert(HOME_ID, "(where new devices' backup pages go)", "home", page_id, "", seen=False)
 
-    def _upsert(self, did, name, typ, page, page_title, seen=True):
+    def _ensure_status(self, dbid):
+        if self.db.get_meta("devices_status_col") == dbid:
+            return True
+        try:
+            self.client._call("PATCH", f"/databases/{dbid}", json_body={"properties": {"Status": {"rich_text": {}}}})
+        except NotionError:
+            return False
+        self.db.set_meta("devices_status_col", dbid)
+        return True
+
+    def _upsert(self, did, name, typ, page, page_title, seen=True, status=None):
         dbid = self.db_id()
         if not dbid:
             return None
@@ -165,6 +226,8 @@ class Registry:
                  "Type": _rt(typ), "Page": _rt(page), "Page title": _rt(page_title)}
         if seen:
             props["Seen"] = {"date": {"start": datetime.now(timezone.utc).isoformat()}}
+        if status is not None and self._ensure_status(dbid):
+            props["Status"] = _rt(status)
         res = self.client.query_database(dbid, {"page_size": 5, "filter": {"property": "Id", "rich_text": {"equals": did}}})
         rows = res.get("results", [])
         if rows:
@@ -172,26 +235,38 @@ class Registry:
             return rows[0]["id"]
         return self.client.create_row(dbid, props)
 
-    def register_me(self):
-        """Adds or refreshes this laptop in the list."""
+    def register_me(self, status=None):
+        """Adds or refreshes this laptop in the list (with what it's doing, if given)."""
+        self._name_page()
+        import json
         self._upsert(my_id(self.settings), my_name(self.settings), "laptop",
-                     self.settings.get("root_page"), self.settings.get("root_title"))
+                     self.settings.get("root_page"), self.settings.get("root_title"),
+                     status=json.dumps(status) if status is not None else None)
         self.settings.set("devices_seen_at", time.time())
 
-    def rename_me(self, new_name):
+    def _name_page(self, old=None):
+        """Keeps this laptop's backup page named after it ("<name> Backup") when it still has a
+        default name (Laptop Backup) or was named after the old device name."""
+        name = self.settings.get("device_name")
+        title = self.settings.get("root_title") or ""
+        page = self.settings.get("root_page")
+        if not name or not page:
+            return
+        want = f"{name} Backup"
+        if title == want or title not in ("Laptop Backup", "Phone Backup", f"{old} Backup" if old else want):
+            return
+        try:
+            self.client._call("PATCH", f"/pages/{page}", json_body={
+                "properties": {"title": {"title": [{"text": {"content": want}}]}}})
+            self.settings.set("root_title", want)
+        except NotionError:
+            pass
+
+    def rename_me(self, new_name, status=None):
         old = my_name(self.settings)
-        new_name = new_name.strip()[:60]
-        self.settings.set("device_name", new_name)
-        # A page the app named after the device is renamed with it.
-        if self.settings.get("root_page") and self.settings.get("root_title") == f"{old} Backup":
-            title = f"{new_name} Backup"
-            try:
-                self.client._call("PATCH", f"/pages/{self.settings.get('root_page')}", json_body={
-                    "properties": {"title": {"title": [{"text": {"content": title}}]}}})
-                self.settings.set("root_title", title)
-            except NotionError:
-                pass
-        self.register_me()
+        self.settings.set("device_name", new_name.strip()[:60])
+        self._name_page(old)
+        self.register_me(status)
 
     # ---- pages ------------------------------------------------------------------------
 

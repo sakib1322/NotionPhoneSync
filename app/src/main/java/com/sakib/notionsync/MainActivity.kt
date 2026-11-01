@@ -17,6 +17,7 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.view.View
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -124,6 +125,7 @@ class MainActivity : AppCompatActivity() {
             updateSpeed()
             if (tick++ % 2 == 0) refresh()
             showClipStatus()
+            if (tick % 10 == 0) showDeviceCards()
             handler.postDelayed(this, 1000)
         }
     }
@@ -540,6 +542,7 @@ class MainActivity : AppCompatActivity() {
 
     /** "This phone" card: its name and page, and your other devices. */
     private fun showDevices() {
+        showDeviceCards()
         findViewById<TextView>(R.id.dev_name)?.text = Devices.myName(this)
         findViewById<TextView>(R.id.dev_page)?.text = "Backs up to “${prefs.rootTitle.ifEmpty { "Phone Backup" }}”"
         val me = prefs.deviceId
@@ -549,11 +552,98 @@ class MainActivity : AppCompatActivity() {
         else others.joinToString("\n") { "• ${it.name} (${it.type}, seen ${it.seenAgo()})" }
     }
 
+    /** "Your devices" card on the Backup tab: every device and what it last reported. */
+    private fun showDeviceCards() {
+        val boxView = findViewById<LinearLayout>(R.id.devices_box) ?: return
+        val me = prefs.deviceId
+        val mine = Devices.Device("", me, Devices.myName(this), "phone", prefs.rootPageId, prefs.rootTitle,
+            java.time.Instant.now().toString(), Devices.myStatus(this).toString())
+        val devs = listOf(mine) + Devices.cached(this).filter { it.id != me }.sortedWith(compareBy({ !it.online() }, { it.name.lowercase() }))
+        val sig = devs.joinToString("|") { it.id + it.seen + it.status + it.name }
+        if (boxView.tag == sig) return
+        boxView.tag = sig
+        boxView.removeAllViews()
+        val d = resources.displayMetrics.density
+        for (dv in devs) {
+            val info = dv.info()
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, (10 * d).toInt(), 0, (6 * d).toInt())
+                isClickable = true
+                setOnClickListener { deviceDetail(dv, dv.id == me) }
+            }
+            val dot = when {
+                info.optBoolean("syncing") -> "🔵"
+                dv.online() -> "🟢"
+                else -> "⚪"
+            }
+            row.addView(TextView(this).apply {
+                text = "$dot  ${dv.name}" + (if (dv.id == me) "  (this phone)" else "") + "  ·  ${dv.type}"
+                setTextColor(com.google.android.material.color.MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurface))
+                textSize = 15f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            })
+            row.addView(TextView(this).apply {
+                text = deviceLine(dv, info)
+                textSize = 13f
+                alpha = 0.75f
+                setPadding((26 * d).toInt(), (2 * d).toInt(), 0, 0)
+            })
+            boxView.addView(row)
+        }
+        val seen = prefs.devicesSeenAt
+        findViewById<TextView>(R.id.devices_updated)?.text =
+            if (seen > 0) "updated " + java.text.SimpleDateFormat("h:mm a", java.util.Locale.US).format(java.util.Date(seen)) else ""
+    }
+
+    private fun deviceLine(dv: Devices.Device, info: org.json.JSONObject): String {
+        val parts = ArrayList<String>()
+        val pend = info.optInt("pending", 0)
+        parts.add(when {
+            info.optBoolean("syncing") -> if (pend > 0) "Backing up · ${"%,d".format(pend)} left" else "Backing up"
+            dv.online() -> "Online"
+            else -> "Offline · seen ${dv.seenAgo()}"
+        })
+        if (info.has("cloud_files")) parts.add("${"%,d".format(info.optInt("cloud_files"))} files · ${SpeedMeter.size(info.optLong("cloud_bytes"))}")
+        if (!info.optBoolean("syncing") && info.has("pending")) parts.add(if (pend == 0) "up to date" else "${"%,d".format(pend)} waiting")
+        val wifi = info.optJSONArray("wifi")
+        if (wifi != null && wifi.length() > 0) parts.add("⚡ Wi-Fi")
+        return parts.joinToString(" · ")
+    }
+
+    private fun deviceDetail(dv: Devices.Device, me: Boolean) {
+        val info = dv.info()
+        val fmt = java.text.SimpleDateFormat("d MMM yyyy, h:mm a", java.util.Locale.US)
+        val last = info.optLong("last_sync").let { if (it in 1..99_999_999_999) it * 1000 else it }
+        val lines = ArrayList<String>()
+        lines.add("${dv.type.replaceFirstChar { it.uppercase() }} · backs up to “${dv.pageTitle.ifEmpty { "its page" }}”")
+        lines.add(if (me) "This phone" else if (dv.online()) "Online (checked in ${dv.seenAgo()})" else "Offline · last seen ${dv.seenAgo()}")
+        if (info.optString("now").isNotEmpty()) lines.add("Doing: ${info.optString("now")}")
+        if (info.has("cloud_files")) lines.add("In the cloud: ${"%,d".format(info.optInt("cloud_files"))} files, ${SpeedMeter.size(info.optLong("cloud_bytes"))}")
+        if (info.has("pending")) lines.add("Waiting to upload: ${"%,d".format(info.optInt("pending"))} · problems: ${"%,d".format(info.optInt("failed"))}")
+        if (info.has("uploaded")) lines.add("Uploaded by this device: ${"%,d".format(info.optInt("uploaded"))}")
+        if (last > 0) lines.add("Last backup: ${fmt.format(java.util.Date(last))}")
+        if (info.has("auto")) lines.add("Auto-sync: ${if (info.optBoolean("auto")) "on" else "off"}")
+        if (info.has("clipboard")) {
+            val wifi = info.optJSONArray("wifi")
+            val names = if (wifi == null) "" else (0 until wifi.length()).joinToString(", ") { wifi.getString(it) }
+            lines.add("Shared clipboard: ${if (info.optBoolean("clipboard")) "on" else "off"}" + if (names.isNotEmpty()) " · Wi-Fi with $names" else "")
+        }
+        if (info.has("version")) lines.add("App version: build ${info.optInt("version")}")
+        if (info.length() == 0) lines.add("No status yet — it shows up after that device updates the app.")
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle(dv.name)
+            .setMessage(lines.joinToString("\n"))
+            .setPositiveButton("OK", null)
+            .apply { if (!me) setNeutralButton("Browse its files") { _, _ -> findViewById<BottomNavigationView>(R.id.nav).selectedItemId = R.id.nav_files } }
+            .show()
+    }
+
     private fun refreshDevices() {
         showDevices()
         Thread {
             try {
-                Registry(this).apply { registerMe(); all() }
+                Registry(this).apply { registerMe(Devices.myStatus(this@MainActivity)); all() }
                 runOnUiThread { showDevices() }
             } catch (e: Exception) { }
         }.start()

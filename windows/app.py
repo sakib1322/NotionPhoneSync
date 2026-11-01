@@ -27,7 +27,7 @@ from version import BUILD
 REPO = "sakib1322/NotionPhoneSync"
 INSTANCE_PORT = 47391
 TITLE = "Notion Laptop Sync"
-TAB_FILES, TAB_SPACE, TAB_NOTION, TAB_ACTIVITY = 1, 2, 4, 5
+TAB_FILES, TAB_SPACE, TAB_NOTION, TAB_ACTIVITY, TAB_DEVICES = 1, 2, 4, 5, 7
 
 
 class App:
@@ -102,12 +102,15 @@ class App:
         self._build_notion(self._tab(nb, "Notion"))
         self._build_activity(self._tab(nb, "Activity"))
         self._build_about(self._tab(nb, "Updates & settings"))
+        self._build_devices(self._tab(nb, "Devices"))
         nb.bind("<<NotebookTabChanged>>", lambda e: self._tab_changed())
         if not self.settings.get("token"):
             nb.select(TAB_NOTION)
 
     def _tab_changed(self):
         try:
+            if self.nb.index("current") == TAB_DEVICES:
+                self._fill_devices()
             if self.nb.index("current") == TAB_FILES:
                 self.files.on_shown()
             elif self.nb.index("current") == TAB_SPACE:
@@ -251,6 +254,122 @@ class App:
         ttk.Button(f, text="Save & test connection", command=self.save_notion).pack(anchor="w", pady=8)
         title = self.settings.get("root_title")
         self.notion_lbl = self._p(f, f"✓ Connected to “{title}”" if title else "Not connected yet.")
+
+    def _build_devices(self, f):
+        self._h(f, "Your devices")
+        self._p(f, "Every phone and laptop signed in to your account, with what each one last reported. "
+                   "A device counts as online if it checked in within the last few minutes.", foreground="#555")
+        cols = ("status", "type", "backup", "cloud", "last", "clip", "version")
+        tree = ttk.Treeview(f, columns=cols, show="tree headings", height=8)
+        tree.heading("#0", text="Device")
+        tree.column("#0", width=170)
+        for c, t, w in (("status", "Status", 150), ("type", "Type", 60), ("backup", "Backup", 170),
+                        ("cloud", "In the cloud", 130), ("last", "Last backup", 120), ("clip", "Clipboard", 120),
+                        ("version", "Version", 60)):
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        tree.pack(fill="both", expand=True, pady=6)
+        tree.bind("<<TreeviewSelect>>", lambda e: self._device_detail())
+        self.dev_tree = tree
+        row = ttk.Frame(f)
+        row.pack(anchor="w")
+        ttk.Button(row, text="Refresh", command=self.refresh_devices).pack(side="left")
+        self.dev_note = ttk.Label(row, text="", foreground="#555")
+        self.dev_note.pack(side="left", padx=10)
+        self.dev_detail = self._p(f, "")
+        self._fill_devices()
+
+    @staticmethod
+    def _describe_device(d, me):
+        info = d.info()
+        online = d.online()
+        if info.get("syncing"):
+            state = "● Online · backing up"
+        elif online:
+            state = "● Online"
+        else:
+            state = f"○ Offline · seen {d.seen_ago()}"
+        pend = info.get("pending") or 0
+        failed = info.get("failed") or 0
+        if info.get("syncing"):
+            backup = f"{pend:,} left" if pend else (info.get("now") or "working…")[:40]
+        elif "pending" in info:
+            backup = "Up to date" if not pend else f"{pend:,} waiting"
+            if failed:
+                backup += f", {failed:,} problems"
+        else:
+            backup = "—"
+        n, b = info.get("cloud_files"), info.get("cloud_bytes")
+        cloud = f"{n:,} files · {b / 1073741824:.1f} GB" if isinstance(n, int) and isinstance(b, (int, float)) else "—"
+        last = info.get("last_sync")
+        last_txt = time.strftime("%d %b, %I:%M %p", time.localtime(last / 1000 if last > 1e11 else last)) if last else "—"
+        wifi = info.get("wifi") or []
+        clip = "Off" if info.get("clipboard") is False else (f"Wi-Fi: {', '.join(wifi)}" if wifi else ("On" if info else "—"))
+        name = d.name + ("  (this laptop)" if d.id == me else "")
+        return name, (state, d.type, backup, cloud, last_txt, clip, str(info.get("version") or ""))
+
+    def _fill_devices(self):
+        try:
+            me = devices.my_id(self.settings)
+            devs = devices.cached(self.settings)
+            # This laptop: show live numbers rather than the last report.
+            devs = [d for d in devs if d.id != me]
+            mine = devices.Device("", me, devices.my_name(self.settings), "laptop", self.settings.get("root_page"),
+                                  self.settings.get("root_title"), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            import json as _json
+            mine.status = _json.dumps(self.device_status())
+            devs = [mine] + sorted(devs, key=lambda d: (not d.online(), (d.name or "").lower()))
+            self.dev_rows = {}
+            self.dev_tree.delete(*self.dev_tree.get_children())
+            for d in devs:
+                name, vals = self._describe_device(d, me)
+                iid = self.dev_tree.insert("", "end", text=name, values=vals)
+                self.dev_rows[iid] = d
+            seen = self.settings.get("devices_seen_at")
+            self.dev_note.config(text=time.strftime("List updated %I:%M %p", time.localtime(seen)) if seen else "")
+        except Exception as e:
+            self.log(f"Devices tab error: {e}")
+
+    def _device_detail(self):
+        sel = self.dev_tree.selection()
+        d = self.dev_rows.get(sel[0]) if sel else None
+        if not d:
+            return
+        info = d.info()
+        lines = [f"{d.name} — {d.type}, backs up to “{d.page_title or 'its page'}”",
+                 f"Last seen: {d.seen_ago()}" + (f" · version {info['version']}" if info.get("version") else "")]
+        if info.get("now"):
+            lines.append(f"Doing: {info['now']}")
+        if "pending" in info:
+            lines.append(f"Uploaded: {info.get('uploaded', 0):,} · waiting: {info.get('pending', 0):,} · problems: {info.get('failed', 0):,}"
+                         f" · auto-sync: {'on' if info.get('auto') else 'off'}")
+        self.dev_detail.config(text="\n".join(lines))
+
+    def device_status(self):
+        """What this laptop reports to your other devices."""
+        c = self.db.counts()
+        try:
+            n, b = self.db.storage(self.settings.get("root_page"))[:2]
+        except Exception:
+            n, b = None, None
+        return {"platform": "windows", "version": BUILD, "syncing": self.running(),
+                "now": self.status.get("text", "") if self.running() else "",
+                "pending": getattr(self.syncer, "pending", 0) if self.running() else 0,
+                "uploaded": c.get("done", 0), "failed": c.get("failed", 0) + c.get("retry", 0),
+                "cloud_files": n if isinstance(n, int) else None, "cloud_bytes": b if isinstance(b, (int, float)) else None,
+                "last_sync": int((self.settings.get("last_run") or 0) * 1000), "auto": bool(self.settings.get("auto_sync")),
+                "clipboard": bool(self.settings.get("clipboard_sync")), "wifi": self.clip.lan.connected_names()}
+
+    def refresh_devices(self):
+        self.dev_note.config(text="Refreshing…")
+
+        def work():
+            reg = devices.Registry(self.settings, self.db)
+            reg.register_me(self.device_status())
+            reg.all()
+        account.run_async(work, lambda r, e: self.events.put(lambda: (
+            self._fill_devices(), self._account_ui(),
+            e and self.dev_note.config(text=f"Couldn't refresh: {e}"))))
 
     def _build_activity(self, f):
         self.log_box = scrolledtext.ScrolledText(f, font=("Consolas", 9), wrap="none", height=30)
@@ -446,28 +565,29 @@ class App:
             return
 
         def work():
-            devices.Registry(self.settings, self.db).rename_me(new)
+            devices.Registry(self.settings, self.db).rename_me(new, self.device_status())
         account.run_async(work, lambda r, e: self.events.put(lambda: (
             self._account_ui(), e and messagebox.showerror(TITLE, f"Renamed here, but couldn't update Notion: {e}"))))
         self.settings.set("device_name", new.strip()[:60])
         self._account_ui()
 
     def _devices_loop(self):
-        """Keeps this laptop in your devices list and the list fresh."""
+        """Every few minutes: tells your other devices this laptop is on and what it's doing,
+        and reads theirs (for the Devices tab)."""
         last = 0
         while not self.stop_event.is_set():
-            if self.settings.get("signed_in") and self.settings.get("token") and \
-                    (time.time() - last > 6 * 3600 or not self.settings.get("devices_cache")):
+            if self.settings.get("signed_in") and self.settings.get("token") and time.time() - last > 300:
                 try:
                     reg = devices.Registry(self.settings, self.db)
-                    reg.register_me()
+                    reg.register_me(self.device_status())
                     reg.all()
                     last = time.time()
                     self.events.put(self._account_ui)
+                    self.events.put(self._fill_devices)
                 except Exception as e:
                     self.log(f"Couldn't update your devices list ({e}).")
-                    last = time.time() - 6 * 3600 + 600
-            self.stop_event.wait(60)
+                    last = time.time() - 240
+            self.stop_event.wait(20)
 
     def notify(self, title, msg):
         if self.tray is not None:
@@ -931,7 +1051,8 @@ def selftest():
     app = App(False, listener)
     app.root.report_callback_exception = lambda *a: errors.append(a)
     steps = [
-        lambda: [app.nb.select(i) for i in range(7)],
+        lambda: [app.nb.select(i) for i in range(8)],
+        app._fill_devices,
         lambda: app.nb.select(TAB_SPACE),
         app.space.refresh,
         lambda: app.nb.select(TAB_FILES),

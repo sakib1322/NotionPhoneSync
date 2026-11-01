@@ -11,8 +11,7 @@ object Sources {
     fun list(prefs: Prefs): List<Pair<String, String>> {
         val out = LinkedHashMap<String, String>()
         if (prefs.rootPageId.isNotBlank()) {
-            val me = prefs.deviceName.ifBlank { prefs.rootTitle.ifBlank { "Phone Backup" } }
-            out[prefs.rootPageId] = if (prefs.deviceName.isBlank()) me else "$me (this phone)"
+            out[prefs.rootPageId] = prefs.deviceName.ifBlank { prefs.rootTitle.ifBlank { "Phone Backup" } } + " (this phone)"
         }
         // Every device on your account, by its name.
         try {
@@ -20,7 +19,8 @@ object Sources {
             for (i in 0 until arr.length()) {
                 val d = arr.getJSONObject(i)
                 val page = d.optString("page")
-                if (page.isNotEmpty() && page !in out) out[page] = d.optString("name").ifBlank { d.optString("page_title", "Backup") }
+                if (page.isNotEmpty() && page !in out) out[page] = d.optString("name").ifBlank { d.optString("page_title", "Backup") } +
+                    (if (d.optString("type") == "laptop") " (laptop)" else if (d.optString("type") == "phone") " (phone)" else "")
             }
         } catch (e: Exception) { }
         for (line in prefs.extraSources.lines()) {

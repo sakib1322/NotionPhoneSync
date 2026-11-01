@@ -310,15 +310,8 @@ class FilesPage(
 
     // ---- sources --------------------------------------------------------------------------
 
-    private fun sources(): List<Pair<String, String>> {
-        val out = LinkedHashMap<String, String>()
-        if (prefs.rootPageId.isNotBlank()) out[prefs.rootPageId] = prefs.rootTitle.ifBlank { "Phone Backup" }
-        for (line in prefs.extraSources.lines()) {
-            val id = line.substringBefore('|').trim()
-            if (id.isNotEmpty() && id !in out) out[id] = line.substringAfter('|', "Backup").trim()
-        }
-        return out.toList()
-    }
+    /** Every device's backup (by device name), then any other pages you added. */
+    private fun sources(): List<Pair<String, String>> = Sources.list(prefs)
 
     private fun titleOf(root: String) = sources().firstOrNull { it.first == root }?.second ?: "Backup"
 
