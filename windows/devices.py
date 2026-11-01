@@ -194,7 +194,11 @@ class Registry:
     def all(self):
         """Every device (one per id), newest-seen first; also caches them in settings."""
         by_id = {}
+        claims = {}
         for d in self._rows():
+            if d.id.startswith("owner:"):
+                claims[d.id[6:]] = (d.page, d.seen or d.created or "")
+                continue
             if d.id and d.id != HOME_ID:
                 first = min([x for x in (d.created, by_id[d.id].created if d.id in by_id else "") if x] or [""])
                 if d.id not in by_id or (d.seen or "") > (by_id[d.id].seen or ""):
@@ -202,6 +206,7 @@ class Registry:
                 by_id[d.id].created = first
         devs = sorted(by_id.values(), key=lambda d: d.seen or "", reverse=True)
         self.settings.set("devices_cache", [d.as_dict() for d in devs])
+        self.settings.set("page_claims", {pg: owner for pg, (owner, _) in claims.items()})
         return devs
 
     def home(self):
@@ -239,6 +244,14 @@ class Registry:
             self.client.update_row(rows[0]["id"], props)
             return rows[0]["id"]
         return self.client.create_row(dbid, props)
+
+    def claim_page(self, page=None):
+        """Records that this laptop owns its backup page (you said so), for all your devices."""
+        page = page or self.settings.get("root_page")
+        self._upsert("owner:" + page, "(owner of a backup page)", "claim", my_id(self.settings), page)
+        claims = dict(self.settings.get("page_claims") or {})
+        claims[page] = my_id(self.settings)
+        self.settings.set("page_claims", claims)
 
     def register_me(self, status=None):
         """Adds or refreshes this laptop in the list (with what it's doing, if given)."""

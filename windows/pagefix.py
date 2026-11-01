@@ -20,18 +20,34 @@ from notion import NotionClient, NotionError
 STATE = os.path.join(core.DATA_DIR, "moved_from.json")
 
 
+def owner_of(devs, page, claims):
+    """Who owns a backup page several devices point at: the one you chose; otherwise the one
+    that has uploaded the most files (the page's real owner), then the one registered first."""
+    same = [d for d in devs if d.page == page and d.id]
+    if len(same) < 2:
+        return same[0] if same else None
+    chosen = (claims or {}).get(page)
+    for d in same:
+        if d.id == chosen:
+            return d
+
+    def uploaded(d):
+        v = d.info().get("uploaded")
+        return v if isinstance(v, int) else -1
+    return sorted(same, key=lambda d: (-uploaded(d), d.created or "9999", d.id))[0]
+
+
 def conflict(settings):
-    """The device that owns this laptop's page, if it isn't this laptop. Ownership goes to the
-    device that registered with that page first."""
+    """The device that owns this laptop's page, if it isn't this laptop."""
     me = devices.my_id(settings)
     page = settings.get("root_page")
     if not page:
         return None
-    same = [d for d in devices.cached(settings) if d.page == page and d.id]
-    if not any(d.id == me for d in same) or len(same) < 2:
+    devs = devices.cached(settings)
+    if not any(d.id == me and d.page == page for d in devs):
         return None
-    owner = min(same, key=lambda d: (d.created or "9999", d.id))
-    return None if owner.id == me else owner
+    owner = owner_of(devs, page, settings.get("page_claims"))
+    return None if owner is None or owner.id == me else owner
 
 
 def _iso(ts):

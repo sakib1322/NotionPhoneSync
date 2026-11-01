@@ -597,6 +597,10 @@ class App:
 
     def _show_conflict(self, owner):
         """This laptop has been backing up into another device's page: give it its own."""
+        owner = pagefix.conflict(self.settings)
+        if not owner:
+            self.conflict_open = False
+            return
         self.stop_sync()
         self.show_window()
         win = tk.Toplevel(self.root)
@@ -667,6 +671,34 @@ class App:
                 self.events.put(ui)
             account.run_async(work, done)
         ttk.Button(fr, text=f"Make “{name} Backup” and move there", command=go).pack(anchor="w", pady=10)
+
+        def keep():
+            if not messagebox.askyesno(TITLE, f"“{self.settings.get('root_title')}” belongs to this laptop ({name})?\n\n"
+                                              f"Then {owner.name} will be asked to move to its own page instead.", parent=win):
+                return
+
+            def work():
+                reg = devices.Registry(self.settings, self.db)
+                reg.claim_page()
+                reg.register_me(self.device_status())
+                reg.all()
+
+            def done(r, e):
+                def ui():
+                    if e:
+                        msg.config(text=f"Couldn't save that: {e}", foreground="#b00020")
+                        return
+                    self.conflict_open = False
+                    win.destroy()
+                    self._fill_devices()
+                    self.log(f"You said “{self.settings.get('root_title')}” belongs to this laptop; "
+                             f"{owner.name} will move to its own page.")
+                    self.sync_now()
+                self.events.put(ui)
+            account.run_async(work, done)
+        ttk.Separator(fr).pack(fill="x", pady=6)
+        ttk.Label(fr, text="Is that wrong?", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Button(fr, text=f"This page belongs to this laptop ({name}) — keep it", command=keep).pack(anchor="w", pady=4)
 
     def notify(self, title, msg):
         if self.tray is not None:

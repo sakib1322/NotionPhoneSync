@@ -151,6 +151,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("devices_db", "") ?: ""
         set(v) { sp.edit().putString("devices_db", v).apply() }
 
+    /** Backup page -> the device you said owns it (JSON). */
+    var pageClaims: String
+        get() = sp.getString("page_claims", "{}") ?: "{}"
+        set(v) { sp.edit().putString("page_claims", v).apply() }
+
     var devicesSeenAt: Long
         get() = sp.getLong("devices_seen_at", 0L)
         set(v) { sp.edit().putLong("devices_seen_at", v).apply() }

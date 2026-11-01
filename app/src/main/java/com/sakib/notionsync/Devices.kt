@@ -102,7 +102,10 @@ object Devices {
         if (p.rootPageId.isEmpty()) return null
         val same = cached(ctx).filter { it.page == p.rootPageId && it.id.isNotEmpty() }
         if (same.size < 2 || same.none { it.id == p.deviceId }) return null
-        val owner = same.minWith(compareBy({ it.created.ifEmpty { "9999" } }, { it.id }))
+        // The one you chose; otherwise the one that uploaded the most into it; then the first registered.
+        val chosen = try { JSONObject(p.pageClaims.ifEmpty { "{}" }).optString(p.rootPageId) } catch (e: Exception) { "" }
+        val owner = same.firstOrNull { it.id == chosen }
+            ?: same.sortedWith(compareBy({ -(it.info().optInt("uploaded", -1)) }, { it.created.ifEmpty { "9999" } }, { it.id })).first()
         return if (owner.id == p.deviceId) null else owner
     }
 
@@ -243,8 +246,11 @@ class Registry(private val ctx: Context) {
     fun all(): List<Devices.Device> {
         val byId = LinkedHashMap<String, Devices.Device>()
         val all = rows()
+        val claims = JSONObject()
+        for (d in all.sortedBy { it.seen }) if (d.id.startsWith("owner:")) claims.put(d.id.removePrefix("owner:"), d.page)
+        prefs.pageClaims = claims.toString()
         for (d in all) {
-            if (d.id.isEmpty() || d.id == Devices.HOME_ID) continue
+            if (d.id.isEmpty() || d.id == Devices.HOME_ID || d.id.startsWith("owner:")) continue
             val cur = byId[d.id]
             if (cur == null || d.seen > cur.seen) byId[d.id] = d
         }
@@ -277,6 +283,12 @@ class Registry(private val ctx: Context) {
             return row
         }
         return client.createRow(db, props)
+    }
+
+    /** Records that this phone owns its backup page (you said so), for all your devices. */
+    fun claimPage() {
+        upsert("owner:" + prefs.rootPageId, "(owner of a backup page)", "claim", prefs.deviceId, prefs.rootPageId)
+        prefs.pageClaims = JSONObject(prefs.pageClaims.ifEmpty { "{}" }).put(prefs.rootPageId, prefs.deviceId).toString()
     }
 
     fun registerMe(status: JSONObject? = null) {

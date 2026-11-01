@@ -45,7 +45,8 @@ class Settings:
         "device_name": "",        # its name (default: the computer's name)
         "signed_in": "",          # "google" or "code" once signed in (the app needs it)
         "devices_cache": [],      # your devices, as last read from Notion
-        "devices_seen_at": 0.0,   # most space files opened from the cloud may use      # other backup pages to browse, as "id|title"
+        "devices_seen_at": 0.0,
+        "page_claims": {},        # backup page -> the device you said owns it   # most space files opened from the cloud may use      # other backup pages to browse, as "id|title"
     }
 
     def __init__(self):

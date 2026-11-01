@@ -687,6 +687,16 @@ class MainActivity : AppCompatActivity() {
                             }
                         }.start()
                     }
+                    .setNeutralButton("It belongs to this phone") { _, _ ->
+                        Thread {
+                            try {
+                                Registry(this).apply { claimPage(); registerMe(Devices.myStatus(this@MainActivity)); all() }
+                                runOnUiThread { conflictShown = false; toast("Kept. ${owner.name} will move to its own page."); Scheduler.syncNow(this) }
+                            } catch (e: Exception) {
+                                runOnUiThread { conflictShown = false; toast("Couldn't save that: ${e.message}") }
+                            }
+                        }.start()
+                    }
                     .setCancelable(false)
                     .show()
             }
