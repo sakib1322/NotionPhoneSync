@@ -102,6 +102,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("clipboard_sync", true)
         set(v) { sp.edit().putBoolean("clipboard_sync", v).apply() }
 
+    /** Send what you copy automatically (needs the Accessibility helper switched on). */
+    var clipAuto: Boolean
+        get() = sp.getBoolean("clip_auto", true)
+        set(v) { sp.edit().putBoolean("clip_auto", v).apply() }
+
     var clipDbId: String
         get() = sp.getString("clip_db", "") ?: ""
         set(v) { sp.edit().putString("clip_db", v).apply() }

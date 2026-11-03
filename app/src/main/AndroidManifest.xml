@@ -106,6 +106,19 @@
         </service>
 
         <service
+            android:name=".ClipAutoService"
+            android:exported="true"
+            android:label="@string/clip_auto_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/clip_accessibility" />
+        </service>
+
+        <service
             android:name=".ClipTile"
             android:exported="true"
             android:icon="@drawable/ic_stat"

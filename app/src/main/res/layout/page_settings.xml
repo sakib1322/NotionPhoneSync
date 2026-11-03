@@ -352,6 +352,9 @@
 
                 <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_clip" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Share the clipboard with my other devices" />
 
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_clip_auto" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Send what I copy automatically (no tap)" />
+                <TextView android:id="@+id/clip_auto_note" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" />
+
                 <TextView android:id="@+id/clip_status" style="@style/Body" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" />
 
                 <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"

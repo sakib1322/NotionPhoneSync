@@ -37,26 +37,12 @@ class ClipSendActivity : Activity() {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus || done) return
         done = true
-        val cm = getSystemService(ClipboardManager::class.java)
-        val clip = try { cm.primaryClip } catch (e: Exception) { null }
-        if (clip == null || clip.itemCount == 0) {
-            Toast.makeText(this, "Nothing copied yet. Copy something first.", Toast.LENGTH_SHORT).show()
-            finish()
-            return
-        }
-        val uris = ArrayList<Uri>()
-        val sb = StringBuilder()
-        for (i in 0 until clip.itemCount) {
-            val it = clip.getItemAt(i)
-            if (it.uri != null) uris.add(it.uri)
-            else it.coerceToText(this)?.toString()?.let { t -> if (t.isNotEmpty()) { if (sb.isNotEmpty()) sb.append('\n'); sb.append(t) } }
-        }
-        val text = sb.toString()
-        val fp = if (uris.isEmpty()) ClipRelay.fingerprint("text", text, null) else ""
-        if (fp.isNotEmpty() && fp == ClipService.lastFp) {
-            Toast.makeText(this, "Already on the laptop.", Toast.LENGTH_SHORT).show()
-        } else {
-            ClipSend.send(this, text, uris)
+        val auto = intent?.getBooleanExtra("auto", false) == true
+        val got = ClipSend.read(this)
+        if (got == null) {
+            if (!auto) Toast.makeText(this, "Nothing copied yet. Copy something first.", Toast.LENGTH_SHORT).show()
+        } else if (!ClipSend.sendIfNew(this, got.first, got.second, quiet = auto) && !auto) {
+            Toast.makeText(this, "Already sent.", Toast.LENGTH_SHORT).show()
         }
         finish()
     }

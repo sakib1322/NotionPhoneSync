@@ -469,6 +469,31 @@ class MainActivity : AppCompatActivity() {
             prefs.clipboardSync = it
             if (it) ClipService.start(this) else ClipService.stop(this)
         }
+        findViewById<MaterialSwitch>(R.id.sw_clip_auto).setOnClickListener { v ->
+            val sw = v as MaterialSwitch
+            val wanted = sw.isChecked
+            sw.isChecked = prefs.clipAuto && ClipAutoService.enabled(this)  // shown as on only when it really is
+            if (wanted) {
+                prefs.clipAuto = true
+                if (ClipAutoService.enabled(this)) { showClipAuto(); return@setOnClickListener }
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle("Send copies automatically")
+                    .setMessage("Android only lets the app on screen read the clipboard. To send what you copy with no tap, " +
+                        "switch on the app's helper:\n\n1. Tap Open settings.\n2. Find “Notion Sync: send copies automatically” " +
+                        "(on Samsung: Installed apps).\n3. Switch it on and allow.\n\nIt only notices when you tap Copy (or an app says " +
+                        "“Copied”) and then reads the clipboard for a split second. It doesn't read your screen or what you type, " +
+                        "and never sends passwords.")
+                    .setPositiveButton("Open settings") { _, _ ->
+                        try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (e: Exception) { }
+                    }
+                    .setNegativeButton("Not now", null)
+                    .show()
+            } else {
+                prefs.clipAuto = false
+                showClipAuto()
+                toast("Turned off. You can also switch the helper off in Settings › Accessibility.")
+            }
+        }
         findViewById<MaterialButton>(R.id.btn_clip_send).setOnClickListener {
             startActivity(Intent(this, ClipSendActivity::class.java))
         }
@@ -733,7 +758,18 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showClipAuto() {
+        val on = prefs.clipAuto && ClipAutoService.enabled(this)
+        findViewById<MaterialSwitch>(R.id.sw_clip_auto)?.let { if (it.isChecked != on) it.isChecked = on }
+        findViewById<TextView>(R.id.clip_auto_note)?.text = when {
+            on -> "On: copy anything on this phone and it's on your other devices a few seconds later."
+            prefs.clipAuto && !ClipAutoService.enabled(this) -> "Needs the helper switched on in Android's Accessibility settings (tap the switch)."
+            else -> "Off: tap “Send copied” in the notification after copying."
+        }
+    }
+
     private fun showClipStatus() {
+        showClipAuto()
         val tv = findViewById<TextView>(R.id.clip_status) ?: return
         val t = when {
             !prefs.clipboardSync -> "Off."

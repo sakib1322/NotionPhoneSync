@@ -542,7 +542,41 @@ object ClipSend {
     }
 
     /** Sends to your other devices in the background (Wi-Fi first, Notion for the rest); reports with toasts. */
-    fun send(ctx: Context, text: String?, uris: List<Uri>) {
+    /** What's on the clipboard now: (text, files), or null if empty or marked sensitive.
+     *  Only works while this app has focus (Android's rule). */
+    fun read(ctx: Context): Pair<String, List<Uri>>? {
+        val cm = ctx.getSystemService(ClipboardManager::class.java)
+        val clip = try { cm.primaryClip } catch (e: Exception) { null } ?: return null
+        if (clip.itemCount == 0) return null
+        // Passwords and other things apps mark as sensitive are never sent.
+        if (clip.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true) return null
+        val uris = ArrayList<Uri>()
+        val sb = StringBuilder()
+        for (i in 0 until clip.itemCount) {
+            val it = clip.getItemAt(i)
+            if (it.uri != null) uris.add(it.uri)
+            else it.coerceToText(ctx)?.toString()?.let { t -> if (t.isNotEmpty()) { if (sb.isNotEmpty()) sb.append('\n'); sb.append(t) } }
+        }
+        if (uris.isEmpty() && sb.isEmpty()) return null
+        return sb.toString() to uris
+    }
+
+    @Volatile private var lastUris = ""
+
+    /** Sends unless it's what was just sent or received. Returns false if skipped. */
+    fun sendIfNew(ctx: Context, text: String, uris: List<Uri>, quiet: Boolean): Boolean {
+        if (uris.isEmpty()) {
+            if (ClipRelay.fingerprint("text", text, null) == ClipService.lastFp) return false
+        } else {
+            val key = uris.joinToString("|")
+            if (key == lastUris) return false
+            lastUris = key
+        }
+        send(ctx, text, uris, quiet)
+        return true
+    }
+
+    fun send(ctx: Context, text: String?, uris: List<Uri>, quiet: Boolean = false) {
         val app = ctx.applicationContext
         val main = Handler(Looper.getMainLooper())
         fun toast(s: String) = main.post { Toast.makeText(app, s, Toast.LENGTH_SHORT).show() }
@@ -559,7 +593,7 @@ object ClipSend {
                     val fp = ClipRelay.fingerprint("files", null, files)
                     val images = files.all { FileTypes.blockType(it.name) == "image" }
                     val kind = if (images) "image" else "files"
-                    toast(if (files.size == 1) "Sending ${files.first().name}…" else "Sending ${files.size} files…")
+                    if (!quiet) toast(if (files.size == 1) "Sending ${files.first().name}…" else "Sending ${files.size} files…")
                     val reached = ClipService.lan?.send(kind, null, files, null, iid) ?: emptySet()
                     if (Devices.needNotion(app, reached)) {
                         if (files.any { it.length() > ClipRelay.MAX_FILE }) {
@@ -582,12 +616,12 @@ object ClipSend {
                     val reached = ClipService.lan?.send("text", text, emptyList(), null, iid) ?: emptySet()
                     if (Devices.needNotion(app, reached)) ClipRelay(app).send("text", text, emptyList(), item = iid)
                     ClipService.lastFp = ClipRelay.fingerprint("text", text, null)
-                    toast("✓ On your other devices' clipboards")
+                    toast(if (quiet) "✓ Copied to your other devices" else "✓ On your other devices' clipboards")
                     Logger.log(app, "Shared clipboard: sent text to your other devices" +
                         (if (reached.isNotEmpty()) " (Wi-Fi to ${reached.size})" else "") + ".")
                     p.clipStatus = "✓ Working — last sent text at ${stamp()}"
                 } else {
-                    toast("Nothing copied yet.")
+                    if (!quiet) toast("Nothing copied yet.")
                 }
             } catch (e: Exception) {
                 toast("Couldn't send: ${e.message}")
