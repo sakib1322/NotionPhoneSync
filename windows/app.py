@@ -359,7 +359,7 @@ class App:
             on = self.voice.running
             self.v_btn.config(text="Stop voice changer" if on else "Start voice changer")
             self.v_meter["value"] = min(1.0, self.voice.level) if on else 0
-            self.v_status.config(text=(f"● On — sounding: {self.settings.get('voice_preset')}"
+            self.v_status.config(text=(f"● On — mic: {self.voice.used_mic} — sounding: {self.settings.get('voice_preset')}"
                                        + (f" {float(self.settings.get('voice_pitch') or 0):+.1f}" if self.settings.get('voice_pitch') else ""))
                                  if on else "Off.")
         except Exception:

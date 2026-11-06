@@ -193,6 +193,7 @@ class VoiceChanger:
         self.q_out = deque()
         self.q_mon = deque()
         self.streams = []
+        self.used_mic = ""
 
     @staticmethod
     def sd():
@@ -217,19 +218,50 @@ class VoiceChanger:
             self.error = f"Couldn't list sound devices: {e}"
             return []
 
+    def _api_order(self):
+        """Windows lists each device once per audio system; MME is the most forgiving (it
+        converts sample rates for us), then DirectSound, then WASAPI. WDM-KS is skipped."""
+        try:
+            apis = list(self.sd().query_hostapis())
+        except Exception:
+            return {}
+        rank = {}
+        for i, a in enumerate(apis):
+            n = a.get("name", "")
+            rank[i] = 0 if "MME" in n else 1 if "DirectSound" in n else 2 if "WASAPI" in n else 9
+        return rank
+
     def mics(self):
-        out = []
-        seen = set()
+        """(index, name) of each microphone, once, using the most reliable copy."""
+        rank = self._api_order()
+        best = {}
         for i, d in enumerate(self.devices()):
             n = d.get("name", "")
-            if d.get("max_input_channels", 0) > 0 and "cable" not in n.lower() and n not in seen \
-                    and not n.lower().startswith("pc speaker"):
-                seen.add(n)
-                out.append((i, n))
-        return out
+            low = n.lower()
+            if d.get("max_input_channels", 0) <= 0 or "cable" in low or low.startswith("pc speaker") \
+                    or "sound mapper" in low or "primary sound capture" in low:
+                continue
+            r = rank.get(d.get("hostapi"), 9)
+            if r >= 9:
+                continue
+            key = low[:31]  # MME cuts names to 31 characters
+            if key not in best or r < best[key][0]:
+                best[key] = (r, i, n)
+        return [(i, n) for _, i, n in sorted(best.values(), key=lambda x: x[2].lower())]
+
+    def cables(self):
+        """Every copy of VB-CABLE's playback side, most reliable first."""
+        rank = self._api_order()
+        devs = self.devices()
+        out = []
+        for i, d in enumerate(devs):
+            if d.get("max_output_channels", 0) > 0 and find_cable([d]) == 0 and rank.get(d.get("hostapi"), 9) < 9:
+                out.append((rank.get(d.get("hostapi"), 9), "16" in d.get("name", ""), i))
+        return [i for _, _, i in sorted(out)]
 
     def cable(self):
-        return find_cable(self.devices())
+        c = self.cables()
+        return c[0] if c else None
 
     def _settings(self):
         preset = self.settings.get("voice_preset") or "Deeper"
@@ -269,44 +301,71 @@ class VoiceChanger:
         for c in range(outdata.shape[1]):
             outdata[:, c] = out
 
+    def _open(self, kind, candidates, **kw):
+        """Opens the first device that works; returns (stream, index)."""
+        sd = self.sd()
+        last = None
+        for idx in candidates:
+            try:
+                st = (sd.InputStream if kind == "in" else sd.OutputStream)(device=idx, samplerate=RATE, blocksize=BLOCK,
+                                                                          dtype="float32", latency="low", **kw)
+                return st, idx
+            except Exception as e:
+                last = e
+        raise RuntimeError(str(last) if last else "no device")
+
     def start(self):
         if self.running:
             return
         sd = self.sd()
-        cable = self.cable()
-        if cable is None:
+        if not self.cables():
             self.rescan()
-            cable = self.cable()
-        if cable is None:
+        cables = self.cables()
+        if not cables:
             outs = sorted({d.get("name", "") for d in self.devices() if d.get("max_output_channels", 0) > 0})
             raise RuntimeError("Can't find VB-CABLE's “CABLE Input” device. If you just installed it, restart the "
                                "laptop.\n\nSound outputs this laptop has:\n• " + "\n• ".join(outs[:20]))
-        mic = self.settings.get("voice_mic")
-        mic_idx = None
-        for i, n in self.mics():
-            if n == mic:
-                mic_idx = i
+        mics = self.mics()
+        want = self.settings.get("voice_mic")
+        order = [i for i, n in mics if n == want] + [None] + [i for i, n in mics if n != want]
         self.fx = Effects()
         self.q_out.clear()
         self.q_mon.clear()
         devs = self.devices()
-        ch = min(2, devs[cable].get("max_output_channels", 2) or 1)
+        self.streams = []
         try:
-            ins = sd.InputStream(device=mic_idx, channels=1, samplerate=RATE, blocksize=BLOCK,
-                                 dtype="float32", latency="low", callback=self._in)
-            outs = sd.OutputStream(device=cable, channels=ch, samplerate=RATE, blocksize=BLOCK, dtype="float32",
-                                   latency="low", callback=lambda o, f, t, s: self._pull(self.q_out, o, f))
-            mon = sd.OutputStream(channels=1, samplerate=RATE, blocksize=BLOCK, dtype="float32", latency="low",
-                                  callback=lambda o, f, t, s: self._pull(self.q_mon, o, f))
-            self.streams = [ins, outs, mon]
-            for s in self.streams:
-                s.start()
+            ins, used = self._open("in", order, channels=1, callback=self._in)
+            self.used_mic = "Windows default microphone" if used is None else devs[used].get("name", "")
+            if want and self.used_mic != want:
+                self.log(f"Voice changer: couldn't open “{want}”, using “{self.used_mic}” instead.")
+
+            def outs_for(ch_idx):
+                return min(2, devs[ch_idx].get("max_output_channels", 2) or 1)
+            outs = None
+            last = None
+            for c in cables:
+                try:
+                    outs, _ = self._open("out", [c], channels=outs_for(c),
+                                         callback=lambda o, f, t, s: self._pull(self.q_out, o, f))
+                    break
+                except Exception as e:
+                    last = e
+            if outs is None:
+                raise RuntimeError(f"Couldn't open VB-CABLE: {last}")
+            self.streams = [ins, outs]
+            try:
+                mon, _ = self._open("out", [None], channels=1, callback=lambda o, f, t, s: self._pull(self.q_mon, o, f))
+                self.streams.append(mon)
+            except Exception:
+                pass  # no speakers to hear yourself on: fine
+            for st in self.streams:
+                st.start()
         except Exception:
             self.stop()
             raise
         self.running = True
         self.error = ""
-        self.log("Voice changer on.")
+        self.log(f"Voice changer on (microphone: {self.used_mic}).")
 
     def stop(self):
         for s in self.streams:
