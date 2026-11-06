@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import webbrowser
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
@@ -16,6 +17,7 @@ import account
 import clip_sync
 import device_setup
 import pagefix
+import voice
 import devices
 import core
 import winutil
@@ -104,6 +106,7 @@ class App:
         self._build_activity(self._tab(nb, "Activity"))
         self._build_about(self._tab(nb, "Updates & settings"))
         self._build_devices(self._tab(nb, "Devices"))
+        self._build_voice(self._tab(nb, "Voice"))
         nb.bind("<<NotebookTabChanged>>", lambda e: self._tab_changed())
         if not self.settings.get("token"):
             nb.select(TAB_NOTION)
@@ -255,6 +258,109 @@ class App:
         ttk.Button(f, text="Save & test connection", command=self.save_notion).pack(anchor="w", pady=8)
         title = self.settings.get("root_title")
         self.notion_lbl = self._p(f, f"✓ Connected to “{title}”" if title else "Not connected yet.")
+
+    # ---- voice changer --------------------------------------------------------------
+
+    def _build_voice(self, f):
+        self.voice = voice.VoiceChanger(self.settings, self.log)
+        self._h(f, "Voice changer for calls")
+        self._p(f, "Change your voice live in WhatsApp Desktop, Google Meet, Zoom, Teams or any call app on this "
+                   "laptop. Your microphone goes through the effect into a virtual microphone; in the call app you "
+                   "choose that as your microphone.", foreground="#555")
+
+        self.v_cable = ttk.Label(f, text="", wraplength=700, justify="left")
+        self.v_cable.pack(anchor="w", pady=(6, 2))
+        self.v_cable_btn = ttk.Button(f, text="Get VB-CABLE (free) — opens vb-audio.com",
+                                      command=lambda: webbrowser.open("https://vb-audio.com/Cable/"))
+        self.v_cable_btn.pack(anchor="w")
+
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=(12, 4))
+        ttk.Label(row, text="Voice").pack(side="left")
+        self.v_preset = ttk.Combobox(row, state="readonly", width=28, values=list(voice.PRESETS))
+        cur = self.settings.get("voice_preset")
+        self.v_preset.set(cur if cur in voice.PRESETS else "Deeper")
+        self.v_preset.pack(side="left", padx=8)
+        self.v_preset.bind("<<ComboboxSelected>>", lambda e: self.settings.set("voice_preset", self.v_preset.get()))
+
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=4)
+        ttk.Label(row, text="Fine-tune pitch").pack(side="left")
+        self.v_pitch_lbl = ttk.Label(row, text="", width=14)
+        pv = tk.DoubleVar(value=float(self.settings.get("voice_pitch") or 0))
+
+        def on_pitch(_=None):
+            v = round(pv.get() * 2) / 2
+            self.settings.set("voice_pitch", v)
+            self.v_pitch_lbl.config(text=f"{v:+.1f} semitones" if v else "no extra")
+        ttk.Scale(row, from_=-12, to=12, variable=pv, length=260, command=on_pitch).pack(side="left", padx=8)
+        self.v_pitch_lbl.pack(side="left")
+        on_pitch()
+
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=4)
+        ttk.Label(row, text="Microphone").pack(side="left")
+        self.v_mic = ttk.Combobox(row, state="readonly", width=46)
+        self.v_mic.pack(side="left", padx=8)
+        self.v_mic.bind("<<ComboboxSelected>>", lambda e: self.settings.set(
+            "voice_mic", "" if self.v_mic.current() == 0 else self.v_mic.get()))
+        ttk.Button(row, text="Refresh", command=self._voice_devices).pack(side="left")
+
+        mon = tk.BooleanVar(value=bool(self.settings.get("voice_monitor")))
+        ttk.Checkbutton(f, text="Hear myself (use headphones, or you'll get feedback)", variable=mon,
+                        command=lambda: self.settings.set("voice_monitor", mon.get())).pack(anchor="w", pady=4)
+
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=(10, 4))
+        self.v_btn = ttk.Button(row, text="Start voice changer", command=self.voice_toggle)
+        self.v_btn.pack(side="left")
+        ttk.Label(row, text="   Mic level").pack(side="left")
+        self.v_meter = ttk.Progressbar(row, length=200, maximum=1.0)
+        self.v_meter.pack(side="left", padx=6)
+        self.v_status = self._p(f, "")
+        self._p(f, "In your call app: Settings → Audio → Microphone → “CABLE Output (VB-Audio Virtual Cable)”. "
+                   "Keep your speaker as normal. To talk normally again, choose “Normal (no change)” or switch the "
+                   "call app back to your real microphone.", foreground="#555")
+        self._voice_devices()
+
+    def _voice_devices(self):
+        try:
+            mics = [n for _, n in self.voice.mics()]
+        except Exception:
+            mics = []
+        self.v_mic.config(values=["Windows default microphone"] + mics)
+        cur = self.settings.get("voice_mic")
+        self.v_mic.set(cur if cur in mics else "Windows default microphone")
+        has = self.voice.cable() is not None
+        self.v_cable.config(text="✓ Virtual microphone (VB-CABLE) found." if has else
+                            "Step 1 (once): install VB-CABLE, the free virtual microphone. Download it, unzip, right-click "
+                            "VBCABLE_Setup_x64.exe → Run as administrator → Install, then restart the laptop.")
+        if has:
+            self.v_cable_btn.pack_forget()
+        elif not self.v_cable_btn.winfo_ismapped():
+            self.v_cable_btn.pack(anchor="w", after=self.v_cable)
+
+    def voice_toggle(self):
+        if self.voice.running:
+            self.voice.stop()
+        else:
+            try:
+                self.voice.start()
+            except Exception as e:
+                messagebox.showerror(TITLE, f"Couldn't start the voice changer:\n{e}")
+                self._voice_devices()
+        self._voice_ui()
+
+    def _voice_ui(self):
+        try:
+            on = self.voice.running
+            self.v_btn.config(text="Stop voice changer" if on else "Start voice changer")
+            self.v_meter["value"] = min(1.0, self.voice.level) if on else 0
+            self.v_status.config(text=(f"● On — sounding: {self.settings.get('voice_preset')}"
+                                       + (f" {float(self.settings.get('voice_pitch') or 0):+.1f}" if self.settings.get('voice_pitch') else ""))
+                                 if on else "Off.")
+        except Exception:
+            pass
 
     def _build_devices(self, f):
         self._h(f, "Your devices")
@@ -944,6 +1050,8 @@ class App:
     # ---- the once-a-second refresh ---------------------------------------------------
 
     def _tick(self):
+        if getattr(self, "voice", None) is not None:
+            self._voice_ui()
         try:
             st = "Shared clipboard: " + self.clip.status()
             if self.clip_status.cget("text") != st:
@@ -1039,6 +1147,7 @@ class App:
                 pystray.MenuItem("Open", lambda: self.events.put(self.show_window), default=True),
                 pystray.MenuItem("Sync now", lambda: self.events.put(self.sync_now)),
                 pystray.MenuItem("Stop syncing", lambda: self.events.put(self.stop_sync)),
+                pystray.MenuItem("Voice changer on/off", lambda: self.events.put(self.voice_toggle)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quit", lambda: self.events.put(self.quit)),
             )
@@ -1075,6 +1184,13 @@ class App:
                 return
 
     def quit(self):
+        try:
+            self.voice.stop()
+        except Exception:
+            pass
+        self._quit_rest()
+
+    def _quit_rest(self):
         self.quitting = True
         self.stop_event.set()
         if self.sync_thread is not None:
@@ -1161,6 +1277,11 @@ class App:
 
 def selftest():
     """Used by the build: opens the window, clicks around, and fails on any error."""
+    # The packaged (windowed) app has no console to print to.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
     errors = []
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
@@ -1168,7 +1289,11 @@ def selftest():
     app = App(False, listener)
     app.root.report_callback_exception = lambda *a: errors.append(a)
     steps = [
-        lambda: [app.nb.select(i) for i in range(8)],
+        lambda: [app.nb.select(i) for i in range(9)],
+        lambda: print(voice.selftest()),
+        lambda: print("AUDIO LIB OK", voice.VoiceChanger.sd().__version__),
+        app._voice_devices,
+        app._voice_ui,
         app._fill_devices,
         lambda: app.nb.select(TAB_SPACE),
         app.space.refresh,

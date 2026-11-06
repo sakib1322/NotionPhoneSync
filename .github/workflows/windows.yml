@@ -44,7 +44,7 @@ jobs:
           else { Write-Host "::notice::Google sign-in included (client $($env:GID.Substring(0,12))...)" }
 
       - name: Check the code
-        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py clip_relay.py clip_sync.py lan.py devices.py device_setup.py pagefix.py
+        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py clip_relay.py clip_sync.py lan.py devices.py device_setup.py pagefix.py voice.py
 
       - name: Open the window as a test
         env:
@@ -53,12 +53,23 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
           python app.py --selftest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python voice.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build the app
         run: |
           pyinstaller --noconfirm --clean --windowed --name NotionLaptopSync `
             --icon icon.ico --add-data "icon.ico;." `
-            --hidden-import pystray._win32 --hidden-import gconfig app.py
+            --hidden-import pystray._win32 --hidden-import gconfig `
+            --hidden-import sounddevice --collect-all _sounddevice_data app.py
+
+      - name: Test the built app
+        env:
+          APPDATA: ${{ runner.temp }}\selftest2
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+          $p = Start-Process -FilePath "dist\NotionLaptopSync\NotionLaptopSync.exe" -ArgumentList "--selftest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Host "::error::The built app failed its self-test (exit $($p.ExitCode))"; exit 1 }
 
       - name: Build the installer
         run: |

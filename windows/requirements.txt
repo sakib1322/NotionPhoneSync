@@ -3,3 +3,5 @@ pystray==0.19.5
 pillow==11.0.0
 qrcode==7.4.2
 cryptography==43.0.3
+sounddevice==0.5.1
+numpy==2.1.3
