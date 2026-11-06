@@ -273,7 +273,8 @@ class VoiceChanger:
         x = indata[:, 0].astype(np.float32)
         self.level = float(np.sqrt(np.mean(x * x)) * 4)
         semis, effect = self._settings()
-        y = self.fx.run(x, semis, effect) if self.settings.get("voice_on", True) else x
+        on = self.settings.get("voice_on")
+        y = self.fx.run(x, semis, effect) if on is None or on else x
         with self.lock:
             self.q_out.append(y)
             while len(self.q_out) > 6:      # keep the delay short
@@ -414,6 +415,16 @@ def selftest():
     names.append({"name": "CABLE Input (VB-Audio Virtual C", "max_output_channels": 2})
     assert find_cable(names) == 3
     assert find_cable(names[:1]) is None
+    # the live audio step, with the app's real settings object (get() takes one argument)
+    class _Strict:
+        def __init__(self, d): self.d = d
+        def get(self, k): return self.d.get(k)
+    vc = VoiceChanger(_Strict({"voice_preset": "Robot", "voice_pitch": 2.0, "voice_monitor": True}))
+    for i in range(0, RATE // 10, BLOCK):
+        vc._in(tone[i:i + BLOCK].reshape(-1, 1), BLOCK, None, None)
+    o = np.zeros((BLOCK, 2), dtype=np.float32)
+    vc._pull(vc.q_out, o, BLOCK)
+    assert np.abs(o).max() > 0 and vc.level > 0 and vc.q_mon, "audio step produced nothing"
     # speed: one 10 ms block of every preset well under 10 ms
     t0 = time.perf_counter()
     fx = Effects()
