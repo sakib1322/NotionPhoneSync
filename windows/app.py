@@ -304,7 +304,7 @@ class App:
         self.v_mic.pack(side="left", padx=8)
         self.v_mic.bind("<<ComboboxSelected>>", lambda e: self.settings.set(
             "voice_mic", "" if self.v_mic.current() == 0 else self.v_mic.get()))
-        ttk.Button(row, text="Refresh", command=self._voice_devices).pack(side="left")
+        ttk.Button(row, text="Refresh", command=lambda: (self.voice.rescan(), self._voice_devices())).pack(side="left")
 
         mon = tk.BooleanVar(value=bool(self.settings.get("voice_monitor")))
         ttk.Checkbutton(f, text="Hear myself (use headphones, or you'll get feedback)", variable=mon,
@@ -332,6 +332,9 @@ class App:
         cur = self.settings.get("voice_mic")
         self.v_mic.set(cur if cur in mics else "Windows default microphone")
         has = self.voice.cable() is not None
+        if not has:
+            self.voice.rescan()
+            has = self.voice.cable() is not None
         self.v_cable.config(text="✓ Virtual microphone (VB-CABLE) found." if has else
                             "Step 1 (once): install VB-CABLE, the free virtual microphone. Download it, unzip, right-click "
                             "VBCABLE_Setup_x64.exe → Run as administrator → Install, then restart the laptop.")

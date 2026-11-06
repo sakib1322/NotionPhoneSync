@@ -157,12 +157,28 @@ class Effects:
 
 
 def find_cable(devices):
-    """The virtual microphone's input side (what we play into)."""
+    """The virtual microphone's playback side (what we play into). VB-CABLE names it
+    "CABLE Input (VB-Audio Virtual Cable)"; newer versions use "CABLE In 16ch …"; Windows may cut
+    names short. Prefer the 2-channel one."""
+    best, score = None, 0
     for i, d in enumerate(devices):
-        name = d.get("name", "")
-        if d.get("max_output_channels", 0) > 0 and "CABLE Input" in name:
-            return i
-    return None
+        if d.get("max_output_channels", 0) <= 0:
+            continue
+        n = d.get("name", "").lower()
+        s = 0
+        if "cable input" in n:
+            s = 4
+        elif n.startswith("cable in"):
+            s = 3
+        elif "vb-audio" in n and "cable" in n and "output" not in n:
+            s = 2
+        elif n.startswith("cable") and "output" not in n:
+            s = 1
+        if "16" in n:
+            s -= 0.5  # the 16-channel one also works, but the stereo one is simpler
+        if s > score:
+            best, score = i, s
+    return best
 
 
 class VoiceChanger:
@@ -183,6 +199,17 @@ class VoiceChanger:
         import sounddevice
         return sounddevice
 
+    def rescan(self):
+        """Sound devices are read once when the audio library starts; this reads them again
+        (e.g. after installing VB-CABLE while the app was open)."""
+        try:
+            sd = self.sd()
+            if not self.running:
+                sd._terminate()
+                sd._initialize()
+        except Exception:
+            pass
+
     def devices(self):
         try:
             return list(self.sd().query_devices())
@@ -195,7 +222,8 @@ class VoiceChanger:
         seen = set()
         for i, d in enumerate(self.devices()):
             n = d.get("name", "")
-            if d.get("max_input_channels", 0) > 0 and "CABLE" not in n and n not in seen:
+            if d.get("max_input_channels", 0) > 0 and "cable" not in n.lower() and n not in seen \
+                    and not n.lower().startswith("pc speaker"):
                 seen.add(n)
                 out.append((i, n))
         return out
@@ -247,7 +275,12 @@ class VoiceChanger:
         sd = self.sd()
         cable = self.cable()
         if cable is None:
-            raise RuntimeError("VB-CABLE isn't installed yet (no “CABLE Input” device).")
+            self.rescan()
+            cable = self.cable()
+        if cable is None:
+            outs = sorted({d.get("name", "") for d in self.devices() if d.get("max_output_channels", 0) > 0})
+            raise RuntimeError("Can't find VB-CABLE's “CABLE Input” device. If you just installed it, restart the "
+                               "laptop.\n\nSound outputs this laptop has:\n• " + "\n• ".join(outs[:20]))
         mic = self.settings.get("voice_mic")
         mic_idx = None
         for i, n in self.mics():
@@ -315,6 +348,13 @@ def selftest():
         for i in range(0, RATE // 2, BLOCK):
             y = fx.run(tone[i:i + BLOCK], semis, eff)
             assert y.shape == (BLOCK,) and np.isfinite(y).all(), name
+    names = [{"name": "Speakers (Realtek)", "max_output_channels": 2},
+             {"name": "CABLE Output (VB-Audio Virtual Cable)", "max_output_channels": 0, "max_input_channels": 2},
+             {"name": "CABLE In 16ch (VB-Audio Virtual Cable)", "max_output_channels": 16}]
+    assert find_cable(names) == 2
+    names.append({"name": "CABLE Input (VB-Audio Virtual C", "max_output_channels": 2})
+    assert find_cable(names) == 3
+    assert find_cable(names[:1]) is None
     # speed: one 10 ms block of every preset well under 10 ms
     t0 = time.perf_counter()
     fx = Effects()
