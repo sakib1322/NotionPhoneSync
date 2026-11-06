@@ -324,6 +324,7 @@ class App:
         ttk.Button(row, text="Refresh", command=lambda: (self.voice.rescan(), self._voice_devices())).pack(side="left")
 
         mon = tk.BooleanVar(value=bool(self.settings.get("voice_monitor")))
+        self.v_mon_var = mon
         ttk.Checkbutton(f, text="Hear myself (use headphones, or you'll get feedback)", variable=mon,
                         command=lambda: self.settings.set("voice_monitor", mon.get())).pack(anchor="w", pady=4)
 
@@ -335,6 +336,8 @@ class App:
         self.v_meter = ttk.Progressbar(row, length=200, maximum=1.0)
         self.v_meter.pack(side="left", padx=6)
         self.v_status = self._p(f, "")
+        self.v_warn = ttk.Label(f, text="", foreground="#b45309", wraplength=760, justify="left")
+        self.v_warn.pack(anchor="w")
         self._p(f, "In your call app: Settings → Audio → Microphone → “CABLE Output (VB-Audio Virtual Cable)”. "
                    "Keep your speaker as normal. To talk normally again, choose “Normal (no change)” or switch the "
                    "call app back to your real microphone.", foreground="#555")
@@ -379,6 +382,11 @@ class App:
             self.v_status.config(text=(f"● On — mic: {self.voice.used_mic} — sounding: {self.settings.get('voice_preset')}"
                                        + (f" {float(self.settings.get('voice_pitch') or 0):+.1f}" if self.settings.get('voice_pitch') else ""))
                                  if on else "Off.")
+            w = getattr(self.voice, "warning", "")
+            if w and self.v_warn.cget("text") != "⚠ " + w:
+                self.v_warn.config(text="⚠ " + w)
+                if not self.settings.get("voice_monitor"):
+                    self.v_mon_var.set(False)
         except Exception:
             pass
 

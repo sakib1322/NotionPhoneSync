@@ -319,6 +319,9 @@ class VoiceChanger:
         self.q_mon = deque()
         self.streams = []
         self.used_mic = ""
+        self.warning = ""
+        self.hist = deque()
+        self.mute_until = 0.0
 
     @staticmethod
     def sd():
@@ -401,6 +404,19 @@ class VoiceChanger:
         self.level = float(np.sqrt(np.mean(x * x)) * 4)
         semis, body, effect = self._settings()
         on = self.settings.get("voice_on")
+        if self._howling(x):
+            # Feedback: the changer is hearing itself. Go silent for a moment so the loop dies.
+            self.mute_until = time.time() + 1.5
+            if self.settings.get("voice_monitor"):
+                self.settings.set("voice_monitor", False)
+                self.warning = ("Feedback (whistling) detected, so “Hear myself” was turned off — the laptop "
+                                "speakers were feeding back into the microphone. Use headphones to hear yourself.")
+            else:
+                self.warning = ("Feedback (whistling) detected and stopped. Check that the microphone isn't "
+                                "“CABLE Output” and that no app plays the call into the microphone.")
+        if time.time() < self.mute_until:
+            x = np.zeros_like(x)
+            self.fx = Effects()   # clear the echo/pitch memory of the howl
         y = self.fx.run(x, semis, effect, body) if on is None or on else x
         with self.lock:
             self.q_out.append(y)
@@ -410,6 +426,25 @@ class VoiceChanger:
                 self.q_mon.append(y)
                 while len(self.q_mon) > 6:
                     self.q_mon.popleft()
+
+    def _howling(self, x):
+        """Feedback is a loud sound that never pauses; speech pauses between syllables several
+        times a second. True after 1.2 s of loud sound with no pause in it."""
+        rms = float(np.sqrt(np.mean(x * x)))
+        self.hist.append(rms)
+        if len(self.hist) > 120:
+            self.hist.popleft()
+        if len(self.hist) < 120:
+            return False
+        h = np.fromiter(self.hist, dtype=np.float32)
+        med = float(np.median(h))
+        if med < 0.03:
+            return False
+        dips = int(np.sum(h < 0.35 * med))
+        if dips == 0 and float(h.min()) > 0.5 * med:
+            self.hist.clear()
+            return True
+        return False
 
     def _pull(self, q, outdata, frames):
         need = frames
@@ -428,6 +463,13 @@ class VoiceChanger:
                 need -= take
         for c in range(outdata.shape[1]):
             outdata[:, c] = out
+
+    def _default_name(self, kind):
+        try:
+            d = self.sd().query_devices(kind=kind)
+            return d.get("name", "") if d else ""
+        except Exception:
+            return ""
 
     def _open(self, kind, candidates, **kw):
         """Opens the first device that works; returns (stream, index)."""
@@ -455,7 +497,15 @@ class VoiceChanger:
                                "laptop.\n\nSound outputs this laptop has:\n• " + "\n• ".join(outs[:20]))
         mics = self.mics()
         want = self.settings.get("voice_mic")
-        order = [i for i, n in mics if n == want] + [None] + [i for i, n in mics if n != want]
+        # Windows often makes "CABLE Output" the default microphone when VB-CABLE is installed.
+        # Recording from it would mean listening to our own output (feedback), so never do that.
+        default_in = self._default_name("input")
+        default_ok = "cable" not in default_in.lower()
+        if not default_ok:
+            self.warning = ("Windows' default microphone is “CABLE Output” (VB-CABLE set that when it installed). "
+                            "That's right for call apps; the voice changer uses your real microphone instead.")
+        real = sorted(mics, key=lambda m: (0 if any(w in m[1].lower() for w in ("microphone", "mic array", "mic ")) else 1))
+        order = [i for i, n in mics if n == want] + ([None] if default_ok else []) + [i for i, n in real if n != want]
         self.fx = Effects()
         self.q_out.clear()
         self.q_mon.clear()
@@ -481,11 +531,13 @@ class VoiceChanger:
             if outs is None:
                 raise RuntimeError(f"Couldn't open VB-CABLE: {last}")
             self.streams = [ins, outs]
-            try:
-                mon, _ = self._open("out", [None], channels=1, callback=lambda o, f, t, s: self._pull(self.q_mon, o, f))
-                self.streams.append(mon)
-            except Exception:
-                pass  # no speakers to hear yourself on: fine
+            # "Hear myself" goes to your speakers/headphones, never into the cable.
+            if "cable" not in self._default_name("output").lower():
+                try:
+                    mon, _ = self._open("out", [None], channels=1, callback=lambda o, f, t, s: self._pull(self.q_mon, o, f))
+                    self.streams.append(mon)
+                except Exception:
+                    pass  # no speakers to hear yourself on: fine
             for st in self.streams:
                 st.start()
         except Exception:
@@ -603,6 +655,34 @@ def selftest():
             fx.run(long_v[i:i + BLOCK], semis, None, body)
             held.append(len(fx.ps.out))
         assert max(held[100:]) - min(held[100:]) < 1200, ("delay drifts", semis, min(held[100:]), max(held[100:]))
+    # Feedback guard. Simulate the real problem: the changer's output leaks back into its own
+    # microphone (as from speakers, or a microphone set to the cable). That must be caught...
+    class _S2(dict):
+        def get(self, k): return dict.get(self, k)
+        def set(self, k, v): self[k] = v
+    vc = VoiceChanger(_S2(voice_preset="Deeper man", voice_monitor=True))
+    seed = _vowel(120, (700, 1200, 2600), 0.3)
+    loop = deque([np.zeros(BLOCK, dtype=np.float32)] * 8)   # 80 ms from speaker to microphone
+    caught_at = None
+    for b in range(400):                                      # 4 seconds
+        src = seed[b * BLOCK:(b + 1) * BLOCK] if (b + 1) * BLOCK <= len(seed) else np.zeros(BLOCK, dtype=np.float32)
+        mic = np.clip(src + 1.6 * loop.popleft(), -1, 1).astype(np.float32)
+        vc._in(mic.reshape(-1, 1), BLOCK, None, None)
+        o = np.zeros((BLOCK, 1), dtype=np.float32)
+        vc._pull(vc.q_out, o, BLOCK)
+        loop.append(o[:, 0])
+        if caught_at is None and vc.mute_until > 0:
+            caught_at = b * BLOCK / RATE
+    assert caught_at is not None and caught_at < 2.5, ("feedback loop not caught", caught_at)
+    assert vc.settings.get("voice_monitor") is False and vc.warning
+    # ...while talking (syllables with gaps) must not be.
+    vc = VoiceChanger(_S2(voice_preset="Deeper man"))
+    syl = _vowel(120, (700, 1200, 2600), 4.0)
+    env = (np.sin(2 * np.pi * 4 * np.arange(len(syl)) / RATE) > -0.2).astype(np.float32)
+    talk = syl * env
+    for i in range(0, len(talk), BLOCK):
+        vc._in(talk[i:i + BLOCK].reshape(-1, 1), BLOCK, None, None)
+    assert vc.mute_until == 0, "talking was mistaken for feedback"
     # the live audio step, with the app's real settings object (get() takes one argument)
     class _Strict:
         def __init__(self, d): self.d = d
