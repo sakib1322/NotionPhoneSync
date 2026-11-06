@@ -277,9 +277,9 @@ class App:
         row = ttk.Frame(f)
         row.pack(anchor="w", pady=(12, 4))
         ttk.Label(row, text="Voice").pack(side="left")
-        self.v_preset = ttk.Combobox(row, state="readonly", width=28, values=list(voice.PRESETS))
-        cur = self.settings.get("voice_preset")
-        self.v_preset.set(cur if cur in voice.PRESETS else "Deeper")
+        self.v_preset = ttk.Combobox(row, state="readonly", width=34, values=list(voice.PRESETS))
+        cur = voice.OLD_NAMES.get(self.settings.get("voice_preset"), self.settings.get("voice_preset"))
+        self.v_preset.set(cur if cur in voice.PRESETS else "Deeper man")
         self.v_preset.pack(side="left", padx=8)
         self.v_preset.bind("<<ComboboxSelected>>", lambda e: self.settings.set("voice_preset", self.v_preset.get()))
 
@@ -296,6 +296,23 @@ class App:
         ttk.Scale(row, from_=-12, to=12, variable=pv, length=260, command=on_pitch).pack(side="left", padx=8)
         self.v_pitch_lbl.pack(side="left")
         on_pitch()
+
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=4)
+        ttk.Label(row, text="Voice body").pack(side="left")
+        self.v_body_lbl = ttk.Label(row, text="", width=30)
+        bv = tk.DoubleVar(value=float(self.settings.get("voice_body") or 0))
+
+        def on_body(_=None):
+            v = round(bv.get())
+            self.settings.set("voice_body", float(v))
+            self.v_body_lbl.config(text="as the voice sets it" if not v else
+                                   (f"{v:+d}% smaller (lighter, younger)" if v > 0 else f"{v:+d}% bigger (fuller, older)"))
+        ttk.Scale(row, from_=-20, to=20, variable=bv, length=260, command=on_body).pack(side="left", padx=8)
+        self.v_body_lbl.pack(side="left")
+        on_body()
+        self._p(f, "Pitch is how high or low your voice is; voice body is how big the person sounds. "
+                   "For a natural result, move them a little, together.", foreground="#777")
 
         row = ttk.Frame(f)
         row.pack(anchor="w", pady=4)

@@ -37,7 +37,8 @@ class Settings:
         "extra_sources": [],
         "cache_limit_mb": 1024,
         "clipboard_sync": True,   # shared clipboard with the phone
-        "voice_preset": "Deeper",  # voice changer for calls
+        "voice_preset": "Deeper man",  # voice changer for calls
+        "voice_body": 0.0,         # voice body (formants), percent
         "voice_pitch": 0.0,        # extra semitones on top of the preset
         "voice_mic": "",           # which microphone ("" = Windows default)
         "voice_monitor": False,    # hear yourself

@@ -15,18 +15,137 @@ import numpy as np
 RATE = 48000
 BLOCK = 480  # 10 ms
 
-# name -> (semitones, effect)
+# name -> (semitones, voice body, effect). Pitch is the note of your voice; "voice body" is the
+# size of the throat and mouth it seems to come from (below 1 = bigger/deeper, above 1 = smaller).
+# Changing both together, in natural proportions, is what makes it sound like another person
+# rather than a sped-up or slowed-down recording.
 PRESETS = {
-    "Normal (no change)": (0, None),
-    "Deeper": (-4, None),
-    "Much deeper (monster)": (-8, "hall"),
-    "Higher": (4, None),
-    "Chipmunk": (9, None),
-    "Robot": (0, "robot"),
-    "Radio / old phone": (0, "radio"),
-    "Echo hall": (0, "hall"),
-    "Custom (use the slider)": (0, None),
+    "Normal (no change)": (0, 1.00, None),
+    "Deeper man": (-3, 0.92, None),
+    "Very deep man": (-5, 0.86, None),
+    "Older man": (-2, 0.95, "older"),
+    "Younger / lighter": (2, 1.06, None),
+    "Female voice": (5, 1.17, None),
+    "Male voice (from a woman's voice)": (-5, 0.86, None),
+    "Kid": (7, 1.25, None),
+    "Custom (use the sliders)": (0, 1.00, None),
+    "Effect: robot": (0, 1.00, "robot"),
+    "Effect: radio / old phone": (0, 1.00, "radio"),
+    "Effect: echo hall": (0, 1.00, "hall"),
 }
+# Names from earlier versions -> today's
+OLD_NAMES = {"Deeper": "Deeper man", "Much deeper (monster)": "Very deep man", "Higher": "Younger / lighter",
+             "Chipmunk": "Kid", "Robot": "Effect: robot", "Radio / old phone": "Effect: radio / old phone",
+             "Echo hall": "Effect: echo hall", "Custom (use the slider)": "Custom (use the sliders)"}
+
+
+class VoiceShifter:
+    """Natural-sounding voice change, done in three steps every 256 samples (5 ms):
+
+    1. Phase-vocoder time-stretch by the pitch ratio, with "phase locking" (each harmonic keeps
+       its neighbouring frequencies in step, which is what removes the metallic/robotic sound).
+    2. Voice body: the spectral envelope (the formants: throat and mouth) is measured with a
+       cepstrum and re-applied where it should be after the pitch change, scaled by the body factor.
+    3. Resample back to normal speed, which moves the pitch.
+
+    About 45 ms of delay."""
+
+    def __init__(self, n=2048, hop=256, lifter=48):
+        self.N, self.ha, self.L = n, hop, lifter
+        self.win = np.hanning(n)
+        self.bins = n // 2 + 1
+        self.k = np.arange(self.bins)
+        self.omega = 2 * np.pi * self.k * hop / n
+        self.fin = np.zeros(n)
+        self.pending = np.zeros(0)
+        self.last_ph = np.zeros(self.bins)
+        self.syn_ph = np.zeros(self.bins)
+        self.ola = np.zeros(4 * n)
+        self.stretched = np.zeros(0)
+        self.rpos = 0.0
+        self.out = np.zeros(n - hop)     # start-up delay
+        self.first = True
+
+    def _envelope(self, mag):
+        """Smooth spectral envelope (formants) via the cepstrum."""
+        c = np.fft.irfft(np.log(mag + 1e-9), self.N)
+        c[self.L:self.N - self.L] = 0
+        return np.exp(np.fft.rfft(c, self.N).real)
+
+    def _frame(self, ratio, body):
+        N, ha = self.N, self.ha
+        hs = max(1, int(round(ha * ratio)))
+        X = np.fft.rfft(self.fin * self.win)
+        mag, ph = np.abs(X), np.angle(X)
+        # true frequency of each bin
+        d = ph - self.last_ph - self.omega
+        d = (d + np.pi) % (2 * np.pi) - np.pi
+        self.last_ph = ph
+        inst = (self.omega + d) / ha
+        # phase locking: peaks advance on their own, every other bin follows its nearest peak
+        peaks = np.where((mag[1:-1] > mag[:-2]) & (mag[1:-1] >= mag[2:]) & (mag[1:-1] > mag.max() * 1e-4))[0] + 1
+        if self.first or len(peaks) == 0:
+            self.syn_ph = ph.copy() if self.first else self.syn_ph + inst * hs
+            self.first = False
+        else:
+            pk_ph = self.syn_ph[peaks] + inst[peaks] * hs
+            mids = (peaks[:-1] + peaks[1:]) / 2.0
+            owner = peaks[np.searchsorted(mids, self.k)]
+            new = np.empty(self.bins)
+            new[:] = pk_ph[np.searchsorted(mids, self.k)] + (ph - ph[owner])
+            self.syn_ph = new
+        # voice body: flatten the old formants, apply them where they belong after resampling
+        if abs(ratio - 1) > 1e-4 or abs(body - 1) > 1e-4:
+            env = self._envelope(mag)
+            want = np.interp(self.k * ratio / body, self.k, env, right=env[-1])
+            mag = mag / env * want
+        y = np.fft.irfft(mag * np.exp(1j * self.syn_ph), N) * self.win
+        y /= (3.0 * N / 8.0) / hs
+        self.ola[:N] += y
+        res = self.ola[:hs].copy()
+        self.ola[:-hs] = self.ola[hs:]
+        self.ola[-hs:] = 0
+        return res
+
+    def process(self, x, ratio, body=1.0):
+        n = len(x)
+        if abs(ratio - 1) < 1e-4 and abs(body - 1) < 1e-4:
+            buf = np.concatenate([self.out, x.astype(np.float64)])
+            self.out = buf[n:]
+            return buf[:n].astype(np.float32)
+        self.pending = np.concatenate([self.pending, x.astype(np.float64)])
+        parts = [self.stretched]
+        while len(self.pending) >= self.ha:
+            self.fin[:-self.ha] = self.fin[self.ha:]
+            self.fin[-self.ha:] = self.pending[:self.ha]
+            self.pending = self.pending[self.ha:]
+            parts.append(self._frame(ratio, body))
+        st = np.concatenate(parts)
+        # Resample by exactly the stretch that was applied (hop sizes are whole samples), so
+        # the delay stays steady instead of drifting.
+        ratio = max(1, int(round(self.ha * ratio))) / self.ha
+        made = []
+        pos = self.rpos
+        avail = len(st) - 1
+        if avail > 0:
+            count = int(max(0, np.floor((avail - pos) / ratio)))
+            if count > 0:
+                p = pos + ratio * np.arange(count)
+                i0 = np.floor(p).astype(np.int64)
+                fr = p - i0
+                made.append(st[i0] * (1 - fr) + st[i0 + 1] * fr)
+                pos = pos + ratio * count
+        drop = int(np.floor(pos))
+        self.stretched = st[drop:]
+        self.rpos = pos - drop
+        buf = np.concatenate([self.out] + made)
+        if len(buf) < n:
+            buf = np.concatenate([np.zeros(n - len(buf)), buf])
+        self.out = buf[n:]
+        # don't let the delay creep up
+        if len(self.out) > 2 * self.N:
+            self.out = self.out[-self.N:]
+        return buf[:n].astype(np.float32)
 
 
 class PitchShifter:
@@ -97,8 +216,8 @@ class PitchShifter:
 
 class Effects:
     def __init__(self):
-        self.ps = PitchShifter()
-        self.t = 0                      # samples so far (robot)
+        self.ps = VoiceShifter()
+        self.t = 0                      # samples so far (robot, older)
         self.echo = np.zeros(RATE, dtype=np.float32)
         self.ew = 0
         self.lp = 0.0                   # radio filters
@@ -107,14 +226,20 @@ class Effects:
         self.rin = 1e-4
         self.rout = 1e-4
 
-    def run(self, x, semitones, effect):
-        y = self.ps.process(x, 2.0 ** (semitones / 12.0)) if semitones else self.ps.process(x, 1.0)
-        if semitones:
+    def run(self, x, semitones, effect, body=1.0):
+        y = self.ps.process(x, 2.0 ** (semitones / 12.0), body)
+        if semitones or abs(body - 1) > 1e-4:
             # Keep the changed voice as loud as the real one (smoothed, so it doesn't pump).
             self.rin = 0.9 * self.rin + 0.1 * float(np.sqrt(np.mean(x * x)) + 1e-6)
             self.rout = 0.9 * self.rout + 0.1 * float(np.sqrt(np.mean(y * y)) + 1e-6)
             y = y * float(np.clip(self.rin / self.rout, 0.5, 4.0))
-        if effect == "robot":
+        if effect == "older":
+            # a slight, slow wobble, like an older voice
+            n = len(y)
+            t = (self.t + np.arange(n)) / RATE
+            self.t += n
+            y = y * (1 + 0.06 * np.sin(2 * np.pi * 5.5 * t)).astype(np.float32)
+        elif effect == "robot":
             n = len(y)
             t = (self.t + np.arange(n)) / RATE
             self.t += n
@@ -264,17 +389,19 @@ class VoiceChanger:
         return c[0] if c else None
 
     def _settings(self):
-        preset = self.settings.get("voice_preset") or "Deeper"
-        semis, effect = PRESETS.get(preset, (0, None))
+        preset = self.settings.get("voice_preset") or "Deeper man"
+        preset = OLD_NAMES.get(preset, preset)
+        semis, body, effect = PRESETS.get(preset, (0, 1.0, None))
         semis += float(self.settings.get("voice_pitch") or 0)
-        return semis, effect
+        body *= 1 + float(self.settings.get("voice_body") or 0) / 100.0
+        return semis, body, effect
 
     def _in(self, indata, frames, t, status):
         x = indata[:, 0].astype(np.float32)
         self.level = float(np.sqrt(np.mean(x * x)) * 4)
-        semis, effect = self._settings()
+        semis, body, effect = self._settings()
         on = self.settings.get("voice_on")
-        y = self.fx.run(x, semis, effect) if on is None or on else x
+        y = self.fx.run(x, semis, effect, body) if on is None or on else x
         with self.lock:
             self.q_out.append(y)
             while len(self.q_out) > 6:      # keep the delay short
@@ -382,6 +509,45 @@ class VoiceChanger:
         self.level = 0.0
 
 
+def _vowel(f0, formants, seconds=1.0):
+    """A buzzy vowel: a pulse train at f0 through resonances at the given frequencies."""
+    n = int(RATE * seconds)
+    x = np.zeros(n)
+    x[::int(RATE / f0)] = 1.0
+    X = np.fft.rfft(x)
+    f = np.fft.rfftfreq(n, 1 / RATE)
+    H = np.zeros_like(f)
+    for i, F in enumerate(formants):
+        H += (1.0 / (i + 1)) / (1 + ((f - F) / (F * 0.08)) ** 2)
+    y = np.fft.irfft(X * H, n)
+    return (0.4 * y / np.abs(y).max()).astype(np.float32)
+
+
+def _formant1(x):
+    """Frequency of the first big hump in the spectral envelope (300-1500 Hz)."""
+    seg = x[: (len(x) // 4096) * 4096].reshape(-1, 4096)
+    mag = np.mean(np.abs(np.fft.rfft(seg * np.hanning(4096), axis=1)), axis=0)
+    c = np.fft.irfft(np.log(mag + 1e-9))
+    c[40:-40] = 0
+    env = np.exp(np.fft.rfft(c).real)
+    f = np.fft.rfftfreq(4096, 1 / RATE)
+    band = (f > 300) & (f < 1500)
+    return float(f[band][np.argmax(env[band])])
+
+
+def _f0(x):
+    """Pitch by autocorrelation (60-500 Hz)."""
+    seg = x[:8192].astype(np.float64)
+    seg = seg - seg.mean()
+    ac = np.fft.irfft(np.abs(np.fft.rfft(seg, 16384)) ** 2)[:8192]
+    lo, hi = int(RATE / 500), int(RATE / 60)
+    lag = lo + int(np.argmax(ac[lo:hi]))
+    # refine with a parabola through the peak
+    a, b, c = ac[lag - 1], ac[lag], ac[lag + 1]
+    shift = 0.5 * (a - c) / (a - 2 * b + c) if (a - 2 * b + c) else 0
+    return RATE / (lag + shift)
+
+
 def selftest():
     """Checks the effects without any sound device: a 220 Hz tone shifted up 12 semitones comes
     out near 440 Hz, down 12 near 110 Hz, and every preset runs."""
@@ -403,10 +569,10 @@ def selftest():
         out = np.concatenate([fx.run(tone[i:i + BLOCK], semis, None) for i in range(0, len(tone), BLOCK)])
         ratio = float(np.sqrt(np.mean(out[RATE // 2:] ** 2)) / np.sqrt(np.mean(tone ** 2)))
         assert 0.6 < ratio < 1.6, (semis, ratio)
-    for name, (semis, eff) in PRESETS.items():
+    for name, (semis, body, eff) in PRESETS.items():
         fx = Effects()
         for i in range(0, RATE // 2, BLOCK):
-            y = fx.run(tone[i:i + BLOCK], semis, eff)
+            y = fx.run(tone[i:i + BLOCK], semis, eff, body)
             assert y.shape == (BLOCK,) and np.isfinite(y).all(), name
     names = [{"name": "Speakers (Realtek)", "max_output_channels": 2},
              {"name": "CABLE Output (VB-Audio Virtual Cable)", "max_output_channels": 0, "max_input_channels": 2},
@@ -415,11 +581,33 @@ def selftest():
     names.append({"name": "CABLE Input (VB-Audio Virtual C", "max_output_channels": 2})
     assert find_cable(names) == 3
     assert find_cable(names[:1]) is None
+    # Voice body: a synthetic vowel ("ah": 120 Hz buzz shaped by formants near 700/1200/2600 Hz).
+    vowel = _vowel(120, (700, 1200, 2600))
+    f1_in, f0_in = _formant1(vowel), _f0(vowel)
+    for semis, body, want_f0, want_f1 in ((5, 1.0, 120 * 2 ** (5 / 12), f1_in),
+                                          (-4, 1.0, 120 * 2 ** (-4 / 12), f1_in),
+                                          (5, 1.17, 120 * 2 ** (5 / 12), f1_in * 1.17),
+                                          (-5, 0.86, 120 * 2 ** (-5 / 12), f1_in * 0.86)):
+        fx = Effects()
+        out = np.concatenate([fx.run(vowel[i:i + BLOCK], semis, None, body) for i in range(0, len(vowel), BLOCK)])
+        out = out[RATE // 4:]
+        f0, f1 = _f0(out), _formant1(out)
+        assert abs(f0 / want_f0 - 1) < 0.04, ("pitch", semis, body, f0, want_f0)
+        assert abs(f1 / want_f1 - 1) < 0.12, ("voice body", semis, body, f1, want_f1, f1_in)
+    # the delay stays steady (no slow drift into clicks or lag)
+    for semis, body in ((-3, 0.92), (5, 1.17)):
+        fx = Effects()
+        held = []
+        long_v = np.tile(vowel, 6)
+        for i in range(0, len(long_v), BLOCK):
+            fx.run(long_v[i:i + BLOCK], semis, None, body)
+            held.append(len(fx.ps.out))
+        assert max(held[100:]) - min(held[100:]) < 1200, ("delay drifts", semis, min(held[100:]), max(held[100:]))
     # the live audio step, with the app's real settings object (get() takes one argument)
     class _Strict:
         def __init__(self, d): self.d = d
         def get(self, k): return self.d.get(k)
-    vc = VoiceChanger(_Strict({"voice_preset": "Robot", "voice_pitch": 2.0, "voice_monitor": True}))
+    vc = VoiceChanger(_Strict({"voice_preset": "Female voice", "voice_pitch": 2.0, "voice_body": 5, "voice_monitor": True}))
     for i in range(0, RATE // 10, BLOCK):
         vc._in(tone[i:i + BLOCK].reshape(-1, 1), BLOCK, None, None)
     o = np.zeros((BLOCK, 2), dtype=np.float32)
@@ -429,8 +617,8 @@ def selftest():
     t0 = time.perf_counter()
     fx = Effects()
     for _ in range(100):
-        for name, (semis, eff) in PRESETS.items():
-            fx.run(tone[:BLOCK], semis, eff)
+        for name, (semis, body, eff) in PRESETS.items():
+            fx.run(tone[:BLOCK], semis, eff, body)
     per = (time.perf_counter() - t0) / (100 * len(PRESETS)) * 1000
     assert per < 5, f"too slow: {per:.2f} ms per block"
     return f"VOICE OK (up {up:.0f} Hz, down {down:.0f} Hz, {per:.2f} ms per block)"
