@@ -59,25 +59,28 @@ class CallRecorder(private val svc: AccessibilityService) {
         fun folder(): File = File(Environment.getExternalStorageDirectory(), "Recordings/Calls").apply { mkdirs() }
     }
 
+    @Volatile private var stopped = false
+
     fun start() {
         if (Build.VERSION.SDK_INT >= 31) {
             val l = AudioManager.OnModeChangedListener { onMode(it) }
             am.addOnModeChangedListener(Executor { main.post(it) }, l)
             listener = l
-        } else {
-            main.post(object : Runnable {
-                override fun run() {
-                    onMode(am.mode)
-                    if (listener == null) main.postDelayed(this, 1500)
-                }
-            })
         }
-        onMode(am.mode)
+        // A second check every 2 seconds, in case a call app or the phone doesn't announce the
+        // change (so a recording always stops when the call ends).
+        main.post(object : Runnable {
+            override fun run() {
+                if (stopped) return
+                onMode(am.mode)
+                main.postDelayed(this, 2000)
+            }
+        })
     }
 
     fun stop() {
+        stopped = true
         if (Build.VERSION.SDK_INT >= 31) (listener as? AudioManager.OnModeChangedListener)?.let { am.removeOnModeChangedListener(it) }
-        listener = Any()
         finish()
     }
 
