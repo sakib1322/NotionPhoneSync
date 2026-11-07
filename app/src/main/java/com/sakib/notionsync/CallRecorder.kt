@@ -112,18 +112,50 @@ class CallRecorder(private val svc: AccessibilityService) {
         } catch (e: Exception) { "Call" }
     }
 
+    /** Microphone sources, best for a call recording first. The raw ones skip the phone's echo
+     *  filter, which otherwise scrubs the other person's voice (from the speaker) out of the
+     *  recording. If one gives silence, the next is tried automatically. */
+    private fun sources(): List<Int> {
+        val out = ArrayList<Int>()
+        val raw = try { am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true" } catch (e: Exception) { false }
+        if (raw) out.add(MediaRecorder.AudioSource.UNPROCESSED)
+        out.add(MediaRecorder.AudioSource.MIC)
+        out.add(MediaRecorder.AudioSource.CAMCORDER)
+        out.add(MediaRecorder.AudioSource.VOICE_RECOGNITION)   // filtered, but most often allowed during calls
+        out.add(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+        return out
+    }
+
+    private var srcList: List<Int> = emptyList()
+    private var srcIdx = 0
+    private var segStart = 0L
+    private var callStart = 0L
+
     private fun begin(appLabel: String) {
         app = appLabel
         showBadge()
         val stamp = SimpleDateFormat("yyyy-MM-dd HH.mm", Locale.US).format(Date())
-        val f = File(folder(), "$app call $stamp.m4a")
-        // Sources most likely to keep working while another app is on a call, best first.
-        val sources = listOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC,
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.CAMCORDER)
-        for (src in sources) {
+        file = File(folder(), "$app call $stamp.m4a")
+        srcList = sources()
+        srcIdx = 0
+        callStart = System.currentTimeMillis()
+        if (openFrom(0)) {
+            main.postDelayed(meter, 500)
+            Logger.log(ctx, "Recording the $app call…")
+            return
+        }
+        hideBadge()
+        tell("Couldn't record this call", "The phone wouldn't let the app use the microphone during this $app call.")
+    }
+
+    /** Starts recording with the first source from `from` that opens. */
+    private fun openFrom(from: Int): Boolean {
+        val f = file ?: return false
+        for (i in from until srcList.size) {
             val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx) else @Suppress("DEPRECATION") MediaRecorder()
             try {
-                r.setAudioSource(src)
+                f.delete()
+                r.setAudioSource(srcList[i])
                 r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 r.setAudioSamplingRate(44100)
@@ -133,34 +165,51 @@ class CallRecorder(private val svc: AccessibilityService) {
                 r.prepare()
                 r.start()
                 rec = r
-                file = f
+                srcIdx = i
                 started = System.currentTimeMillis()
+                segStart = started
                 maxAmp = 0
-                main.postDelayed(meter, 500)
-                Logger.log(ctx, "Recording the $app call…")
-                return
+                return true
             } catch (e: Exception) {
                 try { r.release() } catch (x: Exception) { }
-                f.delete()
             }
         }
-        hideBadge()
-        tell("Couldn't record this call", "The phone wouldn't let the app use the microphone during this $app call.")
+        return false
+    }
+
+    /** This source gives only silence: move on to the next one. */
+    private fun nextSource(): Boolean {
+        val r = rec ?: return false
+        rec = null
+        try { r.stop() } catch (e: Exception) { }
+        try { r.release() } catch (e: Exception) { }
+        return openFrom(srcIdx + 1)
     }
 
     private var boosted = false
     private var boostRefused = false
+    private var boostAt = 0L
 
     private val meter = object : Runnable {
         override fun run() {
             val r = rec ?: return
             try { maxAmp = maxOf(maxAmp, r.maxAmplitude) } catch (e: Exception) { }
-            val secs = (System.currentTimeMillis() - started) / 1000
-            badge?.text = "● REC  " + dur(secs)
+            val secs = (System.currentTimeMillis() - segStart) / 1000
+            badge?.text = "● REC  " + dur((System.currentTimeMillis() - callStart) / 1000)
+            // This source stays silent even with the app on top: try the next one.
+            val since = (System.currentTimeMillis() - maxOf(segStart, boostAt)) / 1000
+            if (maxAmp < 50 && (boosted || boostRefused) && since >= 3 && srcIdx + 1 < srcList.size) {
+                if (nextSource()) {
+                    Logger.log(ctx, "Call recording: trying another microphone source.")
+                    main.postDelayed(this, 500)
+                    return
+                }
+            }
             // Still silent after 3 s: Android is giving the call app the microphone. Put the
             // see-through screen on top so this app counts as "on screen" and may record too.
             if (!boosted && !boostRefused && secs >= 3 && maxAmp < 50) {
                 boosted = true
+                boostAt = System.currentTimeMillis()
                 CallTopActivity.show(ctx)
                 Logger.log(ctx, "Call recording: the phone gave silence; trying with the see-through screen on top.")
             }
@@ -169,6 +218,7 @@ class CallRecorder(private val svc: AccessibilityService) {
                 CallTopActivity.hide()
                 boosted = false
                 boostRefused = true
+                boostAt = System.currentTimeMillis()
                 Logger.log(ctx, "Call recording: backed off so the other person can still hear you.")
             }
             main.postDelayed(this, 500)
@@ -188,6 +238,7 @@ class CallRecorder(private val svc: AccessibilityService) {
         if (boosted) CallTopActivity.hide()
         boosted = false
         boostRefused = false
+        boostAt = 0L
         val r = rec ?: run { hideBadge(); return }
         rec = null
         try { maxAmp = maxOf(maxAmp, r.maxAmplitude) } catch (e: Exception) { }
@@ -195,7 +246,7 @@ class CallRecorder(private val svc: AccessibilityService) {
         try { r.release() } catch (e: Exception) { }
         hideBadge()
         val f = file ?: return
-        val secs = (System.currentTimeMillis() - started) / 1000
+        val secs = (System.currentTimeMillis() - callStart) / 1000
         if (maxAmp < 50 || f.length() < 2000) {
             f.delete()
             tell("This $app call wasn't recorded",
