@@ -138,6 +138,24 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Call recording -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout style="@style/CardBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Call recording" />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_calls" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Record calls automatically" />
+                <TextView android:id="@+id/calls_note" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" />
+                <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textSize="12sp"
+                    android:text="Records WhatsApp, Meet, Messenger and phone calls into Recordings › Calls (backed up to Notion). Your voice is always recorded; the other person clearly when you use speakerphone — Android doesn't let apps capture the call sound directly. A small ● REC badge shows while recording. Let people know you record calls where that's required." />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- This phone and your devices -->
         <com.google.android.material.card.MaterialCardView
             style="@style/Card"

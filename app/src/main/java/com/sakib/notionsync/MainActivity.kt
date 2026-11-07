@@ -494,6 +494,23 @@ class MainActivity : AppCompatActivity() {
                 toast("Turned off. You can also switch the helper off in Settings › Accessibility.")
             }
         }
+        findViewById<MaterialSwitch>(R.id.sw_calls).setOnClickListener { v ->
+            val sw = v as MaterialSwitch
+            if (!sw.isChecked) {
+                prefs.callRecord = false
+                showCalls()
+                return@setOnClickListener
+            }
+            sw.isChecked = false
+            prefs.callRecord = true
+            when {
+                !CallRecorder.allowed(this) -> micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                !ClipAutoService.enabled(this) -> askHelper("Record calls",
+                    "Call recording runs inside the app's helper. Tap Open settings, find “Notion Sync helper (copy & call recording)” " +
+                        "(on Samsung: Installed apps), switch it on and allow.")
+            }
+            showCalls()
+        }
         findViewById<MaterialButton>(R.id.btn_clip_send).setOnClickListener {
             startActivity(Intent(this, ClipSendActivity::class.java))
         }
@@ -758,7 +775,41 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private val micPermission = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok ->
+        if (!ok) {
+            prefs.callRecord = false
+            toast("Call recording needs the microphone permission.")
+        } else if (!ClipAutoService.enabled(this)) {
+            askHelper("Record calls", "Now switch on the app's helper: tap Open settings, find “Notion Sync helper (copy & call recording)” " +
+                "(on Samsung: Installed apps), switch it on and allow.")
+        }
+        showCalls()
+    }
+
+    private fun askHelper(title: String, msg: String) {
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle(title)
+            .setMessage(msg)
+            .setPositiveButton("Open settings") { _, _ ->
+                try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (e: Exception) { }
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
+    private fun showCalls() {
+        val ready = prefs.callRecord && CallRecorder.allowed(this) && ClipAutoService.enabled(this)
+        findViewById<MaterialSwitch>(R.id.sw_calls)?.let { if (it.isChecked != ready) it.isChecked = ready }
+        findViewById<TextView>(R.id.calls_note)?.text = when {
+            ready -> "On: calls are recorded automatically."
+            prefs.callRecord && !CallRecorder.allowed(this) -> "Needs the microphone permission (tap the switch)."
+            prefs.callRecord -> "Needs the helper switched on in Android's Accessibility settings (tap the switch)."
+            else -> "Off."
+        }
+    }
+
     private fun showClipAuto() {
+        showCalls()
         val on = prefs.clipAuto && ClipAutoService.enabled(this)
         findViewById<MaterialSwitch>(R.id.sw_clip_auto)?.let { if (it.isChecked != on) it.isChecked = on }
         findViewById<TextView>(R.id.clip_auto_note)?.text = when {

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="clip_auto_label">Notion Sync: send copies automatically</string>
-    <string name="clip_auto_desc">Sends what you copy on this phone to your other devices without a tap. It only checks whether a button you tap says \"Copy\" or a pop-up says \"Copied\", then reads the clipboard for a split second. It does not read your screen or what you type, and never sends passwords.</string>
+    <string name="clip_auto_label">Notion Sync helper (copy &amp; call recording)</string>
+    <string name="clip_auto_desc">Sends what you copy on this phone to your other devices without a tap. It only checks whether a button you tap says \"Copy\" or a pop-up says \"Copied\", then reads the clipboard for a split second. It does not read your screen or what you type, and never sends passwords. If you switch on call recording in the app, it also records calls (showing a small REC badge while it does).</string>
 </resources>

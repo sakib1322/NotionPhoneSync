@@ -107,6 +107,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("clip_auto", true)
         set(v) { sp.edit().putBoolean("clip_auto", v).apply() }
 
+    /** Record calls automatically (needs the helper and microphone permission). */
+    var callRecord: Boolean
+        get() = sp.getBoolean("call_record", false)
+        set(v) { sp.edit().putBoolean("call_record", v).apply() }
+
     var clipDbId: String
         get() = sp.getString("clip_db", "") ?: ""
         set(v) { sp.edit().putString("clip_db", v).apply() }

