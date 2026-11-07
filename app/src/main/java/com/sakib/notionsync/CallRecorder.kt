@@ -148,17 +148,46 @@ class CallRecorder(private val svc: AccessibilityService) {
         tell("Couldn't record this call", "The phone wouldn't let the app use the microphone during this $app call.")
     }
 
+    private var boosted = false
+    private var boostRefused = false
+
     private val meter = object : Runnable {
         override fun run() {
             val r = rec ?: return
             try { maxAmp = maxOf(maxAmp, r.maxAmplitude) } catch (e: Exception) { }
-            badge?.text = "● REC  " + dur((System.currentTimeMillis() - started) / 1000)
+            val secs = (System.currentTimeMillis() - started) / 1000
+            badge?.text = "● REC  " + dur(secs)
+            // Still silent after 3 s: Android is giving the call app the microphone. Put the
+            // see-through screen on top so this app counts as "on screen" and may record too.
+            if (!boosted && !boostRefused && secs >= 3 && maxAmp < 50) {
+                boosted = true
+                CallTopActivity.show(ctx)
+                Logger.log(ctx, "Call recording: the phone gave silence; trying with the see-through screen on top.")
+            }
+            // Never at the cost of the call: if the call app itself gets silenced, back off at once.
+            if (boosted && callAppSilenced()) {
+                CallTopActivity.hide()
+                boosted = false
+                boostRefused = true
+                Logger.log(ctx, "Call recording: backed off so the other person can still hear you.")
+            }
             main.postDelayed(this, 500)
         }
     }
 
+    /** Is any other app's recording (the call app's microphone) being silenced right now? */
+    private fun callAppSilenced(): Boolean = try {
+        am.activeRecordingConfigurations.any { c ->
+            c.isClientSilenced && c.clientAudioSource != MediaRecorder.AudioSource.VOICE_RECOGNITION &&
+                c.clientAudioSource != MediaRecorder.AudioSource.MIC
+        }
+    } catch (e: Exception) { false }
+
     private fun finish() {
         main.removeCallbacks(meter)
+        if (boosted) CallTopActivity.hide()
+        boosted = false
+        boostRefused = false
         val r = rec ?: run { hideBadge(); return }
         rec = null
         try { maxAmp = maxOf(maxAmp, r.maxAmplitude) } catch (e: Exception) { }
@@ -170,7 +199,8 @@ class CallRecorder(private val svc: AccessibilityService) {
         if (maxAmp < 50 || f.length() < 2000) {
             f.delete()
             tell("This $app call wasn't recorded",
-                "Your phone gave the app only silence during this call (Samsung does this for some calls). Nothing was saved.")
+                "Your phone gave the app only silence during this call, even with the app on top. " +
+                    "Android on this phone reserves the microphone for the call app, so this kind of call can't be recorded by an app. Nothing was saved.")
             Logger.log(ctx, "The $app call couldn't be recorded: the phone gave only silence.")
             return
         }
