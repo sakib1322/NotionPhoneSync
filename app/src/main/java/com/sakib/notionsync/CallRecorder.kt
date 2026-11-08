@@ -65,6 +65,8 @@ class CallRecorder(private val svc: AccessibilityService) {
     }
 
     @Volatile private var stopped = false
+    // After a "stuck" call mode ended a recording, wait for a real change before recording again.
+    private var ignoreUntilNormal = false
 
     fun start() {
         if (Build.VERSION.SDK_INT >= 31) {
@@ -92,8 +94,9 @@ class CallRecorder(private val svc: AccessibilityService) {
     private fun onMode(mode: Int) {
         val inCall = mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION
         val p = Prefs(ctx)
+        if (!inCall || (ignoreUntilNormal && callAlive())) ignoreUntilNormal = false
         // `file` is set for the whole call, even between pieces.
-        if (inCall && file == null && p.callRecord && p.signedIn.isNotEmpty() && allowed(ctx)) {
+        if (inCall && file == null && !ignoreUntilNormal && p.callRecord && p.signedIn.isNotEmpty() && allowed(ctx)) {
             begin(if (mode == AudioManager.MODE_IN_CALL) "Phone" else appName(foreground))
         } else if (!inCall && file != null) {
             finish()
@@ -153,6 +156,8 @@ class CallRecorder(private val svc: AccessibilityService) {
         srcList = sources()
         pieces.clear()
         callStart = System.currentTimeMillis()
+        everAlive = false
+        idleSince = 0L
         if (openFrom(0)) {
             main.postDelayed(meter, 500)
             Logger.log(ctx, "Recording the $app call…")
@@ -207,8 +212,41 @@ class CallRecorder(private val svc: AccessibilityService) {
         if (maxAmp >= 50 && f.length() > 2000) pieces.add(f to maxAmp) else f.delete()
     }
 
+    private var idleSince = 0L
+    private var everAlive = false
+
+    /** Is a call really going on? Some apps (e.g. InDrive after a failed call) leave the phone in
+     *  "call mode" with no call. A real internet call has the call app recording the microphone
+     *  for the call, or the other person's voice playing. */
+    private fun callAlive(): Boolean {
+        if (am.mode == AudioManager.MODE_IN_CALL) return true   // phone calls end reliably
+        return try {
+            val mine = if (rec != null && srcList.getOrNull(srcIdx) == MediaRecorder.AudioSource.VOICE_COMMUNICATION) 1 else 0
+            val callMic = am.activeRecordingConfigurations.count { it.clientAudioSource == MediaRecorder.AudioSource.VOICE_COMMUNICATION } > mine
+            val callSound = am.activePlaybackConfigurations.any {
+                it.audioAttributes.usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
+            }
+            callMic || callSound
+        } catch (e: Exception) { true }
+    }
+
     private val meter = object : Runnable {
         override fun run() {
+            // The call is over even if the call app didn't say so: stop and save.
+            val now0 = System.currentTimeMillis()
+            val alive = callAlive()
+            if (alive) everAlive = true
+            // (While it's still ringing there's no call audio yet: only judge once it connected,
+            // or after a minute.)
+            if (alive || !(everAlive || now0 - callStart > 60_000)) idleSince = 0L
+            else if (idleSince == 0L) idleSince = now0
+            if (idleSince != 0L && now0 - idleSince >= 5000) {
+                Logger.log(ctx, "Call recording: the call is over (the $app app didn't say so); saving.")
+                idleSince = 0L
+                finish()
+                ignoreUntilNormal = true
+                return
+            }
             val r = rec
             if (r == null) {
                 // Between pieces: keep trying to get the microphone back.
