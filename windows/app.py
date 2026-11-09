@@ -91,6 +91,7 @@ class App:
         if minimized:
             self.root.withdraw()
         self.root.after(300, self._tick)
+        self.root.after(50, self._pump)
         self.root.after(1500, lambda: self.check_update(install=False))
 
     # ---- layout --------------------------------------------------------------
@@ -1101,6 +1102,18 @@ class App:
         messagebox.showinfo(TITLE, "They'll be tried again on the next sync.")
 
     # ---- the once-a-second refresh ---------------------------------------------------
+
+    def _pump(self):
+        """Runs results from background work (file lists, previews, progress) right away, not once a second."""
+        t0 = time.time()
+        while time.time() - t0 < 0.04:
+            try:
+                self.events.get_nowait()()
+            except queue.Empty:
+                break
+            except Exception:
+                pass
+        self.root.after(30, self._pump)
 
     def _tick(self):
         if getattr(self, "voice", None) is not None:

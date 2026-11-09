@@ -17,7 +17,7 @@ SORTS = [("Last modified", "mtime DESC"), ("Oldest first", "mtime ASC"),
          ("Name", "name COLLATE NOCASE ASC"), ("Size", "size DESC")]
 CARD_W, CARD_GAP = 196, 14
 THUMB_W, THUMB_H = 172, 118
-PAGE = 300                  # tiles drawn at a time (more with "Show more")
+PAGE = 60                   # tiles drawn at a time; more are added as you scroll
 THUMB_MAX_BYTES = 30 * 1024 * 1024
 TILE_BG = "#f0f4f9"
 
@@ -89,7 +89,12 @@ class FilesTab:
         self._folder_info = {}
         self._iids = {}
         self._build(frame)
-        threading.Thread(target=self._thumb_worker, daemon=True).start()
+        self.ready_q = queue.Queue()
+        self._targets, self._photos = {}, {}
+        self._file_idx, self._files_drawn, self._files_row0, self._more_btn = [], 0, 0, None
+        threading.Thread(target=self._ready_worker, daemon=True).start()
+        for _ in range(3):
+            threading.Thread(target=self._thumb_worker, daemon=True).start()
 
     # ---- layout ---------------------------------------------------------------------
 
@@ -133,8 +138,14 @@ class FilesTab:
         sb.bind("<<ComboboxSelected>>", lambda e: (self.settings.set("files_sort", self.sort_var.get()), self.show()))
         ttk.Label(nav, text="Sort by", style="Muted.TLabel").pack(side="right", padx=6)
 
-        # Action bar: appears when something is selected (like Drive's).
-        self.actbar = ttk.Frame(f)
+        # Action bar: a fixed-height row, so selecting something never moves the files below.
+        self.barrow = ttk.Frame(f, height=ui.px(42))
+        self.barrow.pack(fill="x", pady=(0, 6))
+        self.barrow.pack_propagate(False)
+        self.bar_hint = ttk.Label(self.barrow, text="Click to select · double-click to open · right-click for more",
+                                  style="Muted.TLabel")
+        self.bar_hint.pack(side="left", padx=2)
+        self.actbar = ttk.Frame(self.barrow)
         self.act_count = ttk.Label(self.actbar, text="")
         self.act_count.pack(side="left", padx=(2, 12))
         ttk.Button(self.actbar, text=ui.glyph("close"), style="Icon.TButton", command=self.select_none).pack(side="left", padx=(0, 8))
@@ -161,7 +172,8 @@ class FilesTab:
         self.grid_box = ttk.Frame(self.body)
         self.canvas = tk.Canvas(self.grid_box, bg=ui.BG, highlightthickness=0, takefocus=1)
         gsc = ttk.Scrollbar(self.grid_box, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=gsc.set)
+        self._gsc = gsc
+        self.canvas.configure(yscrollcommand=self._scrolled)
         gsc.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.inner = tk.Frame(self.canvas, bg=ui.BG)
@@ -170,6 +182,8 @@ class FilesTab:
         self.canvas.bind("<Configure>", self._canvas_resized)
         self.canvas.bind("<Button-1>", lambda e: (self.canvas.focus_set(), self.select_none()))
         self.canvas.bind("<Button-3>", lambda e: self.background_menu(e))
+        self.inner.bind("<Button-1>", lambda e: (self.canvas.focus_set(), self.select_none()))
+        self.inner.bind("<Button-3>", lambda e: self.background_menu(e))
         self.grid_box.bind("<Enter>", lambda e: self._wheel(True))
         self.grid_box.bind("<Leave>", lambda e: self._wheel(False))
 
@@ -201,7 +215,7 @@ class FilesTab:
             w.bind("<Control-a>", lambda e: (self.select_all(), "break")[1])
         self.app.root.bind("<Control-f>", lambda e: self.search_entry.focus_set())
 
-        self.status = ttk.Label(f, style="Muted.TLabel")
+        self.status = ttk.Label(f, style="Muted.TLabel", width=1)
         self.status.pack(fill="x", pady=(6, 0))
         # Long status lines wrap instead of widening the window.
         f.bind("<Configure>", lambda e: self.status.configure(wraplength=max(200, e.width - ui.px(40))), add="+")
@@ -339,7 +353,12 @@ class FilesTab:
         return dict(SORTS).get(self.sort_var.get(), "mtime DESC")
 
     def _titles(self):
-        return dict(self.cloud().sources())
+        # Cached for a few seconds: it's asked for by every tile.
+        now = time.time()
+        if now - getattr(self, "_titles_at", 0) > 5:
+            self._titles_cache = dict(self.cloud().sources())
+            self._titles_at = now
+        return self._titles_cache
 
     def _where(self, r, titles=None):
         title = (titles or self._titles()).get(r.root, "Backup")
@@ -462,19 +481,36 @@ class FilesTab:
             return e[1]
         return ("l:" + e[1].path) if e[0] == "local" else "f:" + e[1].block + e[1].row_id
 
+    def _signature(self):
+        return (self.view, self.root_id, self.path, self.query, self.recent,
+                tuple(self._key(e) + "|" + ("" if e[0] == "folder" else f"{e[1].name}|{e[1].size}|{getattr(e[1], 'state', '')}")
+                      for e in self.entries))
+
     def show(self, keep_sel=False):
         before = {self._key(self.entries[i]) for i in self.sel if i < len(self.entries)} if keep_sel else set()
+        old_sig = getattr(self, "_sig", None)
         note = self._load()
         self.sel = {i for i, e in enumerate(self.entries) if self._key(e) in before}
-        self.limit = PAGE
+        sig = self._signature()
+        self._set_status(note)
+        if keep_sel and sig == old_sig:
+            # Nothing changed (e.g. a background refresh): keep the screen as it is — no flicker, same scroll.
+            self._selection_changed()
+            return
+        same_place = old_sig is not None and old_sig[:5] == sig[:5]
+        self._sig = sig
         self.gen += 1
         self._render_crumbs()
         if self.view == "grid":
+            y = self.canvas.yview()[0] if same_place else 0
+            self.limit = max(PAGE, self.limit if same_place else PAGE)
             self._draw_grid()
+            if y:
+                self.canvas.update_idletasks()
+                self.canvas.yview_moveto(y)
         else:
             self._draw_list()
         self._selection_changed()
-        self._set_status(note)
 
     def _render_crumbs(self):
         for w in self.crumbs.winfo_children():
@@ -520,6 +556,8 @@ class FilesTab:
 
     def _draw_grid(self):
         self._relayout_job = None
+        self._targets.clear()
+        self._photos.clear()
         for w in self.inner.winfo_children():
             w.destroy()
         self.tiles.clear()
@@ -527,102 +565,140 @@ class FilesTab:
         width = self.canvas.winfo_width()
         cols = max(1, (width - 4) // (CARD_W + CARD_GAP)) if width > 10 else 4
         self._cols = cols
+        self._more_btn = None
         folders = [i for i, e in enumerate(self.entries) if e[0] == "folder"]
-        files = [i for i, e in enumerate(self.entries) if e[0] != "folder"]
-        row = 0
+        self._file_idx = [i for i, e in enumerate(self.entries) if e[0] != "folder"]
+        self._files_drawn = 0
         if not self.entries:
             msg = ("No matching files." if self.query else
                    "Nothing here yet.\nDrop files here, or use ＋ New to upload." if not self.recent else "No files yet.")
             tk.Label(self.inner, text=msg, bg=ui.BG, fg=ui.MUTED, font=(ui.FONT, 12), justify="center").grid(
                 row=0, column=0, columnspan=cols, pady=80, padx=40)
             return
-        shown = 0
-        for title, idxs, maker in (("Folders", folders, self._folder_tile), ("Files", files, self._file_tile)):
-            if not idxs:
-                continue
-            tk.Label(self.inner, text=title, bg=ui.BG, fg=ui.TEXT, font=(ui.FONT, 10, "bold"), anchor="w").grid(
+        row = 0
+        if folders:
+            tk.Label(self.inner, text="Folders", bg=ui.BG, fg=ui.TEXT, font=(ui.FONT, 10, "bold"), anchor="w").grid(
                 row=row, column=0, columnspan=cols, sticky="w", padx=4, pady=(10, 6))
             row += 1
-            drawn = 0
-            for k, i in enumerate(idxs):
-                if shown >= self.limit:
-                    break
-                t = maker(i)
+            for k, i in enumerate(folders):
+                t = self._folder_tile(i)
                 t.grid(row=row + k // cols, column=k % cols, padx=(0, CARD_GAP), pady=(0, CARD_GAP), sticky="nw")
                 self.tiles[i] = t
-                shown += 1
-                drawn += 1
-            row += (drawn + cols - 1) // cols
-        if len(self.entries) > self.limit:
-            b = ttk.Button(self.inner, text=f"Show more ({len(self.entries) - self.limit:,} left)", command=self._more)
-            b.grid(row=row + 1, column=0, columnspan=cols, pady=12)
+            row += (len(folders) + cols - 1) // cols
+        if self._file_idx:
+            tk.Label(self.inner, text="Files", bg=ui.BG, fg=ui.TEXT, font=(ui.FONT, 10, "bold"), anchor="w").grid(
+                row=row, column=0, columnspan=cols, sticky="w", padx=4, pady=(10, 6))
+            row += 1
+        self._files_row0 = row
+        self._add_files(self.limit)
         for i in self.sel:
             self._paint(i)
 
-    def _more(self):
-        self.limit += PAGE
-        y = self.canvas.yview()[0]
-        self._draw_grid()
-        self.canvas.update_idletasks()
-        self.canvas.yview_moveto(y)
+    def _grid_cap(self):
+        """How many file tiles fit before the scrolling area gets too tall for Windows to draw (~30,000 px)."""
+        row_h = ui.px(44) + THUMB_H + ui.px(30) + CARD_GAP
+        used = self._files_row0 * ui.px(70)
+        return max(self._cols, ((30000 - used) // row_h) * self._cols)
 
-    def _bind_tile(self, widgets, i):
-        for w in widgets:
-            w.bind("<Button-1>", lambda e, i=i: self._click(i, e))
-            w.bind("<Double-1>", lambda e, i=i: self._open_index(i))
-            w.bind("<Button-3>", lambda e, i=i: self._tile_menu(i, e))
-            w.bind("<Enter>", lambda e, i=i: self._hover(i, True))
-            w.bind("<Leave>", lambda e, i=i: self._hover(i, False))
-            try:
-                if self.can_drop and self.entries[i][0] == "folder":
-                    from tkinterdnd2 import DND_FILES
-                    w.drop_target_register(DND_FILES)
-                    w.dnd_bind("<<Drop>>", lambda e, i=i: (self.upload_paths(
-                        list(self.app.root.tk.splitlist(e.data)), into=self.entries[i][1]), e.action)[1])
-            except Exception:
-                pass
+    def _add_files(self, upto):
+        """Draws file tiles up to `upto` (adding to what's there — nothing is redrawn)."""
+        cols = self._cols
+        upto = min(upto, len(self._file_idx), self._grid_cap())
+        for k in range(self._files_drawn, upto):
+            i = self._file_idx[k]
+            t = self._file_tile(i)
+            t.grid(row=self._files_row0 + k // cols, column=k % cols, padx=(0, CARD_GAP), pady=(0, CARD_GAP), sticky="nw")
+            self.tiles[i] = t
+            if i in self.sel:
+                self._paint(i)
+        self._files_drawn = max(self._files_drawn, upto)
+        self.limit = max(self.limit, upto)
+        if self._more_btn is not None:
+            self._more_btn.destroy()
+            self._more_btn = None
+        left = len(self._file_idx) - self._files_drawn
+        if left > 0 and self._files_drawn >= self._grid_cap():
+            self._more_btn = ttk.Button(self.inner, text=f"See all {len(self._file_idx):,} files in list view",
+                                        command=lambda: self.set_view("list"))
+            self._more_btn.grid(row=self._files_row0 + (self._files_drawn + cols - 1) // cols, column=0,
+                                columnspan=cols, pady=12)
+        elif left > 0:
+            self._more_btn = ttk.Button(self.inner, text=f"Show more ({left:,} left)", command=self._more)
+            self._more_btn.grid(row=self._files_row0 + (self._files_drawn + cols - 1) // cols, column=0,
+                                columnspan=cols, pady=12)
+
+    def _more(self):
+        if (self.view == "grid" and self._files_drawn < len(getattr(self, "_file_idx", []))
+                and self._files_drawn < self._grid_cap()):
+            self._add_files(self._files_drawn + PAGE)
+
+    def _scrolled(self, first, last):
+        """Scrollbar moved: when near the bottom, add the next batch of tiles."""
+        self._gsc.set(first, last)
+        try:
+            if float(last) > 0.9 and not getattr(self, "_more_pending", False):
+                self._more_pending = True
+                self.canvas.after(60, lambda: (setattr(self, "_more_pending", False), self._more()))
+        except ValueError:
+            pass
+
+    def _bind_tile(self, t, i):
+        t.bind("<Button-1>", lambda e, i=i: self._click(i, e))
+        t.bind("<Double-1>", lambda e, i=i: self._open_index(i))
+        t.bind("<Button-3>", lambda e, i=i: self._tile_menu(i, e))
+        t.bind("<Enter>", lambda e, i=i: self._hover(i, True))
+        t.bind("<Leave>", lambda e, i=i: self._hover(i, False))
+        try:
+            if self.can_drop and self.entries[i][0] == "folder":
+                from tkinterdnd2 import DND_FILES
+                t.drop_target_register(DND_FILES)
+                t.dnd_bind("<<Drop>>", lambda e, i=i: (self.upload_paths(
+                    list(self.app.root.tk.splitlist(e.data)), into=self.entries[i][1]), e.action)[1])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _round_rect(c, x1, y1, x2, y2, r, **kw):
+        pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2,
+               x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+        return c.create_polygon(pts, smooth=True, **kw)
+
+    def _tile_canvas(self, h):
+        """Each tile is one drawn canvas (light and fast, even with hundreds on screen)."""
+        c = tk.Canvas(self.inner, width=CARD_W, height=h, bg=ui.BG, highlightthickness=0, bd=0, cursor="hand2")
+        c._bg = self._round_rect(c, 1, 1, CARD_W - 1, h - 1, ui.px(14), fill=TILE_BG, outline="")
+        return c
 
     def _folder_tile(self, i):
         key = self.entries[i][1]
-        t = tk.Frame(self.inner, bg=TILE_BG, width=CARD_W, height=ui.px(52), cursor="hand2")
-        t.pack_propagate(False)
-        ic = tk.Label(t, image=ui.icon("folder", 24), bg=TILE_BG)
-        ic.pack(side="left", padx=(14, 10))
-        nm = tk.Label(t, text=_short(key.split("/")[-1], 20), bg=TILE_BG, fg=ui.TEXT, font=(ui.FONT, 10, "bold"), anchor="w")
-        nm.pack(side="left", fill="x", expand=True)
-        t._parts = (t, ic, nm)
-        t._bgparts = t._parts
-        self._bind_tile(t._parts, i)
-        return t
+        h = ui.px(52)
+        c = self._tile_canvas(h)
+        c.create_image(ui.px(16), h // 2, image=ui.icon("folder", 24), anchor="w")
+        c.create_text(ui.px(52), h // 2, text=_short(key.split("/")[-1], 22), anchor="w", fill=ui.TEXT,
+                      font=(ui.FONT, 10, "bold"))
+        self._bind_tile(c, i)
+        return c
 
     def _file_tile(self, i):
         r = self.entries[i][1]
         typ = ui.type_of(r.name, r.kind)
-        t = tk.Frame(self.inner, bg=TILE_BG, width=CARD_W, height=THUMB_H + ui.px(64), cursor="hand2")
-        t.pack_propagate(False)
-        head = tk.Frame(t, bg=TILE_BG)
-        head.pack(fill="x", padx=10, pady=(9, 7))
-        ic = tk.Label(head, image=ui.icon(typ, 20), bg=TILE_BG)
-        ic.pack(side="left")
-        nm = tk.Label(head, text=_short(r.name, 22), bg=TILE_BG, fg=ui.TEXT, font=(ui.FONT, 10), anchor="w")
-        nm.pack(side="left", padx=(8, 0), fill="x", expand=True)
-        box = tk.Frame(t, bg=ui.CARD, width=THUMB_W, height=THUMB_H)
-        box.pack_propagate(False)
-        box.pack(padx=12)
-        pic = tk.Label(box, bg=ui.CARD, image=ui.icon(typ, 64))
-        pic.pack(fill="both", expand=True)
         local = isinstance(r, LocalFile)
+        top = ui.px(44)
+        h = top + THUMB_H + ui.px(30)
+        c = self._tile_canvas(h)
+        pad = (CARD_W - THUMB_W) // 2
+        c.create_image(pad, top // 2 + ui.px(2), image=ui.icon(typ, 20), anchor="w")
+        c.create_text(pad + ui.px(30), top // 2 + ui.px(2), text=_short(r.name, 24), anchor="w",
+                      fill=ui.MUTED if local else ui.TEXT, font=(ui.FONT, 10))
+        self._round_rect(c, pad, top, pad + THUMB_W, top + THUMB_H, ui.px(8), fill=ui.CARD, outline="")
+        pic = c.create_image(pad + THUMB_W // 2, top + THUMB_H // 2, image=ui.icon(typ, 64))
         fg = (("#b3261e" if r.state in ("skipped", "failed") else "#8a5a00") if local else ui.MUTED)
-        sub = tk.Label(t, text=self._sub(r), bg=TILE_BG, fg=fg, font=(ui.FONT, 8), anchor="w")
-        if local:
-            nm.configure(fg=ui.MUTED)
-        sub.pack(fill="x", padx=12, pady=(3, 0))
-        t._parts = (t, head, ic, nm, box, pic, sub)
-        t._bgparts = (t, head, ic, nm, sub)
-        self._bind_tile(t._parts, i)
+        c.create_text(pad + ui.px(2), top + THUMB_H + ui.px(15), text=self._sub(r), anchor="w", fill=fg,
+                      font=(ui.FONT, 8))
+        self._bind_tile(c, i)
         if typ in ("photo", "pdf"):
-            self._want_thumb(i, r, pic)
-        return t
+            self._want_thumb(i, r, (c, pic))
+        return c
 
     def _sub(self, r):
         if isinstance(r, LocalFile):
@@ -634,18 +710,22 @@ class FilesTab:
 
     def _paint(self, i, hover=False):
         t = self.tiles.get(i)
-        if not t:
+        if t is None:
             return
-        bg = ui.SELECTED if i in self.sel else ("#e1e5ea" if hover else TILE_BG)
-        for w in t._bgparts:
-            try:
-                w.configure(bg=bg)
-            except tk.TclError:
-                pass
+        try:
+            t.itemconfigure(t._bg, fill=ui.SELECTED if i in self.sel else ("#e1e5ea" if hover else TILE_BG))
+        except tk.TclError:
+            pass
 
     def _hover(self, i, on):
         if i not in self.sel:
             self._paint(i, hover=on)
+
+    def _set_sel(self, new):
+        old, self.sel = self.sel, set(new)
+        for k in old ^ self.sel:     # repaint only the tiles that changed
+            self._paint(k)
+        self._selection_changed()
 
     def _click(self, i, e):
         self.canvas.focus_set()
@@ -653,23 +733,17 @@ class FilesTab:
         shift = e.state & 0x1
         if shift and self.anchor is not None:
             a, b = sorted((self.anchor, i))
-            self.sel = set(range(a, b + 1))
+            self._set_sel(range(a, b + 1))
         elif ctrl:
-            self.sel ^= {i}
             self.anchor = i
+            self._set_sel(self.sel ^ {i})
         else:
-            self.sel = {i}
             self.anchor = i
-        for k in self.tiles:
-            self._paint(k)
-        self._selection_changed()
+            self._set_sel({i})
 
     def _tile_menu(self, i, e):
         if i not in self.sel:
-            self.sel = {i}
-            for k in self.tiles:
-                self._paint(k)
-            self._selection_changed()
+            self._set_sel({i})
         self._menu(e)
 
     def _open_index(self, i):
@@ -733,9 +807,11 @@ class FilesTab:
         if n:
             self.act_count.config(text=f"{n} selected")
             if not self.actbar.winfo_ismapped():
-                self.actbar.pack(fill="x", pady=(0, 8), before=self.body)
+                self.bar_hint.pack_forget()
+                self.actbar.pack(side="left", fill="y")
         elif self.actbar.winfo_ismapped():
             self.actbar.pack_forget()
+            self.bar_hint.pack(side="left", padx=2)
         self._details()
 
     # ---- details & thumbnails ----------------------------------------------------------------
@@ -791,51 +867,70 @@ class FilesTab:
     def _thumb_path(self, r):
         return os.path.join(CACHE_DIR, "thumbs", r.block + ".v2.png")
 
-    def _want_thumb(self, i, r, label, big=False):
+    def _want_thumb(self, i, r, target, big=False):
+        # Background threads never touch screen objects (Tk would crash): they get a ticket number.
         size = (ui.px(260), ui.px(260)) if big else (THUMB_W, THUMB_H)
-        p = self._thumb_path(r)
-        if os.path.isfile(p):
-            self._set_thumb(label, p, size, r)
+        self._tok = getattr(self, "_tok", 0) + 1
+        self._targets[self._tok] = target
+        job = (self.gen, r, self._tok, size, big)
+        if os.path.isfile(self._thumb_path(r)):
+            self.ready_q.put(job)            # already made: just load it (fast lane)
         elif r.size and r.size <= THUMB_MAX_BYTES:
-            self.thumb_q.put((self.gen, r, label, size))
+            self.thumb_q.put(job)            # needs making (may download)
 
-    def _set_thumb(self, label, p, size, r=None):
-        try:
-            from PIL import Image, ImageOps, ImageTk
-            im = Image.open(p).convert("RGB")
-            pdf = r is not None and ui.type_of(r.name, r.kind) == "pdf"
-            if size == (ui.px(260), ui.px(260)):
-                im = ImageOps.contain(im, size, Image.LANCZOS)
-            else:   # fill the card; for documents show the top of the first page
-                im = ImageOps.fit(im, size, Image.LANCZOS, centering=(0.5, 0.0) if pdf else (0.5, 0.5))
+    def _prepare(self, p, size, r, big):
+        """Loads and sizes a preview (in the background); the screen only gets the finished picture."""
+        from PIL import Image, ImageOps
+        im = Image.open(p).convert("RGB")
+        pdf = ui.type_of(r.name, r.kind) == "pdf"
+        if big:
+            return ImageOps.contain(im, size, Image.LANCZOS)
+        return ImageOps.fit(im, size, Image.LANCZOS, centering=(0.5, 0.0) if pdf else (0.5, 0.5))
+
+    def _deliver(self, gen, tok, im):
+        def put():
+            target = self._targets.pop(tok, None)
+            if target is None or gen != self.gen:
+                return
+            w = target[0] if isinstance(target, tuple) else target
+            if not w.winfo_exists():
+                return
+            from PIL import ImageTk
             ph = ImageTk.PhotoImage(im)
-            label.configure(image=ph)
-            label._ph = ph
-        except Exception:
-            pass
+            if isinstance(target, tuple):
+                w.itemconfigure(target[1], image=ph)
+                self._photos[tok] = ph
+            else:
+                w.configure(image=ph)
+                self._det_ph = ph
+        self._ui(put)
+
+    def _ready_worker(self):
+        while True:
+            gen, r, tok, size, big = self.ready_q.get()
+            if gen != self.gen:
+                continue
+            try:
+                self._deliver(gen, tok, self._prepare(self._thumb_path(r), size, r, big))
+            except Exception:
+                pass
 
     def _thumb_worker(self):
-        """Makes photo previews one by one, in the background. Only the small preview is kept."""
+        """Makes previews in the background (a few at a time). Only the small preview is kept."""
         while True:
-            gen, r, label, size = self.thumb_q.get()
+            gen, r, tok, size, big = self.thumb_q.get()
             if gen != self.gen:
                 continue
             p = self._thumb_path(r)
             try:
                 if not os.path.isfile(p):
                     self._make_thumb(r, p)
+                if os.path.isfile(p):
+                    self._deliver(gen, tok, self._prepare(p, size, r, big))
             except Exception as e:
                 self._thumb_errors = getattr(self, "_thumb_errors", 0) + 1
                 if self._thumb_errors <= 5:
                     self._ui(lambda e=e, n=r.name: self.app.log(f"Couldn't make a preview of {n}: {e}"))
-                continue
-            if not os.path.isfile(p):
-                continue
-
-            def put(label=label, p=p, size=size, gen=gen, r=r):
-                if gen == self.gen and label.winfo_exists():
-                    self._set_thumb(label, p, size, r)
-            self._ui(put)
 
     def _make_thumb(self, r, dest):
         from PIL import Image, ImageOps
@@ -873,8 +968,9 @@ class FilesTab:
                 im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
             im.thumbnail((560, 720))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            im.save(dest + ".part.png")
-            os.replace(dest + ".part.png", dest)
+            part = f"{dest}.{threading.get_ident()}.part.png"
+            im.save(part)
+            os.replace(part, dest)
         finally:
             if tmp:
                 try:
