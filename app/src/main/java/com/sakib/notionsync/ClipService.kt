@@ -182,6 +182,8 @@ class ClipService : Service() {
             try {
                 if (prefs.token.isEmpty() || !prefs.clipboardSync || prefs.signedIn.isEmpty()) break
                 // Keep this phone in your devices list, and the list fresh.
+                // Something switched off that automatic syncing needs? Say so (at most every 3 hours).
+                checkHealth()
                 // Every few minutes: tell your other devices this phone is on and what it's doing.
                 if (System.currentTimeMillis() - prefs.devicesSeenAt > 5 * 60_000L) {
                     try { Registry(this).apply { registerMe(Devices.myStatus(this@ClipService)); all() } } catch (e: Exception) {
@@ -227,6 +229,39 @@ class ClipService : Service() {
             try { Thread.sleep(wait) } catch (e: InterruptedException) { break }
         }
         main.post { stopSelf() }
+    }
+
+    private var healthAt = 0L
+
+    /** Warns (with a one-tap fix) when the helper was switched off or Samsung may put the app to sleep. */
+    private fun checkHealth() {
+        if (System.currentTimeMillis() - healthAt < 3 * 3600_000L) return
+        healthAt = System.currentTimeMillis()
+        val p = Prefs(this)
+        val problem = when {
+            (p.clipAuto || p.callRecord) && p.helperEverOn && !ClipAutoService.enabled(this) ->
+                "Automatic sending is off: Android switched off the app's helper. Tap to switch it on again " +
+                    "(Installed apps › Notion Sync helper)." to Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            !Perms.battery(this) ->
+                "Samsung may put the app to sleep and stop syncing. Tap and choose Allow so it keeps running." to
+                    Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+            else -> null
+        } ?: return
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (nm.getNotificationChannel(CHANNEL_IN) == null) {
+                nm.createNotificationChannel(NotificationChannel(CHANNEL_IN, "Files from the laptop", NotificationManager.IMPORTANCE_HIGH))
+            }
+            val pi = PendingIntent.getActivity(this, 90, problem.second.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            NotificationManagerCompat.from(this).notify(91, NotificationCompat.Builder(this, CHANNEL_IN)
+                .setSmallIcon(R.drawable.ic_stat)
+                .setContentTitle("Syncing needs your attention")
+                .setContentText(problem.first)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(problem.first))
+                .setContentIntent(pi).setAutoCancel(true).build())
+            Logger.log(this, "Shared clipboard: " + problem.first)
+        } catch (e: SecurityException) { }
     }
 
     private fun now() = java.text.SimpleDateFormat("h:mm a").format(java.util.Date())

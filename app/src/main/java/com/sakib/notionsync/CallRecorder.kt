@@ -70,7 +70,7 @@ class CallRecorder(private val svc: AccessibilityService) {
 
     fun start() {
         if (Build.VERSION.SDK_INT >= 31) {
-            val l = AudioManager.OnModeChangedListener { onMode(it) }
+            val l = AudioManager.OnModeChangedListener { try { onMode(it) } catch (t: Throwable) { } }
             am.addOnModeChangedListener(Executor { main.post(it) }, l)
             listener = l
         }
@@ -79,7 +79,7 @@ class CallRecorder(private val svc: AccessibilityService) {
         main.post(object : Runnable {
             override fun run() {
                 if (stopped) return
-                onMode(am.mode)
+                try { onMode(am.mode) } catch (t: Throwable) { }
                 main.postDelayed(this, 2000)
             }
         })
@@ -232,6 +232,13 @@ class CallRecorder(private val svc: AccessibilityService) {
 
     private val meter = object : Runnable {
         override fun run() {
+            try { tick() } catch (t: Throwable) {
+                Logger.log(ctx, "Call recording hiccup (${t.javaClass.simpleName}); carrying on.")
+                main.postDelayed(this, 1000)
+            }
+        }
+
+        private fun tick() {
             // The call is over even if the call app didn't say so: stop and save.
             val now0 = System.currentTimeMillis()
             val alive = callAlive()

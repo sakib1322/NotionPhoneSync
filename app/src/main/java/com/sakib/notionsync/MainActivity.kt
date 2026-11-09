@@ -810,6 +810,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun showClipAuto() {
         showCalls()
+        // The helper was on before but Android switched it off: say so plainly.
+        if (prefs.clipAuto && prefs.helperEverOn && !ClipAutoService.enabled(this) && !helperWarned) {
+            helperWarned = true
+            com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle("Automatic sending is off")
+                .setMessage("Android switched off the app's helper, so what you copy on this phone isn't sent automatically " +
+                    "(the notification button still works). Tap Open settings → Installed apps → “Notion Sync helper” and switch it on.")
+                .setPositiveButton("Open settings") { _, _ ->
+                    try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (e: Exception) { }
+                }
+                .setNegativeButton("Not now", null)
+                .show()
+        }
         val on = prefs.clipAuto && ClipAutoService.enabled(this)
         findViewById<MaterialSwitch>(R.id.sw_clip_auto)?.let { if (it.isChecked != on) it.isChecked = on }
         findViewById<TextView>(R.id.clip_auto_note)?.text = when {
@@ -818,6 +831,8 @@ class MainActivity : AppCompatActivity() {
             else -> "Off: tap “Send copied” in the notification after copying."
         }
     }
+
+    private var helperWarned = false
 
     private fun showClipStatus() {
         showClipAuto()

@@ -63,12 +63,16 @@ class ClipAutoService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         running = this
-        calls = CallRecorder(this).also { it.start() }
+        Prefs(this).helperEverOn = true
+        calls = try { CallRecorder(this).also { it.start() } } catch (t: Throwable) {
+            Logger.log(this, "Call recording couldn't start (${t.javaClass.simpleName}); copying still works.")
+            null
+        }
         Logger.log(this, "Shared clipboard: automatic sending is on — copies go to your other devices with no tap.")
     }
 
     override fun onDestroy() {
-        calls?.stop()
+        try { calls?.stop() } catch (t: Throwable) { }
         calls = null
         if (running === this) running = null
         removeOverlay()
@@ -78,6 +82,11 @@ class ClipAutoService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
+        // Never let anything here crash: Android switches off a helper that crashes.
+        try { handle(e) } catch (t: Throwable) { Logger.log(this, "Helper: skipped an event (${t.javaClass.simpleName}).") }
+    }
+
+    private fun handle(e: AccessibilityEvent?) {
         e ?: return
         val pkg = e.packageName?.toString().orEmpty()
         // Which app is on screen (to name call recordings after it).
@@ -106,7 +115,7 @@ class ClipAutoService : AccessibilityService() {
         if (now - lastTrigger < 1200) return
         lastTrigger = now
         // Give the app a moment to actually put it on the clipboard.
-        main.postDelayed({ grab() }, 350)
+        main.postDelayed({ try { grab() } catch (t: Throwable) { removeOverlay() } }, 350)
     }
 
     /** Briefly takes focus with an invisible 1-pixel window, reads the clipboard, sends it. */
@@ -161,7 +170,9 @@ class ClipAutoService : AccessibilityService() {
     }
 
     private fun readAndSend() {
-        val got = ClipSend.read(this) ?: return
-        ClipSend.sendIfNew(this, got.first, got.second, quiet = true)
+        try {
+            val got = ClipSend.read(this) ?: return
+            ClipSend.sendIfNew(this, got.first, got.second, quiet = true)
+        } catch (t: Throwable) { }
     }
 }

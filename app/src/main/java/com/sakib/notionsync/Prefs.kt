@@ -112,6 +112,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("call_record", false)
         set(v) { sp.edit().putBoolean("call_record", v).apply() }
 
+    /** The helper has been switched on at some point (so it being off now is a problem). */
+    var helperEverOn: Boolean
+        get() = sp.getBoolean("helper_ever_on", false)
+        set(v) { sp.edit().putBoolean("helper_ever_on", v).apply() }
+
     var clipDbId: String
         get() = sp.getString("clip_db", "") ?: ""
         set(v) { sp.edit().putString("clip_db", v).apply() }
