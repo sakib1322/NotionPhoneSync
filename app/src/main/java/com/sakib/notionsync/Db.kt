@@ -21,8 +21,22 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
         val status: String,
         val blockId: String?,
         val attempts: Int,
-        val indexId: String? = null
-    )
+        val indexId: String? = null,
+        val updated: Long = 0,
+        val error: String? = null
+    ) {
+        /** Should this file be (re)uploaded? Changed files, ones waiting to retry, and — twice a day —
+         *  ones that failed or were skipped earlier, so a hiccup never leaves a file out for ever. */
+        fun wantsUpload(size: Long, mtime: Long, now: Long = System.currentTimeMillis()): Boolean {
+            if (this.size != size || this.mtime != mtime || status == "retry") return true
+            if (status == "failed" || status == "skipped") {
+                val e = (error ?: "").lowercase()
+                if ("too_large" in e || "5 gb" in e) return false
+                return now - updated > 12 * 3600_000L
+            }
+            return false
+        }
+    }
 
     /** One file (or folder marker) in the cloud index. */
     data class IdxRow(
@@ -149,10 +163,11 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
     fun loadAll(): HashMap<String, Rec> {
         val map = HashMap<String, Rec>()
         readableDatabase.rawQuery(
-            "SELECT path, size, mtime, status, block_id, attempts, index_id FROM files", null
+            "SELECT path, size, mtime, status, block_id, attempts, index_id, updated, error FROM files", null
         ).use { c ->
             while (c.moveToNext()) {
-                map[c.getString(0)] = Rec(c.getLong(1), c.getLong(2), c.getString(3), c.getString(4), c.getInt(5), c.getString(6))
+                map[c.getString(0)] = Rec(c.getLong(1), c.getLong(2), c.getString(3), c.getString(4), c.getInt(5), c.getString(6),
+                    if (c.isNull(7)) 0L else c.getLong(7), c.getString(8))
             }
         }
         return map
@@ -348,6 +363,21 @@ class Db private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "sync.db", nu
             .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
     /** Sub-folders directly inside [path] with their file counts and sizes (including everything below). */
+    /** Sync state of the files directly inside one phone folder (path relative to storage): name → (status, error). */
+    fun statesIn(relDir: String): Map<String, Pair<String, String?>> {
+        val prefix = if (relDir.isEmpty()) "" else "$relDir/"
+        val out = HashMap<String, Pair<String, String?>>()
+        readableDatabase.rawQuery(
+            "SELECT path, status, error FROM files WHERE substr(path, 1, ?) = ?", arrayOf(prefix.length.toString(), prefix)
+        ).use { c ->
+            while (c.moveToNext()) {
+                val rest = c.getString(0).substring(prefix.length)
+                if (rest.isNotEmpty() && '/' !in rest) out[rest] = c.getString(1) to c.getString(2)
+            }
+        }
+        return out
+    }
+
     fun subFolders(root: String, path: String): List<FolderSummary> {
         val prefix = if (path.isEmpty()) "" else "$path/"
         val agg = LinkedHashMap<String, LongArray>()

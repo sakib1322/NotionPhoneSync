@@ -241,7 +241,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                 if (size == 0L || now - mtime < 60_000) return FileVisitResult.CONTINUE
                 val f = file.toFile()
                 val r = known[relPath(rootPath, f)]
-                if (r == null || r.status == "retry" || r.size != size || r.mtime != mtime) found.add(f to mtime)
+                if (r == null || r.wantsUpload(size, mtime)) found.add(f to mtime)
                 return FileVisitResult.CONTINUE
             }
 

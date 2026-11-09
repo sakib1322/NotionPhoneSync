@@ -80,11 +80,25 @@ class Settings:
 
 
 class Rec:
-    __slots__ = ("size", "mtime", "status", "block_id", "attempts", "index_id")
+    __slots__ = ("size", "mtime", "status", "block_id", "attempts", "index_id", "updated", "error")
 
-    def __init__(self, size, mtime, status, block_id, attempts, index_id=None):
+    def __init__(self, size, mtime, status, block_id, attempts, index_id=None, updated=None, error=None):
         self.size, self.mtime, self.status, self.block_id, self.attempts = size, mtime, status, block_id, attempts
         self.index_id = index_id
+        self.updated, self.error = updated, error
+
+    def wants_upload(self, size, mtime, now=None):
+        """Should this file be (re)uploaded? Changed files, ones waiting to retry, and — twice a day —
+        ones that failed or were skipped earlier (a network hiccup or a busy Notion shouldn't
+        leave a file out of the backup for ever)."""
+        if self.size != size or self.mtime != mtime or self.status == "retry":
+            return True
+        if self.status in ("failed", "skipped"):
+            err = (self.error or "").lower()
+            if "too_large" in err or "5 gb" in err:
+                return False
+            return (now or time.time()) - (self.updated or 0) > 12 * 3600
+        return False
 
 
 class Db:
@@ -114,8 +128,22 @@ class Db:
 
     def load_all(self):
         with self.lock:
-            rows = self.conn.execute("SELECT path, size, mtime, status, block_id, attempts, index_id FROM files").fetchall()
-        return {r[0]: Rec(r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows}
+            rows = self.conn.execute(
+                "SELECT path, size, mtime, status, block_id, attempts, index_id, updated, error FROM files").fetchall()
+        return {r[0]: Rec(*r[1:]) for r in rows}
+
+    def states_in(self, folder):
+        """Sync state of the files directly inside one local folder: {normalised name: (status, error)}."""
+        prefix = norm(folder) + os.sep
+        with self.lock:
+            rows = self.conn.execute("SELECT path, status, error FROM files WHERE substr(path, 1, ?) = ?",
+                                     (len(prefix), prefix)).fetchall()
+        out = {}
+        for p, st, err in rows:
+            rest = p[len(prefix):]
+            if rest and os.sep not in rest:
+                out[rest] = (st, err)
+        return out
 
     def save(self, path, size, mtime, status, block_id, error, attempts, key=None):
         """Records a file's sync state, keeping its index link."""

@@ -122,7 +122,7 @@ class Syncer:
                             if size == 0 or now_ms - mtime < 60_000:
                                 continue
                             r = known.get(core.norm(e.path))
-                            if r is None or r.status == "retry" or r.size != size or r.mtime != mtime:
+                            if r is None or r.wants_upload(size, mtime):
                                 found.append((mtime, e.path, root, label))
                         except OSError:
                             continue

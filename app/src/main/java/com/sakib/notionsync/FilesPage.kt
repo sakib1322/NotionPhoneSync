@@ -60,7 +60,10 @@ class FilesPage(
         val block: String, name: String, val mtime: Long, val dateText: String, val type: String,
         var url: String?, var fetchedAt: Long, val pageId: String, val size: Long,
         val localPath: String?, val where: String?, val root: String?, val folder: String?,
-        val row: Db.IdxRow? = null
+        val row: Db.IdxRow? = null,
+        /** Set for a phone file that isn't backed up yet: why ("Waiting to back up" …). */
+        val pending: String? = null,
+        val pendingError: String? = null
     ) : Item(block, name)
 
     private val prefs = Prefs(act)
@@ -509,6 +512,62 @@ class FilesPage(
         )
     }
 
+    private var waitingHere = 0
+
+    /** Adds this phone's own files in the open folder that aren't in the cloud list yet (shown with
+     *  "Waiting to back up" / "Not backed up"), so the app matches what's really on the phone. */
+    private fun mergeLocal(result: ArrayList<Item>): Int {
+        val dir = if (path.isEmpty()) storageRoot else File(storageRoot, path)
+        val entries = try { dir.listFiles() } catch (e: Exception) { null } ?: return 0
+        val folderKeys = result.filterIsInstance<Folder>().map { it.key }.toHashSet()
+        val names = result.filterIsInstance<FileItem>().map { it.name.lowercase() }.toHashSet()
+        val excluded = prefs.excludedList()
+        val states = try { db.statesIn(path) } catch (e: Exception) { emptyMap() }
+        val newFolders = ArrayList<Folder>()
+        val newFiles = ArrayList<FileItem>()
+        val now = System.currentTimeMillis()
+        for (f in entries) {
+            val name = f.name
+            if (prefs.skipHidden && name.startsWith(".")) continue
+            val rel = if (path.isEmpty()) name else "$path/$name"
+            if (f.isDirectory) {
+                if (rel in folderKeys) continue
+                if (excluded.any { rel.equals(it, true) || rel.startsWith("$it/", true) }) continue
+                if (rel.equals("Download/From laptop", true)) continue
+                newFolders.add(Folder(rel, name))
+                continue
+            }
+            if (!f.isFile || f.length() == 0L || name.lowercase() in names) continue
+            if (now - f.lastModified() < 60_000) continue
+            val st = states[name]
+            val label = when (st?.first) {
+                "skipped", "failed" -> "Not backed up"
+                "done" -> "Backed up · adding to list"
+                else -> "Waiting to back up"
+            }
+            val type = when (CloudIndex.kind(name)) {
+                "Photo" -> "image"
+                "Video" -> "video"
+                "Audio" -> "audio"
+                "PDF" -> "pdf"
+                else -> "file"
+            }
+            newFiles.add(FileItem("local:$rel", name, f.lastModified(), dateFmt.format(Date(f.lastModified())), type,
+                null, 0, "", f.length(), rel, null, null, path, null, label, st?.second))
+        }
+        newFolders.sortBy { it.name.lowercase() }
+        when (prefs.filesSort) {
+            "name" -> newFiles.sortBy { it.name.lowercase() }
+            "size" -> newFiles.sortByDescending { it.size }
+            "old" -> newFiles.sortBy { it.mtime }
+            else -> newFiles.sortByDescending { it.mtime }
+        }
+        val firstFile = result.indexOfFirst { it !is Folder }.let { if (it < 0) result.size else it }
+        result.addAll(firstFile, newFolders)
+        result.addAll(newFiles)
+        return newFiles.size
+    }
+
     /** Shows the current folder (or search results) from the local index. */
     private fun showIndex() {
         error = null
@@ -537,6 +596,7 @@ class FilesPage(
                 result.add(Folder(if (path.isEmpty()) it.name else "$path/${it.name}", it.name, it.files, it.bytes))
             }
             db.filesIn(sourceId, path, sortSql()).forEach { result.add(fileFrom(it, withWhere = false)) }
+            if (sourceId == prefs.rootPageId) waitingHere = mergeLocal(result) else waitingHere = 0
         }
         items.clear()
         items.addAll(result)
@@ -544,7 +604,9 @@ class FilesPage(
         adapter.notifyDataSetChanged()
         renderCrumbs()
         val (n, b) = db.storageTotal(sourceId)
-        summary.text = "${num.format(n)} files · ${SpeedMeter.size(b)} in $sourceTitle  ·  Storage ›"
+        summary.text = "${num.format(n)} files · ${SpeedMeter.size(b)} in $sourceTitle" +
+            (if (q.isEmpty() && !photosMode && waitingHere > 0) "  ·  ${num.format(waitingHere)} here not backed up yet" else "") +
+            "  ·  Storage ›"
         summary.visibility = View.VISIBLE
         modeToggle.visibility = View.VISIBLE
         fab.visibility = if (q.isEmpty() && !photosMode) View.VISIBLE else View.GONE
@@ -790,6 +852,20 @@ class FilesPage(
         return f.url
     }
 
+    private fun pendingInfo(f: FileItem) {
+        val why = when {
+            f.pending == "Not backed up" -> "It couldn't be uploaded" + (f.pendingError?.let { ":\n$it" } ?: ".") +
+                "\n\nIt's tried again automatically twice a day."
+            else -> "It's in the backup queue and will be uploaded on the next backups."
+        }
+        MaterialAlertDialogBuilder(act)
+            .setTitle(f.name)
+            .setMessage("${f.pending}. $why")
+            .setPositiveButton("Open") { _, _ -> obtain(f) { file -> open(f, file) } }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
     private fun actions(f: FileItem) {
         val opts = mutableListOf("Open", "Share", "Save to phone")
         if (f.row != null) opts.addAll(listOf("Rename", "Move", "Delete"))
@@ -1033,6 +1109,7 @@ class FilesPage(
             val d = h.itemView.resources.displayMetrics.density
             val grid = prefs.filesGrid
             h.name.text = it.name
+            h.itemView.alpha = 1f
             thumb.tag = null
             thumb.setImageResource(kindIcon(it))
             thumb.scaleType = ImageView.ScaleType.CENTER_INSIDE
@@ -1065,6 +1142,7 @@ class FilesPage(
                 is FileItem -> {
                     val sizeText = if (it.size > 0) SpeedMeter.size(it.size) else ""
                     h.meta.text = when {
+                        it.pending != null -> it.pending + (if (sizeText.isNotEmpty()) " · $sizeText" else "")
                         it.where != null -> it.where
                         grid -> listOf(it.dateText, sizeText).firstOrNull { s -> s.isNotEmpty() } ?: kindLabel(it)
                         else -> listOf(sizeText, it.dateText, if (sizeText.isEmpty()) kindLabel(it) else "")
@@ -1084,8 +1162,9 @@ class FilesPage(
                         if (it.type == "image" || it.type == "video" || it.type == "audio") openViewer(it)
                         else obtain(it) { file -> open(it, file) }
                     }
+                    h.itemView.alpha = if (it.pending != null) 0.6f else 1f
                     h.itemView.setOnLongClickListener { _ ->
-                        actions(it)
+                        if (it.pending != null) pendingInfo(it) else actions(it)
                         true
                     }
                 }

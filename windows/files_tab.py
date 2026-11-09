@@ -2,6 +2,7 @@
 import os
 import queue
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -19,6 +20,27 @@ THUMB_W, THUMB_H = 172, 118
 PAGE = 300                  # tiles drawn at a time (more with "Show more")
 THUMB_MAX_BYTES = 30 * 1024 * 1024
 TILE_BG = "#f0f4f9"
+
+
+class LocalFile:
+    """A file in a backed-up folder on this laptop that isn't in the cloud list (yet)."""
+    __slots__ = ("name", "path", "size", "mtime", "kind", "state", "error", "block", "row_id", "root", "device", "source")
+
+    def __init__(self, path, size, mtime, state, error, root):
+        self.name = os.path.basename(path)
+        self.path, self.size, self.mtime = path, size, mtime
+        self.kind = core.kind(self.name)
+        self.state, self.error = state, error
+        import hashlib
+        self.block = "local-" + hashlib.sha1(path.encode("utf-8", "replace")).hexdigest()[:20]
+        self.row_id, self.root, self.device, self.source = "", root, "Laptop", path
+
+    def label(self):
+        if self.state in ("skipped", "failed"):
+            return "Not backed up"
+        if self.state == "done":
+            return "Backed up · adding to list"
+        return "Waiting to back up"
 
 
 def _when(ms):
@@ -181,6 +203,8 @@ class FilesTab:
 
         self.status = ttk.Label(f, style="Muted.TLabel")
         self.status.pack(fill="x", pady=(6, 0))
+        # Long status lines wrap instead of widening the window.
+        f.bind("<Configure>", lambda e: self.status.configure(wraplength=max(200, e.width - ui.px(40))), add="+")
         self._place_views()
         self._setup_drop()
 
@@ -349,16 +373,94 @@ class FilesTab:
             self._folder_info[key] = (n, b)
             self.entries.append(("folder", key))
         self.entries += [("file", Row(t)) for t in self.db.files_in(self.root_id, self.path, o)]
+        self._local_folders = set()
+        waiting = self._merge_local(o)
         n, b = self.db.storage(self.root_id)[0]
         if n == 0 and not self.db.get_meta("index_db:" + self.root_id):
             return "This device has no file index yet. It's created by the next sync of the app that uploads to it."
         pending = self.db.count_pending_index() if self.root_id == self.settings.get("root_page") else 0
         extra = f"  ·  Adding {pending:,} earlier uploads to the index…" if pending else ""
         drop = "  ·  Drag files here from File Explorer to upload" if getattr(self, "can_drop", False) else ""
-        return f"{n:,} files · {core.human_size(b)} on {titles.get(self.root_id, 'this device')}{extra}{drop}"
+        wait = (f"  ·  {waiting:,} file(s) here aren't backed up yet (shown faded)" if waiting else "")
+        return f"{n:,} files · {core.human_size(b)} on {titles.get(self.root_id, 'this device')}{wait}{extra}{drop}"
+
+    def _local_roots(self):
+        """{cloud folder name: local folder} for this laptop's backed-up folders."""
+        labels = self.settings.get("labels") or {}
+        out = {}
+        for root in self.settings.get("folders") or []:
+            out[labels.get(core.norm(root)) or os.path.basename(root.rstrip("\\/")) or root] = root
+        return out
+
+    def _merge_local(self, order):
+        """Adds this laptop's own files that aren't in the cloud list yet, so My Drive matches File
+        Explorer. Returns how many there are."""
+        if self.root_id != self.settings.get("root_page"):
+            return 0
+        roots = self._local_roots()
+        have = {e[1] for e in self.entries if e[0] == "folder"}
+        if not self.path:
+            for label, folder in roots.items():
+                if label not in have and os.path.isdir(folder):
+                    self.entries.insert(0, ("folder", label))
+                    self._folder_info[label] = (0, 0)
+                    self._local_folders.add(label)
+            return 0
+        label, _, rest = self.path.partition("/")
+        base = roots.get(label)
+        if not base:
+            return 0
+        folder = os.path.join(base, *rest.split("/")) if rest else base
+        if not os.path.isdir(folder):
+            return 0
+        skip_hidden = self.settings.get("skip_hidden")
+        excluded = {core.norm(e) for e in self.settings.get("excluded") or []}
+        names = {e[1].name.lower() for e in self.entries if e[0] == "file"}
+        states = self.db.states_in(folder)
+        new_dirs, new_files = [], []
+        try:
+            with os.scandir(folder) as it:
+                for e in it:
+                    try:
+                        if e.is_symlink():
+                            continue
+                        st = e.stat(follow_symlinks=False)
+                        attrs = getattr(st, "st_file_attributes", 0)
+                        if skip_hidden and (attrs & 0x6 or e.name.startswith(".")):
+                            continue
+                        if e.is_dir(follow_symlinks=False):
+                            key = f"{self.path}/{e.name}"
+                            if key not in have and core.norm(e.path) not in excluded:
+                                new_dirs.append(key)
+                            continue
+                        if core.is_junk(e.name) or st.st_size == 0 or e.name.lower() in names:
+                            continue
+                        stt, err = states.get(os.path.normcase(e.name), (None, None))
+                        new_files.append(LocalFile(e.path, st.st_size, int(st.st_mtime * 1000), stt, err, self.root_id))
+                    except OSError:
+                        continue
+        except OSError:
+            return 0
+        for key in sorted(new_dirs, key=str.lower):
+            self._folder_info[key] = (0, 0)
+            self._local_folders.add(key)
+            self.entries.append(("folder", key))
+        # Keep folders first.
+        folders = [e for e in self.entries if e[0] == "folder"]
+        files = [e for e in self.entries if e[0] != "folder"]
+        if order.startswith("size"):
+            new_files.sort(key=lambda r: -r.size)
+        elif order.startswith("name"):
+            new_files.sort(key=lambda r: r.name.lower())
+        else:
+            new_files.sort(key=lambda r: -r.mtime if order.endswith("DESC") else r.mtime)
+        self.entries = folders + files + [("local", r) for r in new_files]
+        return len(new_files)
 
     def _key(self, e):
-        return e[1] if e[0] == "folder" else "f:" + e[1].block + e[1].row_id
+        if e[0] == "folder":
+            return e[1]
+        return ("l:" + e[1].path) if e[0] == "local" else "f:" + e[1].block + e[1].row_id
 
     def show(self, keep_sel=False):
         before = {self._key(self.entries[i]) for i in self.sel if i < len(self.entries)} if keep_sel else set()
@@ -426,7 +528,7 @@ class FilesTab:
         cols = max(1, (width - 4) // (CARD_W + CARD_GAP)) if width > 10 else 4
         self._cols = cols
         folders = [i for i, e in enumerate(self.entries) if e[0] == "folder"]
-        files = [i for i, e in enumerate(self.entries) if e[0] == "file"]
+        files = [i for i, e in enumerate(self.entries) if e[0] != "folder"]
         row = 0
         if not self.entries:
             msg = ("No matching files." if self.query else
@@ -509,7 +611,11 @@ class FilesTab:
         box.pack(padx=12)
         pic = tk.Label(box, bg=ui.CARD, image=ui.icon(typ, 64))
         pic.pack(fill="both", expand=True)
-        sub = tk.Label(t, text=self._sub(r), bg=TILE_BG, fg=ui.MUTED, font=(ui.FONT, 8), anchor="w")
+        local = isinstance(r, LocalFile)
+        fg = (("#b3261e" if r.state in ("skipped", "failed") else "#8a5a00") if local else ui.MUTED)
+        sub = tk.Label(t, text=self._sub(r), bg=TILE_BG, fg=fg, font=(ui.FONT, 8), anchor="w")
+        if local:
+            nm.configure(fg=ui.MUTED)
         sub.pack(fill="x", padx=12, pady=(3, 0))
         t._parts = (t, head, ic, nm, box, pic, sub)
         t._bgparts = (t, head, ic, nm, sub)
@@ -519,6 +625,8 @@ class FilesTab:
         return t
 
     def _sub(self, r):
+        if isinstance(r, LocalFile):
+            return r.label() + "  ·  " + core.human_size(r.size)
         bits = [_when(r.mtime), core.human_size(r.size) if r.size else ""]
         if self.query or self.recent:
             bits.append(self._titles().get(r.root, ""))
@@ -581,7 +689,8 @@ class FilesTab:
                                        values=(f"{n:,} files", "", core.human_size(b) if b else ""))
             else:
                 r = e[1]
-                where = self._where(r, titles) if (self.query or self.recent) else (r.device or "")
+                where = (r.label() if isinstance(r, LocalFile) else
+                         self._where(r, titles) if (self.query or self.recent) else (r.device or ""))
                 iid = self.tree.insert("", "end", text="  " + r.name, image=ui.icon(ui.type_of(r.name, r.kind), 18),
                                        values=(where, _when(r.mtime), core.human_size(r.size) if r.size else ""))
             self._iids[iid] = i
@@ -654,6 +763,17 @@ class FilesTab:
         typ = ui.type_of(r.name, r.kind)
         self.det_img.config(image=ui.icon(typ, 96))
         self.det_name.config(text=r.name)
+        if kind == "local":
+            why = {"skipped": "Notion didn't accept it", "failed": "Uploading failed several times"}.get(r.state)
+            lines = [f"Type:  {r.kind}", f"Size:  {core.human_size(r.size)}", f"On this laptop:  {r.path}",
+                     "Modified:  " + time.strftime("%d %b %Y, %I:%M %p", time.localtime(r.mtime / 1000)), "",
+                     f"✗ Not backed up: {why}." + (f"\n{r.error}" if r.error else "") +
+                     "\nIt's tried again automatically (twice a day), or use Backup → Try them again."
+                     if why else "⏳ " + r.label() + ". It's in the backup queue."]
+            self.det_text.config(text="\n".join(lines))
+            if typ in ("photo", "pdf"):
+                self._want_thumb(-1, r, self.det_img, big=True)
+            return
         lines = [f"Type:  {r.kind}", f"Size:  {core.human_size(r.size)}" if r.size else "",
                  f"Location:  {self._where(r)}",
                  "Modified:  " + time.strftime("%d %b %Y, %I:%M %p", time.localtime(r.mtime / 1000)) if r.mtime else "",
@@ -834,6 +954,13 @@ class FilesTab:
             self.sel = set()
             self.go_to(obj)
             return
+        if kind == "local":
+            try:
+                os.startfile(obj.path)
+                self._set_status(f"Opened {obj.name}")
+            except Exception as e:
+                messagebox.showerror("Notion Laptop Sync", f"Couldn't open it:\n{e}")
+            return
         r = obj
         self._run(f"Getting {r.name}", lambda c, p: c.download(r, progress=lambda d, t: self._ui(
             lambda: self._set_status(f"Downloading {r.name}… {d * 100 // t if t else 0}%"))),
@@ -947,6 +1074,9 @@ class FilesTab:
         if len(sel) != 1:
             return
         kind, obj = sel[0]
+        if kind == "local" or (kind == "folder" and obj in getattr(self, "_local_folders", ())):
+            messagebox.showinfo("Notion Laptop Sync", "This isn't backed up yet. Rename it in File Explorer.")
+            return
         old = obj.split("/")[-1] if kind == "folder" else obj.name
         name = simpledialog.askstring("Rename", "New name:", initialvalue=old, parent=self.canvas)
         if not name or name.strip() == old:
@@ -1012,8 +1142,11 @@ class FilesTab:
         sel = self.selected()
         if not sel:
             return
-        folders = [k for kind, k in sel if kind == "folder"]
+        folders = [k for kind, k in sel if kind == "folder" and k not in getattr(self, "_local_folders", ())]
         files = [r for kind, r in sel if kind == "file"]
+        if not folders and not files:
+            messagebox.showinfo("Notion Laptop Sync", "Those aren't backed up yet, so there's nothing to delete from the cloud.")
+            return
         what = ", ".join(filter(None, [f"{len(files)} file(s)" if files else "", f"{len(folders)} folder(s)" if folders else ""]))
         if not messagebox.askyesno("Delete", f"Delete {what} from the cloud?\n\nThey move to Notion's trash "
                                              "(recoverable there for 30 days). Copies on your laptop and phone are not touched."):
@@ -1065,6 +1198,12 @@ class FilesTab:
     def _menu(self, event):
         m = tk.Menu(self.canvas, tearoff=0)
         m.add_command(label="Open", command=self.open_selected)
+        loc = [r for kind, r in self.selected() if kind == "local"]
+        if loc:
+            m.add_command(label="Show in File Explorer", command=lambda p=loc[0].path: subprocess.Popen(
+                ["explorer", "/select,", os.path.normpath(p)]))
+            m.tk_popup(event.x_root, event.y_root)
+            return
         if self.selected_files():
             m.add_command(label="Download", command=self.save_as)
         m.add_separator()
