@@ -20,6 +20,7 @@ import pagefix
 import voice
 import devices
 import core
+import ui
 import winutil
 from files_tab import FilesTab
 from space_tab import SpaceTab
@@ -64,8 +65,8 @@ class App:
 
         self.root = tk.Tk()
         self.root.title(TITLE)
-        self.root.geometry("780x660")
-        self.root.minsize(640, 520)
+        self.root.geometry("1180x740")
+        self.root.minsize(860, 560)
         try:
             self.root.iconbitmap(winutil.resource("icon.ico"))
         except tk.TclError:
@@ -90,45 +91,64 @@ class App:
     # ---- layout --------------------------------------------------------------
 
     def _build(self):
-        style = ttk.Style()
-        try:
-            style.theme_use("vista")
-        except tk.TclError:
-            pass
-        nb = ttk.Notebook(self.root)
-        nb.pack(fill="both", expand=True, padx=8, pady=8)
+        ui.apply_theme(self.root)
+        outer = tk.Frame(self.root, bg=ui.BG)
+        outer.pack(fill="both", expand=True)
+        side_holder = tk.Frame(outer, bg=ui.SIDEBAR)
+        side_holder.pack(side="left", fill="y")
+        main = tk.Frame(outer, bg=ui.CARD)
+        main.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=(10, 12))
+        nb = ttk.Notebook(main, style="Hidden.TNotebook")
+        nb.pack(fill="both", expand=True)
         self.nb = nb
         self._build_backup(self._tab(nb, "Backup"))
-        self.files = FilesTab(self, self._tab(nb, "Files"))
-        self.space = SpaceTab(self, self._tab(nb, "Space"))
-        self._build_folders(self._tab(nb, "Folders"))
-        self._build_notion(self._tab(nb, "Notion"))
+        self.files = FilesTab(self, self._tab(nb, "Files", title=False))
+        self.space = SpaceTab(self, self._tab(nb, "Storage on this laptop"))
+        self._build_folders(self._tab(nb, "Folders to back up"))
+        self._build_notion(self._tab(nb, "Account & clipboard"))
         self._build_activity(self._tab(nb, "Activity"))
-        self._build_about(self._tab(nb, "Updates & settings"))
+        self._build_about(self._tab(nb, "Settings & updates"))
         self._build_devices(self._tab(nb, "Devices"))
-        self._build_voice(self._tab(nb, "Voice"))
+        self._build_voice(self._tab(nb, "Voice changer"))
+        self.sidebar = ui.Sidebar(self, side_holder)
         nb.bind("<<NotebookTabChanged>>", lambda e: self._tab_changed())
         if not self.settings.get("token"):
             nb.select(TAB_NOTION)
+        else:
+            nb.select(TAB_FILES)
+            self.sidebar.select("drive")
+
+    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice"}
+
+    def open_files(self, sid, recent=False):
+        """Sidebar: show My Drive, Recent or another device's files."""
+        self.nb.select(TAB_FILES)
+        self.files.open_source(sid, recent=recent)
 
     def _tab_changed(self):
         try:
-            if self.nb.index("current") == TAB_DEVICES:
+            i = self.nb.index("current")
+            key = self.SIDE_KEYS.get(i)
+            if key and getattr(self, "sidebar", None) and self.sidebar.current != key:
+                self.sidebar.select(key)
+            if i == TAB_DEVICES:
                 self._fill_devices()
-            if self.nb.index("current") == TAB_FILES:
+            if i == TAB_FILES:
                 self.files.on_shown()
-            elif self.nb.index("current") == TAB_SPACE:
+            elif i == TAB_SPACE:
                 self.space.on_shown()
         except Exception as e:
             self.log(f"Files tab error: {e}")
 
-    def _tab(self, nb, name):
-        f = ttk.Frame(nb, padding=12)
+    def _tab(self, nb, name, title=True):
+        f = ttk.Frame(nb, padding=(24, 16, 24, 12))
         nb.add(f, text=name)
+        if title:
+            ttk.Label(f, text=name, style="Title.TLabel").pack(anchor="w", pady=(0, 6))
         return f
 
     def _h(self, parent, text):
-        ttk.Label(parent, text=text, font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(parent, text=text, font=(ui.FONT, 11, "bold")).pack(anchor="w", pady=(12, 4))
 
     def _p(self, parent, text, **kw):
         lbl = ttk.Label(parent, text=text, wraplength=720, justify="left", **kw)
@@ -1327,6 +1347,27 @@ def selftest():
         app.space.refresh,
         lambda: app.nb.select(TAB_FILES),
         app.files.show,
+        # The Drive-style file views draw without errors (with a few made-up files).
+        lambda: (app.db.upsert_idx([(f"st{i}", "SELFTEST", n, p, 1000 * i, 1700000000000 + i, core.kind(n), f"stb{i}", "", "Laptop", "")
+                                    for i, (n, p) in enumerate([("a.pdf", ""), ("b.jpg", ""), ("c.docx", "Work"), ("d.zip", "Work/Old")])]),
+                 setattr(app.files, "root_id", "SELFTEST"), app.files.show()),
+        lambda: app.files.set_view("list"),
+        app.files.toggle_details,
+        lambda: app.files._click(0, type("E", (), {"state": 0})()) if app.files.view == "grid" else app.files.select_all(),
+        lambda: app.files.set_view("grid"),
+        lambda: app.files._click(1, type("E", (), {"state": 0})()),
+        app.files.toggle_details,
+        app.files.select_all,
+        app.files.select_none,
+        lambda: app.files.go_to("Work"),
+        lambda: app.open_files(None, recent=True),
+        app.sidebar.rebuild,
+        lambda: app.sidebar.select("backup"),
+        lambda: app.open_files(app.settings.get("root_page")),
+        # The new look and drag-and-drop really loaded (in the built app too).
+        lambda: None if not clip_sync.WINDOWS or (app.files.can_drop and ttk.Style().theme_use().startswith("sun-valley")) else
+        errors.append((RuntimeError, RuntimeError(f"look not loaded: theme={ttk.Style().theme_use()} drop={app.files.can_drop}"), None)),
+        lambda: print("LOOK OK", ttk.Style().theme_use(), "icons:", ui.ICON_FONT, "drop:", app.files.can_drop),
         lambda: app.nb.select(TAB_ACTIVITY),
         app._refresh_status,
         lambda: app.set_interval(30),
@@ -1346,7 +1387,7 @@ def selftest():
     ]
     for i, step in enumerate(steps):
         app.root.after(1500 + i * 300, step)
-    app.root.after(9000, app.quit)
+    app.root.after(1500 + len(steps) * 300 + 1500, app.quit)
     app.run()
     if errors:
         import traceback

@@ -236,6 +236,15 @@ class Db:
                 f"SELECT {self.IDX_COLS} FROM idx WHERE root IN ({marks}) AND kind!='Folder' AND name LIKE ? ESCAPE '\\' "
                 f"ORDER BY mtime DESC LIMIT {limit}", (*roots, like)).fetchall()
 
+    def recent_idx(self, roots, limit=200):
+        if not roots:
+            return []
+        marks = ",".join("?" * len(roots))
+        with self.lock:
+            return self.conn.execute(
+                f"SELECT {self.IDX_COLS} FROM idx WHERE root IN ({marks}) AND kind!='Folder' "
+                f"ORDER BY mtime DESC LIMIT {limit}", (*roots,)).fetchall()
+
     def storage(self, root):
         with self.lock:
             total = self.conn.execute(
