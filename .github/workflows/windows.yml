@@ -62,7 +62,7 @@ jobs:
             --icon icon.ico --add-data "icon.ico;." `
             --hidden-import pystray._win32 --hidden-import gconfig `
             --hidden-import sounddevice --collect-all _sounddevice_data `
-            --collect-all sv_ttk --collect-all tkinterdnd2 --hidden-import ui app.py
+            --collect-all sv_ttk --collect-all tkinterdnd2 --collect-all pypdfium2 --collect-all pypdfium2_raw --hidden-import ui app.py
 
       - name: Test the built app
         env:

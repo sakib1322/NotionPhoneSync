@@ -63,10 +63,15 @@ class App:
             except OSError:
                 pass
 
+        ui.make_dpi_aware()
         self.root = tk.Tk()
         self.root.title(TITLE)
-        self.root.geometry("1180x740")
-        self.root.minsize(860, 560)
+        ui.setup_scaling(self.root)
+        w, h = ui.px(1180), ui.px(760)
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w, h = min(w, sw - 40), min(h, sh - 80)
+        self.root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
+        self.root.minsize(ui.px(860), ui.px(560))
         try:
             self.root.iconbitmap(winutil.resource("icon.ico"))
         except tk.TclError:

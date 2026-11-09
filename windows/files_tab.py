@@ -39,6 +39,9 @@ def _short(name, n=24):
 
 class FilesTab:
     def __init__(self, app, frame):
+        global CARD_W, CARD_GAP, THUMB_W, THUMB_H
+        CARD_W, CARD_GAP = ui.px(212), ui.px(16)
+        THUMB_W, THUMB_H = ui.px(188), ui.px(132)
         self.app = app
         self.settings = app.settings
         self.db = app.db
@@ -123,7 +126,7 @@ class FilesTab:
         self.body.pack(fill="both", expand=True)
 
         # Details pane (right).
-        self.details = tk.Frame(self.body, bg=ui.CARD, width=290, highlightthickness=1, highlightbackground="#e3e3e3")
+        self.details = tk.Frame(self.body, bg=ui.CARD, width=ui.px(300), highlightthickness=1, highlightbackground="#e3e3e3")
         self.details.pack_propagate(False)
         self.det_img = tk.Label(self.details, bg=ui.CARD)
         self.det_img.pack(pady=(16, 8))
@@ -156,10 +159,10 @@ class FilesTab:
         self.tree.heading("owner", text="Location")
         self.tree.heading("date", text="Last modified")
         self.tree.heading("size", text="File size")
-        self.tree.column("#0", width=300, minwidth=160, stretch=True)
-        self.tree.column("owner", width=150, minwidth=80, stretch=False)
-        self.tree.column("date", width=110, minwidth=80, stretch=False)
-        self.tree.column("size", width=90, minwidth=60, anchor="e", stretch=False)
+        self.tree.column("#0", width=ui.px(320), minwidth=ui.px(160), stretch=True)
+        self.tree.column("owner", width=ui.px(170), minwidth=ui.px(80), stretch=False)
+        self.tree.column("date", width=ui.px(120), minwidth=ui.px(80), stretch=False)
+        self.tree.column("size", width=ui.px(90), minwidth=ui.px(60), anchor="e", stretch=False)
         sc = ttk.Scrollbar(self.list_box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sc.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -479,9 +482,9 @@ class FilesTab:
 
     def _folder_tile(self, i):
         key = self.entries[i][1]
-        t = tk.Frame(self.inner, bg=TILE_BG, width=CARD_W, height=50, cursor="hand2")
+        t = tk.Frame(self.inner, bg=TILE_BG, width=CARD_W, height=ui.px(52), cursor="hand2")
         t.pack_propagate(False)
-        ic = tk.Label(t, image=ui.icon("folder", 22), bg=TILE_BG)
+        ic = tk.Label(t, image=ui.icon("folder", 24), bg=TILE_BG)
         ic.pack(side="left", padx=(14, 10))
         nm = tk.Label(t, text=_short(key.split("/")[-1], 20), bg=TILE_BG, fg=ui.TEXT, font=(ui.FONT, 10, "bold"), anchor="w")
         nm.pack(side="left", fill="x", expand=True)
@@ -493,25 +496,25 @@ class FilesTab:
     def _file_tile(self, i):
         r = self.entries[i][1]
         typ = ui.type_of(r.name, r.kind)
-        t = tk.Frame(self.inner, bg=TILE_BG, width=CARD_W, height=THUMB_H + 58, cursor="hand2")
+        t = tk.Frame(self.inner, bg=TILE_BG, width=CARD_W, height=THUMB_H + ui.px(64), cursor="hand2")
         t.pack_propagate(False)
         head = tk.Frame(t, bg=TILE_BG)
         head.pack(fill="x", padx=10, pady=(9, 7))
-        ic = tk.Label(head, image=ui.icon(typ, 18), bg=TILE_BG)
+        ic = tk.Label(head, image=ui.icon(typ, 20), bg=TILE_BG)
         ic.pack(side="left")
         nm = tk.Label(head, text=_short(r.name, 22), bg=TILE_BG, fg=ui.TEXT, font=(ui.FONT, 10), anchor="w")
         nm.pack(side="left", padx=(8, 0), fill="x", expand=True)
         box = tk.Frame(t, bg=ui.CARD, width=THUMB_W, height=THUMB_H)
         box.pack_propagate(False)
         box.pack(padx=12)
-        pic = tk.Label(box, bg=ui.CARD, image=ui.icon(typ, 56))
+        pic = tk.Label(box, bg=ui.CARD, image=ui.icon(typ, 64))
         pic.pack(fill="both", expand=True)
         sub = tk.Label(t, text=self._sub(r), bg=TILE_BG, fg=ui.MUTED, font=(ui.FONT, 8), anchor="w")
         sub.pack(fill="x", padx=12, pady=(3, 0))
         t._parts = (t, head, ic, nm, box, pic, sub)
         t._bgparts = (t, head, ic, nm, sub)
         self._bind_tile(t._parts, i)
-        if typ == "photo":
+        if typ in ("photo", "pdf"):
             self._want_thumb(i, r, pic)
         return t
 
@@ -662,25 +665,29 @@ class FilesTab:
         except Exception:
             pass
         self.det_text.config(text="\n".join(l for l in lines if l))
-        if typ == "photo":
+        if typ in ("photo", "pdf"):
             self._want_thumb(-1, r, self.det_img, big=True)
 
     def _thumb_path(self, r):
-        return os.path.join(CACHE_DIR, "thumbs", r.block + ".png")
+        return os.path.join(CACHE_DIR, "thumbs", r.block + ".v2.png")
 
     def _want_thumb(self, i, r, label, big=False):
-        size = (250, 250) if big else (THUMB_W, THUMB_H)
+        size = (ui.px(260), ui.px(260)) if big else (THUMB_W, THUMB_H)
         p = self._thumb_path(r)
         if os.path.isfile(p):
-            self._set_thumb(label, p, size)
+            self._set_thumb(label, p, size, r)
         elif r.size and r.size <= THUMB_MAX_BYTES:
             self.thumb_q.put((self.gen, r, label, size))
 
-    def _set_thumb(self, label, p, size):
+    def _set_thumb(self, label, p, size, r=None):
         try:
             from PIL import Image, ImageOps, ImageTk
             im = Image.open(p).convert("RGB")
-            im = ImageOps.fit(im, size, Image.LANCZOS) if size[0] < 200 else ImageOps.contain(im, size, Image.LANCZOS)
+            pdf = r is not None and ui.type_of(r.name, r.kind) == "pdf"
+            if size == (ui.px(260), ui.px(260)):
+                im = ImageOps.contain(im, size, Image.LANCZOS)
+            else:   # fill the card; for documents show the top of the first page
+                im = ImageOps.fit(im, size, Image.LANCZOS, centering=(0.5, 0.0) if pdf else (0.5, 0.5))
             ph = ImageTk.PhotoImage(im)
             label.configure(image=ph)
             label._ph = ph
@@ -697,12 +704,17 @@ class FilesTab:
             try:
                 if not os.path.isfile(p):
                     self._make_thumb(r, p)
-            except Exception:
+            except Exception as e:
+                self._thumb_errors = getattr(self, "_thumb_errors", 0) + 1
+                if self._thumb_errors <= 5:
+                    self._ui(lambda e=e, n=r.name: self.app.log(f"Couldn't make a preview of {n}: {e}"))
+                continue
+            if not os.path.isfile(p):
                 continue
 
-            def put(label=label, p=p, size=size, gen=gen):
+            def put(label=label, p=p, size=size, gen=gen, r=r):
                 if gen == self.gen and label.winfo_exists():
-                    self._set_thumb(label, p, size)
+                    self._set_thumb(label, p, size, r)
             self._ui(put)
 
     def _make_thumb(self, r, dest):
@@ -728,8 +740,18 @@ class FilesTab:
                         out.write(chunk)
             src = tmp
         try:
-            im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
-            im.thumbnail((360, 360))
+            if ui.type_of(r.name, r.kind) == "pdf":
+                import pypdfium2 as pdfium
+                doc = pdfium.PdfDocument(src)
+                try:
+                    page = doc[0]
+                    im = page.render(scale=560 / max(1, page.get_width())).to_pil().convert("RGB")
+                    page.close()
+                finally:
+                    doc.close()
+            else:
+                im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+            im.thumbnail((560, 720))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             im.save(dest + ".part.png")
             os.replace(dest + ".part.png", dest)

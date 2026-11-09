@@ -47,6 +47,7 @@ def apply_theme(root):
         except tk.TclError:
             pass
     root.configure(bg=BG)
+    setup_scaling(root)
     global ICON_FONT
     try:
         import tkinter.font as tkfont
@@ -64,7 +65,7 @@ def apply_theme(root):
             pass
     st.layout("Hidden.TNotebook.Tab", [])
     st.configure("Hidden.TNotebook", borderwidth=0, tabmargins=0, padding=0)
-    st.configure("Treeview", rowheight=30)
+    st.configure("Treeview", rowheight=px(30))
     st.configure("Title.TLabel", font=(FONT, 18))
     st.configure("Crumb.TLabel", font=(FONT, 15))
     st.configure("CrumbLink.TLabel", font=(FONT, 15), foreground=MUTED)
@@ -90,7 +91,7 @@ def apply_theme(root):
                 out.append((name, opts))
             return out
         st.layout("Files.Treeview.Item", strip(st.layout("Treeview.Item")))
-        st.configure("Files.Treeview", rowheight=34, indent=0)
+        st.configure("Files.Treeview", rowheight=px(36), indent=0)
     except tk.TclError:
         pass
 
@@ -134,34 +135,107 @@ def type_of(name, kind):
 
 
 _cache = {}
+S = 1.0     # screen scale (1.0 at 100%, 1.5 at 150% …), set by setup_scaling()
+
+
+def px(n):
+    """A size in pixels at 100% scale → the size on this screen."""
+    return int(round(n * S))
+
+
+def make_dpi_aware():
+    """Ask Windows for real pixels instead of a blurry stretched window. Call before tk.Tk()."""
+    if os.name != "nt":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)   # sharp on the main screen
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def setup_scaling(root):
+    global S
+    try:
+        S = max(1.0, min(3.0, root.winfo_fpixels("1i") / 96.0))
+    except Exception:
+        S = 1.0
 
 
 def icon(t, size):
-    """A coloured icon (PhotoImage) for a file type, drawn once and cached."""
+    """A crisp coloured file icon (PhotoImage), Drive style, drawn once per size and cached."""
+    size = px(size)
     key = (t, size)
     if key in _cache:
         return _cache[key]
-    from PIL import Image, ImageDraw, ImageFont, ImageTk
-    s = size * 3  # draw big, shrink for smooth edges
+    from PIL import Image, ImageDraw, ImageTk
+    k = 8                       # draw 8x bigger, then shrink: smooth edges at any size
+    s = size * k
     im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    label, colour = TYPES.get(t, TYPES["file"])
+    colour = TYPES.get(t, TYPES["file"])[1]
+    W = (255, 255, 255, 255)
     if t == "folder":
-        d.rounded_rectangle([s * .08, s * .22, s * .5, s * .38], radius=s * .05, fill="#c4c7c5")
-        d.rounded_rectangle([s * .08, s * .3, s * .92, s * .82], radius=s * .07, fill="#c4c7c5")
-        d.rounded_rectangle([s * .08, s * .36, s * .92, s * .82], radius=s * .07, fill="#a8abaf")
+        d.rounded_rectangle([s * .06, s * .16, s * .46, s * .34], radius=s * .06, fill="#5f6368")
+        d.rounded_rectangle([s * .06, s * .24, s * .94, s * .84], radius=s * .08, fill="#5f6368")
+        d.rounded_rectangle([s * .06, s * .32, s * .94, s * .84], radius=s * .08, fill="#757a80")
     else:
-        d.rounded_rectangle([s * .18, s * .08, s * .82, s * .92], radius=s * .08, fill=colour)
-        d.polygon([(s * .62, s * .08), (s * .82, s * .28), (s * .62, s * .28)], fill=(255, 255, 255, 90))
-        try:
-            fnt = ImageFont.truetype("segoeuib.ttf", int(s * .17))
-        except Exception:
-            try:
-                fnt = ImageFont.truetype("DejaVuSans-Bold.ttf", int(s * .17))
-            except Exception:
-                fnt = ImageFont.load_default()
-        w = d.textlength(label, font=fnt)
-        d.text(((s - w) / 2, s * .52), label, fill="white", font=fnt)
+        # A rounded square in the type's colour with a simple white symbol.
+        m = s * .1
+        d.rounded_rectangle([m, m, s - m, s - m], radius=s * .14, fill=colour)
+        c = s / 2
+        u = s * .8 / 10          # one unit of the inner grid
+        lw = max(k, int(u * .9))  # line width
+        if t == "photo":
+            d.ellipse([c + u * .8, c - u * 2.6, c + u * 2.4, c - u * 1.0], fill=W)
+            d.polygon([(c - u * 3, c + u * 2.4), (c - u * .8, c - u * .8), (c + u * .9, c + u * 1.2),
+                       (c + u * 1.8, c + u * .2), (c + u * 3, c + u * 2.4)], fill=W)
+        elif t == "video":
+            d.polygon([(c - u * 1.5, c - u * 2.4), (c + u * 2.4, c), (c - u * 1.5, c + u * 2.4)], fill=W)
+        elif t == "audio":
+            d.ellipse([c - u * 2.6, c + u * .6, c - u * .2, c + u * 2.8], fill=W)
+            d.rectangle([c - u * 1.2, c - u * 2.8, c - u * .2, c + u * 1.7], fill=W)
+            d.polygon([(c - u * .2, c - u * 2.8), (c + u * 2.4, c - u * 1.8), (c + u * 2.4, c - u * .7), (c - u * .2, c - u * 1.7)], fill=W)
+        elif t == "sheet":
+            d.rectangle([c - u * 2.6, c - u * 2.6, c + u * 2.6, c + u * 2.6], outline=W, width=lw)
+            d.line([c - u * 2.6, c, c + u * 2.6, c], fill=W, width=lw)
+            d.line([c - u * .6, c - u * 2.6, c - u * .6, c + u * 2.6], fill=W, width=lw)
+        elif t == "slide":
+            d.rounded_rectangle([c - u * 2.8, c - u * 2.0, c + u * 2.8, c + u * 2.0], radius=u * .4, outline=W, width=lw)
+            d.rectangle([c - u * 1.4, c - u * .7, c + u * 1.4, c + u * .7], fill=W)
+        elif t == "zip":
+            for i in range(-3, 3):
+                y = c + i * u * .9
+                x = c - u * .9 if i % 2 else c
+                d.rectangle([x, y, x + u * .9, y + u * .7], fill=W)
+            d.rounded_rectangle([c - u * .9, c + u * 2.2, c + u * .9, c + u * 3.2], radius=u * .2, fill=W)
+        elif t == "code":
+            d.line([(c - u * 1, c - u * 2), (c - u * 2.8, c), (c - u * 1, c + u * 2)], fill=W, width=lw, joint="curve")
+            d.line([(c + u * 1, c - u * 2), (c + u * 2.8, c), (c + u * 1, c + u * 2)], fill=W, width=lw, joint="curve")
+        elif t == "app":
+            d.rounded_rectangle([c - u * 2.4, c - u * 2.4, c - u * .4, c - u * .4], radius=u * .3, fill=W)
+            d.rounded_rectangle([c + u * .4, c - u * 2.4, c + u * 2.4, c - u * .4], radius=u * .3, fill=W)
+            d.rounded_rectangle([c - u * 2.4, c + u * .4, c - u * .4, c + u * 2.4], radius=u * .3, fill=W)
+            d.rounded_rectangle([c + u * .4, c + u * .4, c + u * 2.4, c + u * 2.4], radius=u * .3, fill=W)
+        elif t == "pdf" and size >= 36:
+            from PIL import ImageFont
+            fnt = None
+            for f in ("segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"):
+                try:
+                    fnt = ImageFont.truetype(f, int(u * 2.6))
+                    break
+                except Exception:
+                    pass
+            fnt = fnt or ImageFont.load_default()
+            w = d.textlength("PDF", font=fnt)
+            d.text((c - w / 2, c - u * 1.6), "PDF", fill=W, font=fnt)
+        else:   # documents, text, pdf (small), anything else: lines of text
+            for i, wd in enumerate((5.2, 5.2, 5.2, 3.2)):
+                y = c - u * 2.1 + i * u * 1.4
+                d.rounded_rectangle([c - u * 2.6, y, c - u * 2.6 + u * wd, y + u * .75], radius=u * .3, fill=W)
     im = im.resize((size, size), Image.LANCZOS)
     ph = ImageTk.PhotoImage(im)
     _cache[key] = ph
@@ -194,7 +268,7 @@ class Sidebar:
 
     def __init__(self, app, parent):
         self.app = app
-        self.frame = tk.Frame(parent, bg=SIDEBAR, width=236)
+        self.frame = tk.Frame(parent, bg=SIDEBAR, width=px(256))
         self.frame.pack(side="left", fill="y")
         self.frame.pack_propagate(False)
         self.items = {}        # key -> widget
@@ -205,7 +279,7 @@ class Sidebar:
         try:
             from PIL import Image, ImageTk
             import winutil
-            self._logo = ImageTk.PhotoImage(Image.open(winutil.resource("icon.ico")).convert("RGBA").resize((30, 30), Image.LANCZOS))
+            self._logo = ImageTk.PhotoImage(Image.open(winutil.resource("icon.ico")).convert("RGBA").resize((px(32), px(32)), Image.LANCZOS))
             tk.Label(head, image=self._logo, bg=SIDEBAR).pack(side="left")
         except Exception:
             tk.Label(head, text=glyph("drive"), font=gfont(20), fg=ACCENT, bg=SIDEBAR).pack(side="left")
