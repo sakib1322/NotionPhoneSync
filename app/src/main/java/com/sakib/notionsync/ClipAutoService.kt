@@ -114,6 +114,7 @@ class ClipAutoService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastTrigger < 1200) return
         lastTrigger = now
+        Logger.log(this, "Helper: noticed a copy in ${appLabel(pkg)} (“${words.take(30)}”).")
         // Give the app a moment to actually put it on the clipboard.
         main.postDelayed({ try { grab() } catch (t: Throwable) { removeOverlay() } }, 350)
     }
@@ -143,6 +144,7 @@ class ClipAutoService : AccessibilityService() {
             wm.addView(v, lp)
             overlay = v
         } catch (e: Exception) {
+            Logger.log(this, "Helper: no invisible window allowed; using the brief screen instead.")
             fallback()
             return
         }
@@ -150,6 +152,7 @@ class ClipAutoService : AccessibilityService() {
         main.postDelayed({
             if (overlay === v) {
                 removeOverlay()
+                Logger.log(this, "Helper: the invisible window didn't get focus; using the brief screen instead.")
                 fallback()
             }
         }, 700)
@@ -171,8 +174,19 @@ class ClipAutoService : AccessibilityService() {
 
     private fun readAndSend() {
         try {
-            val got = ClipSend.read(this) ?: return
-            ClipSend.sendIfNew(this, got.first, got.second, quiet = true)
-        } catch (t: Throwable) { }
+            val got = ClipSend.read(this)
+            if (got == null) {
+                Logger.log(this, "Helper: couldn't read the clipboard (Android said no, or it was empty).")
+                return
+            }
+            if (ClipSend.sendIfNew(this, got.first, got.second, quiet = true)) Logger.log(this, "Helper: sending it to your other devices.")
+            else Logger.log(this, "Helper: that's what was just sent or received; not sending again.")
+        } catch (t: Throwable) {
+            Logger.log(this, "Helper: couldn't read the clipboard (${t.javaClass.simpleName}).")
+        }
     }
+
+    private fun appLabel(pkg: String): String = try {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    } catch (e: Exception) { pkg }
 }
