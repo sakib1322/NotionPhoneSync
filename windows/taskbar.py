@@ -235,6 +235,80 @@ def _font(size, bold=False):
     return ImageFont.load_default()
 
 
+# ---- Bluetooth device icons --------------------------------------------------------------------------
+
+KINDS = [
+    ("headphones", ("bud", "headphone", "headset", "airpod", "earbud", "ear ", "wh-", "wf-", "jbl", "bose", "beats",
+                    "soundcore", "sony", "galaxy buds", "freebuds", "pods", "audio", "hands-free", "speaker", "boom")),
+    ("mouse", ("mouse", "mx master", "mx anywhere", "mx ergo", "trackball", "pebble")),
+    ("keyboard", ("keyboard", "keys", "mx keys", "k380", "k780")),
+    ("gamepad", ("controller", "gamepad", "xbox", "dualsense", "dualshock", "joy-con", "8bitdo", "wireless controller")),
+    ("pen", ("pen", "stylus")),
+    ("phone", ("phone", "galaxy s", "iphone", "pixel", "redmi", "oneplus")),
+    ("watch", ("watch", "band", "fit")),
+]
+
+
+def device_kind(name):
+    n = name.lower()
+    for kind, words in KINDS:
+        if any(w in n for w in words):
+            return kind
+    return "bluetooth"
+
+
+def device_icon(kind, size, colour):
+    """A small outline icon (headphones, mouse, keyboard, controller…) in the given colour."""
+    from PIL import Image, ImageDraw
+    k = 4
+    S = size * k
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    lw = max(k, round(S * .085))
+    c = colour
+
+    def rr(box, r, fill=None):
+        d.rounded_rectangle([S * box[0], S * box[1], S * box[2], S * box[3]], radius=S * r,
+                            outline=None if fill else c, width=lw, fill=c if fill else None)
+    if kind == "headphones":
+        d.arc([S * .12, S * .08, S * .88, S * .84], 180, 360, fill=c, width=lw)
+        d.line([S * .12 + lw / 2, S * .46, S * .12 + lw / 2, S * .62], fill=c, width=lw)
+        d.line([S * .88 - lw / 2, S * .46, S * .88 - lw / 2, S * .62], fill=c, width=lw)
+        rr((.10, .52, .32, .94), .07, fill=True)
+        rr((.68, .52, .90, .94), .07, fill=True)
+    elif kind == "mouse":
+        rr((.25, .06, .75, .94), .25)
+        d.line([S * .5, S * .14, S * .5, S * .36], fill=c, width=lw)
+    elif kind == "keyboard":
+        rr((.04, .22, .96, .78), .10)
+        for row, n in ((.38, 5), (.52, 5)):
+            for i in range(n):
+                x = S * (.18 + i * .16)
+                d.rectangle([x - lw * .6, S * row - lw * .6, x + lw * .6, S * row + lw * .6], fill=c)
+        d.line([S * .30, S * .65, S * .70, S * .65], fill=c, width=lw)
+    elif kind == "gamepad":
+        rr((.04, .24, .96, .78), .26)
+        d.line([S * .18, S * .51, S * .40, S * .51], fill=c, width=lw)
+        d.line([S * .29, S * .40, S * .29, S * .62], fill=c, width=lw)
+        for (px, py) in ((.66, .44), (.78, .58)):
+            d.ellipse([S * px - lw, S * py - lw, S * px + lw, S * py + lw], fill=c)
+    elif kind == "pen":
+        d.line([S * .22, S * .78, S * .72, S * .28], fill=c, width=lw * 2)
+        d.polygon([(S * .12, S * .88), (S * .18, S * .70), (S * .30, S * .82)], fill=c)
+    elif kind == "phone":
+        rr((.28, .06, .72, .94), .10)
+        d.line([S * .44, S * .84, S * .56, S * .84], fill=c, width=lw)
+    elif kind == "watch":
+        rr((.26, .24, .74, .76), .14)
+        rr((.36, .04, .64, .24), .03)
+        rr((.36, .76, .64, .96), .03)
+    else:   # the Bluetooth rune
+        pts = [(S * .28, S * .30), (S * .70, S * .66), (S * .50, S * .86), (S * .50, S * .14), (S * .70, S * .34),
+               (S * .28, S * .70)]
+        d.line(pts, fill=c, width=lw, joint="curve")
+    return im.resize((size, size), Image.LANCZOS)
+
+
 class TaskbarMeter:
     """Internet speed, desktop name and Bluetooth batteries, drawn on the taskbar near the clock."""
 
@@ -456,35 +530,49 @@ class TaskbarMeter:
         """Draws the read-out (a see-through picture) for a taskbar h pixels tall."""
         from PIL import Image, ImageDraw
         fg = (26, 26, 26, 255) if light else (255, 255, 255, 255)
+        red = (215, 21, 38, 255) if light else (255, 92, 92, 255)
         small, big = _font(max(10, round(12 * ui.S))), _font(max(11, round(14 * ui.S)), bold=True)
-        parts = []      # (lines, font, align)
-        if self.s.get("taskbar_desktop") and self.desk_text:
-            parts.append(([self.desk_text], big, "l"))
-        if self.s.get("taskbar_bt") and self.bt:
-            parts.append(([f"{(n if len(n) <= 16 else n[:15] + '…')}  {b}%" for n, b in self.bt[:2]], small, "r"))
-        if self.s.get("taskbar_speed"):
-            parts.append(([self.up_text, self.down_text], small, "l"))
+        pct = _font(max(12, round(15 * ui.S)))
         tmp = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        gap, pad = ui.px(14), ui.px(6)
-        widths = []
-        for lines, font, _ in parts:
-            wmax = max((tmp.textlength(t, font=font) for t in lines), default=0)
-            if lines and lines[0].startswith("↑"):
-                wmax = max(wmax, tmp.textlength("↓: 888.88 KB/s", font=font))   # steady width: no jiggling
-            widths.append(int(wmax) + 1)
-        w = max(1, sum(widths) + gap * max(0, len(parts) - 1) + pad * 2)
+        gap, pad = ui.px(16), ui.px(6)
+        isz = max(14, round(20 * ui.S))          # device icon size
+        parts = []      # (kind, data, width)
+        if self.s.get("taskbar_desktop") and self.desk_text:
+            parts.append(("desk", self.desk_text, int(tmp.textlength(self.desk_text, font=big)) + 1))
+        if self.s.get("taskbar_bt") and self.bt:
+            items = []
+            for name, b in self.bt[:5]:
+                t = f"{b}%"
+                items.append((device_kind(name), t, b, int(tmp.textlength(t, font=pct)) + 1))
+            w = sum(isz + ui.px(5) + tw for _, _, _, tw in items) + ui.px(12) * (len(items) - 1)
+            parts.append(("bt", items, w))
+        if self.s.get("taskbar_speed"):
+            w = int(max(tmp.textlength(t, font=small) for t in (self.up_text, self.down_text, "↓: 888.88 KB/s"))) + 1
+            parts.append(("speed", (self.up_text, self.down_text), w))
+        w = max(1, sum(p[2] for p in parts) + gap * max(0, len(parts) - 1) + pad * 2)
         im = Image.new("RGBA", (w, h), (0, 0, 0, 1))     # almost invisible, but you can still grab it
         d = ImageDraw.Draw(im)
         x = pad
-        for (lines, font, align), pw in zip(parts, widths):
-            asc, desc = font.getmetrics()
-            lh = asc + desc
-            total = lh * len(lines) - (ui.px(2) if len(lines) > 1 else 0)
-            y = (h - total) // 2
-            for t in lines:
-                tw = d.textlength(t, font=font)
-                d.text((x + (pw - tw if align == "r" else 0), y), t, font=font, fill=fg)
-                y += lh - (ui.px(2) if len(lines) > 1 else 0)
+        for kind, data, pw in parts:
+            if kind == "desk":
+                asc, desc = big.getmetrics()
+                d.text((x, (h - asc - desc) // 2), data, font=big, fill=fg)
+            elif kind == "speed":
+                asc, desc = small.getmetrics()
+                lh = asc + desc - ui.px(2)
+                y = (h - lh * 2) // 2
+                for t in data:
+                    d.text((x, y), t, font=small, fill=fg)
+                    y += lh
+            else:
+                cx = x
+                asc, desc = pct.getmetrics()
+                for dk, t, b, tw in data:
+                    col = red if b <= 20 else fg        # red when it's time to charge
+                    im.alpha_composite(device_icon(dk, isz, col), (cx, (h - isz) // 2))
+                    cx += isz + ui.px(5)
+                    d.text((cx, (h - asc - desc) // 2), t, font=pct, fill=col)
+                    cx += tw + ui.px(12)
             x += pw + gap
         return im
 

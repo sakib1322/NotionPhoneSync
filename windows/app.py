@@ -655,7 +655,7 @@ class App:
         self.batt_status.config(text="Reading the laptop's charging setting…")
 
         def work():
-            d = battery.dell_read()
+            d = battery.dell_read(elevated=force)
             mk = battery.maker() if d.get("error") else ""
 
             def done():
@@ -693,6 +693,7 @@ class App:
                 self.batt_apply.state(["!disabled"])
                 if err:
                     self.batt_status.config(text="Not changed: " + err)
+                    self.log(f"Battery charging not changed: {err} [{getattr(battery.dell_set, 'last', '')}]")
                 else:
                     self.settings.set("batt_mode", mode)
                     self.settings.set("batt_start", a)

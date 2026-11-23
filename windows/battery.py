@@ -113,12 +113,22 @@ try {
 """
 
 
-def dell_read():
-    """{'mode': 'Custom', 'start': 50, 'stop': 80} — or {'error': ...} if it can't be read."""
+def dell_read(elevated=False):
+    """{'mode': 'Custom', 'start': 50, 'stop': 80} — or {'error': ...} if it can't be read.
+    elevated=True asks Windows for permission first (reading the BIOS can need it)."""
     if os.name != "nt":
         return {"error": "Windows only"}
     try:
-        d = json.loads(_ps(READ_SCRIPT, timeout=30) or "{}")
+        if elevated:
+            wrapped = ("$msgFile = Join-Path $env:ProgramData 'NotionLaptopSync\\battery-result.txt'\n"
+                       "New-Item -ItemType Directory -Force -Path (Split-Path $msgFile) | Out-Null\n"
+                       "$r = & {\n" + READ_SCRIPT + "\n}\n$r | Out-File -Encoding utf8 -Force $msgFile\nexit 0\n")
+            code, text = _elevated(wrapped, timeout=120)
+            if code is None:
+                return {"error": "cancelled"}
+            d = json.loads(text or "{}")
+        else:
+            d = json.loads(_ps(READ_SCRIPT, timeout=30) or "{}")
     except Exception as e:
         return {"error": str(e)}
     if d.get("mode"):
@@ -131,30 +141,65 @@ def dell_read():
 
 
 SET_SCRIPT = r"""
-$out = '{out}'
+$msgFile = Join-Path $env:ProgramData 'NotionLaptopSync\battery-result.txt'
+New-Item -ItemType Directory -Force -Path (Split-Path $msgFile) | Out-Null
+function Done($code, $text) { try { $text | Out-File -Encoding utf8 -Force $msgFile } catch {}; exit $code }
+$mode = '{mode}'; $start = {start}; $stop = {stop}
+$wmiError = ''
 try {
   $bai = Get-WmiObject -Namespace root\dcim\sysman\biosattributes -Class BIOSAttributeInterface -ErrorAction Stop
+  if (-not $bai) { throw 'no BIOS interface' }
   function S($n, $v) {
     $r = $bai.SetAttribute(0, 0, 0, $n, "$v")
-    if ($r.Status -ne 0) { throw "$n couldn't be set (code $($r.Status))" }
+    if ($r.Status -ne 0) { throw "status:$($r.Status):$n" }
   }
-  if ('{mode}' -eq 'Custom') {
-    try { S 'CustomChargeStart' {start}; S 'CustomChargeStop' {stop} }
-    catch { S 'CustomChargeStop' {stop}; S 'CustomChargeStart' {start} }
+  if ($mode -eq 'Custom') {
+    try { S 'CustomChargeStart' $start; S 'CustomChargeStop' $stop }
+    catch { S 'CustomChargeStop' $stop; S 'CustomChargeStart' $start }
   }
-  S 'PrimaryBattChargeCfg' '{mode}'
-  'ok' | Out-File -Encoding utf8 $out
-} catch {
-  $cctk = '{cctk}'
-  if ($cctk -and (Test-Path $cctk)) {
-    $arg = if ('{mode}' -eq 'Custom') { '--PrimaryBattChargeCfg=Custom:{start}-{stop}' } else { '--PrimaryBattChargeCfg={mode}' }
-    $o = & $cctk $arg 2>&1 | Out-String
-    if ($LASTEXITCODE -eq 0) { 'ok' | Out-File -Encoding utf8 $out } else { "Dell Command Configure: $o" | Out-File -Encoding utf8 $out }
-  } else {
-    $_.Exception.Message | Out-File -Encoding utf8 $out
+  S 'PrimaryBattChargeCfg' $mode
+  Done 0 'ok'
+} catch { $wmiError = $_.Exception.Message }
+foreach ($c in @('C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe', 'C:\Program Files\Dell\Command Configure\X86_64\cctk.exe')) {
+  if (Test-Path $c) {
+    $arg = if ($mode -eq 'Custom') { "--PrimaryBattChargeCfg=Custom:$start-$stop" } else { "--PrimaryBattChargeCfg=$mode" }
+    $o = & $c $arg 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) { Done 0 'ok' }
+    Done 13 ("Dell Command Configure said: " + $o.Trim())
   }
 }
+if ($wmiError -like 'status:*') { Done 11 $wmiError }
+if ($wmiError -match 'namespace|not found|class') { Done 10 $wmiError }
+Done 12 $wmiError
 """
+
+
+def _elevated(script, timeout=180):
+    """Runs a PowerShell script as administrator (Windows asks first) and returns (exit code, message).
+    The script is passed encoded, so PowerShell's script-blocking settings don't get in the way."""
+    import base64
+    enc = base64.b64encode(script.encode("utf-16-le")).decode()
+    msg_file = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "NotionLaptopSync", "battery-result.txt")
+    try:
+        os.remove(msg_file)
+    except OSError:
+        pass
+    launcher = ("try { $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
+                f"-ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{enc}' -ErrorAction Stop; "
+                "'code:' + $p.ExitCode } catch { 'cancelled' }")
+    out = _ps(launcher, timeout=timeout)
+    if "cancelled" in out:
+        return None, ""
+    try:
+        code = int(out.rsplit("code:", 1)[1].strip())
+    except (IndexError, ValueError):
+        code = -1
+    try:
+        with open(msg_file, encoding="utf-8-sig") as f:
+            text = f.read().strip()
+    except OSError:
+        text = out
+    return code, text
 
 
 def dell_set(mode, start=None, stop=None):
@@ -162,38 +207,24 @@ def dell_set(mode, start=None, stop=None):
     Returns None when done, or a message saying what went wrong."""
     if mode not in [m[0] for m in MODES]:
         return "Unknown mode."
-    if mode == "Custom":
-        start, stop = int(start), int(stop)
-        if not (50 <= start <= 95 and 55 <= stop <= 100 and stop - start >= 5):
-            return "Start must be 50–95%, stop 55–100%, and stop at least 5% above start."
-    tmp = tempfile.mkdtemp(prefix="nls-batt-")
-    out = os.path.join(tmp, "result.txt")
-    script = os.path.join(tmp, "set.ps1")
-    body = (SET_SCRIPT.replace("{out}", out).replace("{mode}", mode)
-            .replace("{start}", str(start or 50)).replace("{stop}", str(stop or 100))
-            .replace("{cctk}", cctk_path() or ""))
-    with open(script, "w", encoding="utf-8-sig") as f:
-        f.write(body)
-    # Run it as administrator (Windows shows its "allow changes?" prompt), and wait.
-    launcher = (f"try {{ Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
-                f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','\"{script}\"' -ErrorAction Stop; 'started' }} "
-                f"catch {{ 'cancelled' }}")
+    start, stop = int(start or 50), int(stop or 100)
+    if mode == "Custom" and not (50 <= start <= 95 and 55 <= stop <= 100 and stop - start >= 5):
+        return "Start must be 50–95%, stop 55–100%, and stop at least 5% above start."
+    script = SET_SCRIPT.replace("{mode}", mode).replace("{start}", str(start)).replace("{stop}", str(stop))
     try:
-        started = _ps(launcher, timeout=180)
-    except subprocess.TimeoutExpired:
-        return "It took too long. Try again."
-    if "cancelled" in started:
+        code, text = _elevated(script)
+    except Exception as e:
+        return f"It didn't run ({e})."
+    dell_set.last = (code, text)
+    if code is None:
         return "You said No to Windows' permission prompt, so nothing was changed."
-    try:
-        with open(out, encoding="utf-8-sig") as f:
-            res = f.read().strip()
-    except OSError:
-        return "Windows didn't run the change. Try again."
-    if res == "ok":
+    if code == 0:
         return None
-    if "Invalid namespace" in res or "not found" in res.lower():
-        return ("This laptop doesn't let apps change its charging mode directly. Installing Dell's free "
-                "“Dell Command | Configure” makes it possible.")
-    if "code 2" in res or "code 6" in res:
-        return "The BIOS has an admin password, so the change was refused. (Change it in the BIOS setup instead.)"
-    return res or "It didn't work."
+    if code == 10:
+        return ("This laptop's BIOS doesn't let apps change the charging mode directly. Install Dell's free "
+                "“Dell Command | Configure” (from dell.com/support) and press Apply again — the app uses it automatically.")
+    if code == 11:
+        if ":2:" in text or ":6:" in text:
+            return "The BIOS has an admin (setup) password, so it refused the change."
+        return f"The BIOS refused the change ({text})."
+    return f"It didn't work: {text or 'no details'} (code {code})."
