@@ -1399,7 +1399,7 @@ def selftest():
         lambda: app.open_files(app.settings.get("root_page")),
         # Taskbar read-out: desktop name and speed can be read, and the window appears.
         lambda: (app.taskbar._update(), print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
-                                              "speed:", app.taskbar.up.cget("text") if app.taskbar.win else "-",
+                                              "speed:", ascii(app.taskbar.up.cget("text")) if app.taskbar.win else "-",
                                               "rects:", __import__("taskbar").taskbar_rects()))
         if clip_sync.WINDOWS else None,
         # The new look and drag-and-drop really loaded (in the built app too).
