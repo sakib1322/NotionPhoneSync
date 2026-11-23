@@ -618,6 +618,8 @@ class App:
         self._battery_check()
 
     def _battery_check(self):
+        if not hasattr(self, "batt_apply"):     # still building the page
+            return True
         try:
             a, b = int(self.batt_start.get()), int(self.batt_stop.get())
         except (tk.TclError, ValueError):
