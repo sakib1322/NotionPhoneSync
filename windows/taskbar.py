@@ -3,7 +3,6 @@ name of the virtual desktop you're on (Win+Tab desktops like "BSIL Common", "Pro
 import ctypes
 import os
 import time
-import tkinter as tk
 import uuid
 
 import ui
@@ -155,30 +154,131 @@ def fullscreen_app():
 
 # ---- the read-out window -----------------------------------------------------------------------------
 
+# ---- the read-out: a native, see-through Windows window ------------------------------------------------
+# (Drawn with Windows' own layered-window API, like TrafficMonitor does: it always sits above the
+#  taskbar, never takes focus, shows on every virtual desktop and has smooth, sharp text.)
+
+if os.name == "nt":
+    from ctypes import wintypes as wt
+    LRESULT = ctypes.c_ssize_t
+    WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
+
+    class WNDCLASSEXW(ctypes.Structure):
+        _fields_ = [("cbSize", wt.UINT), ("style", wt.UINT), ("lpfnWndProc", WNDPROC), ("cbClsExtra", ctypes.c_int),
+                    ("cbWndExtra", ctypes.c_int), ("hInstance", wt.HINSTANCE), ("hIcon", wt.HICON),
+                    ("hCursor", wt.HANDLE), ("hbrBackground", wt.HBRUSH), ("lpszMenuName", wt.LPCWSTR),
+                    ("lpszClassName", wt.LPCWSTR), ("hIconSm", wt.HICON)]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wt.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                    ("biPlanes", wt.WORD), ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+                    ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", ctypes.c_long), ("biYPelsPerMeter", ctypes.c_long),
+                    ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
+
+    class BLENDFUNCTION(ctypes.Structure):
+        _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                    ("SourceConstantAlpha", ctypes.c_ubyte), ("AlphaFormat", ctypes.c_ubyte)]
+
+    class MSG(ctypes.Structure):
+        _fields_ = [("hwnd", wt.HWND), ("message", wt.UINT), ("wParam", wt.WPARAM), ("lParam", wt.LPARAM),
+                    ("time", wt.DWORD), ("pt", wt.POINT)]
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    kernel32 = ctypes.windll.kernel32
+    user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+    user32.DefWindowProcW.restype = LRESULT
+    user32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID]
+    user32.CreateWindowExW.restype = wt.HWND
+    user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEXW)]
+    user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT]
+    user32.UpdateLayeredWindow.argtypes = [wt.HWND, wt.HDC, ctypes.POINTER(wt.POINT), ctypes.POINTER(wt.SIZE), wt.HDC,
+                                           ctypes.POINTER(wt.POINT), wt.DWORD, ctypes.POINTER(BLENDFUNCTION), wt.DWORD]
+    user32.GetMessageW.argtypes = [ctypes.POINTER(MSG), wt.HWND, wt.UINT, wt.UINT]
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(MSG)]
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(MSG)]
+    user32.TrackPopupMenu.argtypes = [wt.HMENU, wt.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.HWND, wt.LPVOID]
+    user32.AppendMenuW.argtypes = [wt.HMENU, wt.UINT, ctypes.c_size_t, wt.LPCWSTR]
+    user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+    user32.SetTimer.argtypes = [wt.HWND, ctypes.c_size_t, wt.UINT, wt.LPVOID]
+    user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
+    user32.GetDC.argtypes = [wt.HWND]
+    user32.GetDC.restype = wt.HDC
+    user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+    gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
+    gdi32.CreateCompatibleDC.restype = wt.HDC
+    gdi32.CreateDIBSection.argtypes = [wt.HDC, ctypes.POINTER(BITMAPINFOHEADER), wt.UINT,
+                                       ctypes.POINTER(ctypes.c_void_p), wt.HANDLE, wt.DWORD]
+    gdi32.CreateDIBSection.restype = wt.HBITMAP
+    gdi32.SelectObject.argtypes = [wt.HDC, wt.HGDIOBJ]
+    gdi32.SelectObject.restype = wt.HGDIOBJ
+    gdi32.DeleteObject.argtypes = [wt.HGDIOBJ]
+    gdi32.DeleteDC.argtypes = [wt.HDC]
+    kernel32.GetModuleHandleW.restype = wt.HMODULE
+
+WM_DESTROY, WM_TIMER, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE = 0x0002, 0x0113, 0x0201, 0x0202, 0x0200
+WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_CLOSE, WM_APP = 0x0203, 0x0205, 0x0010, 0x8000
+HWND_TOPMOST = -1
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
+WS_POPUP = 0x80000000
+WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_NOACTIVATE = 0x80000, 0x80, 0x8, 0x08000000
+
+
+def _font(size, bold=False):
+    from PIL import ImageFont
+    for f in (("segoeuib.ttf", "seguisb.ttf") if bold else ("segoeui.ttf",)) + ("arial.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(f, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
 class TaskbarMeter:
+    """Internet speed, desktop name and Bluetooth batteries, drawn on the taskbar near the clock."""
+
     def __init__(self, app):
         self.app = app
         self.s = app.settings
         self.net = NetMeter()
-        self.win = None
         self.hwnd = None
-        self.last_desktop = None
-        self.light = None
+        self.bt = []
+        self.up_text = self.down_text = ""
+        self.desk_text = ""
+        self.visible = False
         self.drag = None
-        self.tick = 0
-        self.last_text = None
-        self.bt = []            # [(name, %)] from the background check
-        self.bt_shown = None
+        self.size = (0, 0)
+        self.errors = 0
+        self.wake = None
         if os.name == "nt":
             import threading
             threading.Thread(target=self._bt_loop, daemon=True).start()
-            app.root.after(1500, self._loop)
+            threading.Thread(target=self._run, daemon=True).start()
+
+    # compatibility with the settings page / self-test
+    @property
+    def win(self):
+        return self.hwnd
 
     def wanted(self):
         return bool(self.s.get("taskbar_speed") or self.s.get("taskbar_desktop") or self.s.get("taskbar_bt"))
 
+    def refresh_settings(self):
+        if self.hwnd:
+            user32.PostMessageW(self.hwnd, WM_APP, 0, 0)    # redraw now
+
+    def _ui(self, fn):
+        self.app.events.put(fn)
+
+    def _log(self, msg):
+        self.errors += 1
+        if self.errors <= 3:
+            self._ui(lambda: self.app.log("Taskbar read-out: " + msg))
+
+    # background: Bluetooth batteries once a minute
+
     def _bt_loop(self):
-        """Checks Bluetooth battery levels once a minute (in the background: it takes a second or two)."""
         import battery
         while not getattr(self.app, "quitting", False):
             if self.s.get("taskbar_bt"):
@@ -191,199 +291,227 @@ class TaskbarMeter:
                     return
                 time.sleep(1)
 
-    # building
+    # the window's own thread
 
-    def _build(self):
-        self.light = light_taskbar()
-        bg = "#f3f3f3" if self.light else "#1c1c1c"    # close to the taskbar's own colour
-        fg = "#1a1a1a" if self.light else "#ffffff"
-        self.key = bg
-        w = tk.Toplevel(self.app.root)
-        w.overrideredirect(True)
-        w.configure(bg=bg)
+    def _run(self):
         try:
-            w.attributes("-topmost", True)
-            w.attributes("-transparentcolor", bg)      # see-through: only the text shows
-        except tk.TclError:
-            pass
-        self.desk = tk.Label(w, text="", bg=bg, fg=fg, font=(ui.FONT, 10, "bold"), padx=ui.px(6))
-        box = tk.Frame(w, bg=bg)
-        self.up = tk.Label(box, text="", bg=bg, fg=fg, font=(ui.FONT, 9), anchor="w", width=13)
-        self.down = tk.Label(box, text="", bg=bg, fg=fg, font=(ui.FONT, 9), anchor="w", width=13)
-        self.up.pack(anchor="w")
-        self.down.pack(anchor="w")
-        self.box = box
-        btbox = tk.Frame(w, bg=bg)
-        self.bt1 = tk.Label(btbox, text="", bg=bg, fg=fg, font=(ui.FONT, 9), anchor="e")
-        self.bt2 = tk.Label(btbox, text="", bg=bg, fg=fg, font=(ui.FONT, 9), anchor="e")
-        self.bt1.pack(anchor="e")
-        self.bt2.pack(anchor="e")
-        self.btbox = btbox
-        for x in (w, self.desk, box, self.up, self.down, btbox, self.bt1, self.bt2):
-            x.bind("<ButtonPress-1>", self._press)
-            x.bind("<B1-Motion>", self._motion)
-            x.bind("<ButtonRelease-1>", self._release)
-            x.bind("<Double-Button-1>", lambda e: self.app.show_window())
-            x.bind("<Button-3>", self._menu)
-        self.win = w
-        self._layout()
-        w.update_idletasks()
-        try:
-            self.hwnd = ctypes.windll.user32.GetParent(w.winfo_id()) or w.winfo_id()
-            # A tool window that never takes focus: stays on every virtual desktop, not in Alt+Tab.
-            GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, WS_EX_APPWINDOW = -20, 0x80, 0x08000000, 0x40000
-            st = ctypes.windll.user32.GetWindowLongW(self.hwnd, GWL_EXSTYLE)
-            ctypes.windll.user32.SetWindowLongW(self.hwnd, GWL_EXSTYLE,
-                                                (st | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW)
-        except Exception:
-            pass
-
-    def _layout(self):
-        for x in (self.desk, self.btbox, self.box):
-            x.pack_forget()
-        if self.s.get("taskbar_desktop"):
-            self.desk.pack(side="left", fill="y")
-        if self.s.get("taskbar_bt") and self.bt:
-            self.btbox.pack(side="left", padx=(ui.px(4), ui.px(4)))
-        if self.s.get("taskbar_speed"):
-            self.box.pack(side="left", padx=(ui.px(4), ui.px(6)))
-
-    def destroy(self):
-        if self.win is not None:
-            try:
-                self.win.destroy()
-            except tk.TclError:
-                pass
-        self.win = None
-        self.hwnd = None
-
-    def refresh_settings(self):
-        if not self.wanted():
-            self.destroy()
-            return
-        if self.win is None:
-            self._build()
-        self.bt_shown = None
-        self._layout()
-        self.last_text = None
-        self._place()
-
-    # every second
-
-    def _loop(self):
-        try:
-            self._update()
+            hinst = kernel32.GetModuleHandleW(None)
+            self._proc = WNDPROC(self._wndproc)       # keep a reference, or Python frees it
+            wc = WNDCLASSEXW()
+            wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
+            wc.style = 0x8                            # double-clicks
+            wc.lpfnWndProc = self._proc
+            wc.hInstance = hinst
+            wc.hCursor = user32.LoadCursorW(None, ctypes.c_void_p(32512))
+            wc.lpszClassName = "NotionSyncTaskbarMeter"
+            user32.RegisterClassExW(ctypes.byref(wc))
+            self.hwnd = user32.CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                                               "NotionSyncTaskbarMeter", "Notion Sync taskbar", WS_POPUP,
+                                               0, 0, 10, 10, None, None, hinst, None)
+            if not self.hwnd:
+                self._log(f"couldn't create the window (error {kernel32.GetLastError()})")
+                return
+            user32.SetTimer(self.hwnd, 1, 1000, None)     # speed etc.: every second
+            user32.SetTimer(self.hwnd, 2, 400, None)      # stay above the taskbar
+            self._tick()
+            msg = MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
         except Exception as e:
-            self.tick += 1
-            if self.tick < 3:
+            self._log(str(e))
+
+    def _wndproc(self, hwnd, msg, wp, lp):
+        try:
+            if msg == WM_TIMER:
+                if getattr(self.app, "quitting", False):
+                    user32.DestroyWindow(hwnd)
+                elif wp == 1:
+                    self._tick()
+                elif wp == 2 and self.visible and not self.drag:
+                    user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                return 0
+            if msg == WM_APP:
+                self._tick(read_net=False)
+                return 0
+            if msg == WM_LBUTTONDOWN:
+                pt = wt.POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                r = _rect(hwnd)
+                self.drag = (pt.x, r[0] if r else 0, False)
+                user32.SetCapture(hwnd)
+                return 0
+            if msg == WM_MOUSEMOVE and self.drag:
+                pt = wt.POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                x0, wx, _ = self.drag
+                if abs(pt.x - x0) > 3:
+                    self.drag = (x0, wx, True)
+                    r = _rect(hwnd)
+                    user32.SetWindowPos(hwnd, HWND_TOPMOST, wx + pt.x - x0, r[1] if r else 0, 0, 0,
+                                        SWP_NOSIZE | SWP_NOACTIVATE)
+                return 0
+            if msg == WM_LBUTTONUP and self.drag:
+                moved = self.drag[2]
+                self.drag = None
+                user32.ReleaseCapture()
+                if moved:
+                    bar, _ = taskbar_rects()
+                    r = _rect(hwnd)
+                    if bar and r:
+                        off = bar[2] - r[2]
+                        self.s.set("taskbar_offset", off)
+                        self._offset = off
+                return 0
+            if msg == WM_LBUTTONDBLCLK:
+                self._ui(self.app.show_window)
+                return 0
+            if msg == WM_RBUTTONUP:
+                self._menu(hwnd)
+                return 0
+            if msg == WM_DESTROY:
+                user32.PostQuitMessage(0)
+                return 0
+        except Exception as e:
+            self._log(str(e))
+        return user32.DefWindowProcW(hwnd, msg, wp, lp)
+
+    def _menu(self, hwnd):
+        m = user32.CreatePopupMenu()
+        items = [(1, "Open Notion Laptop Sync"), (0, None),
+                 (2, ("Hide" if self.s.get("taskbar_speed") else "Show") + " internet speed"),
+                 (3, ("Hide" if self.s.get("taskbar_desktop") else "Show") + " desktop name"),
+                 (4, ("Hide" if self.s.get("taskbar_bt") else "Show") + " Bluetooth battery"),
+                 (0, None), (5, "Put it back next to the clock")]
+        for cid, text in items:
+            user32.AppendMenuW(m, 0x800 if cid == 0 else 0, cid, text)
+        pt = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        user32.SetForegroundWindow(hwnd)        # so the menu closes when you click elsewhere
+        cmd = user32.TrackPopupMenu(m, 0x0100 | 0x0002 | 0x0020, pt.x, pt.y, 0, hwnd, None)  # RETURNCMD|RIGHTBUTTON|BOTTOMALIGN
+        user32.PostMessageW(hwnd, 0, 0, 0)
+        user32.DestroyMenu(m)
+        keys = {2: "taskbar_speed", 3: "taskbar_desktop", 4: "taskbar_bt"}
+        if cmd == 1:
+            self._ui(self.app.show_window)
+        elif cmd in keys:
+            k = keys[cmd]
+            new = not self.s.get(k)
+            self.s.set(k, new)          # (settings are safe to change from this thread)
+
+            def tick_box(k=k, new=new):
                 try:
-                    self.app.log(f"Taskbar read-out: {e}")
+                    self.app.taskbar_vars[k].set(new)
                 except Exception:
                     pass
-        self.app.root.after(1000, self._loop)
+            self._ui(tick_box)
+            self._tick(read_net=False)
+        elif cmd == 5:
+            self._offset = None
+            self.s.set("taskbar_offset", None)
+            self._tick(read_net=False)
 
-    def _update(self):
-        if getattr(self.app, "quitting", False):
-            self.destroy()
-            return
-        if not self.wanted():
-            self.destroy()
-            return
-        if self.win is None or light_taskbar() != self.light:
-            self.destroy()
-            self._build()
-        up, down = self.net.read()
-        if self.s.get("taskbar_speed"):
-            self.up.configure(text="↑: " + speed_text(up))
-            self.down.configure(text="↓: " + speed_text(down))
+    # what's drawn
+
+    def _tick(self, read_net=True):
+        if read_net:
+            up, down = self.net.read()
+            self.up_text, self.down_text = "↑: " + speed_text(up), "↓: " + speed_text(down)
         if self.s.get("taskbar_desktop"):
-            name = desktop_name()
-            if name != self.last_desktop:
-                self.last_desktop = name
-                self.desk.configure(text=name)
-        if self.s.get("taskbar_bt"):
-            shown = tuple(self.bt[:2])
-            if shown != self.bt_shown:
-                had = bool(self.bt_shown)
-                self.bt_shown = shown
-                lines = [f"{(n if len(n) <= 16 else n[:15] + '…')}  {b}%" for n, b in shown] + ["", ""]
-                self.bt1.configure(text=lines[0])
-                self.bt2.configure(text=lines[1])
-                if had != bool(shown):
-                    self._layout()
+            try:
+                self.desk_text = desktop_name()
+            except Exception:
+                self.desk_text = ""
         self._place()
+
+    def _hide(self):
+        if self.visible:
+            user32.ShowWindow(self.hwnd, 0)
+            self.visible = False
 
     def _place(self):
-        if self.win is None or self.drag:
+        if not self.hwnd or self.drag:
             return
+        if not self.wanted() or getattr(self.app, "quitting", False):
+            return self._hide()
         bar, note = taskbar_rects()
-        if not bar or fullscreen_app():
-            self.win.withdraw()
-            return
-        sh = ctypes.windll.user32.GetSystemMetrics(1)
-        if bar[1] >= sh - 2 or bar[3] - bar[1] < 20 or bar[3] - bar[1] > 200:   # hidden, or a side taskbar
-            self.win.withdraw()
-            return
-        self.win.update_idletasks()
-        w = self.win.winfo_reqwidth()
+        sh = user32.GetSystemMetrics(1)
+        if not bar or fullscreen_app() or bar[1] >= sh - 2 or not 20 <= bar[3] - bar[1] <= 200:
+            return self._hide()     # no taskbar, it's hidden or on the side, or a full-screen app is showing
         h = bar[3] - bar[1]
+        img = self.render(h, light_taskbar())
+        w = img.width
         right = note[0] if note else bar[2] - ui.px(330)
-        off = self.s.get("taskbar_offset")
-        x = (bar[2] - int(off) - w) if off is not None else (right - w - ui.px(6))
+        off = getattr(self, "_offset", "unset")
+        if off == "unset":
+            off = self._offset = self.s.get("taskbar_offset")
+        x = (bar[2] - int(off) - w) if off is not None else (right - w - ui.px(4))
         x = max(bar[0], min(x, bar[2] - w))
-        geo = f"{w}x{h}+{x}+{bar[1]}"
-        if self.win.state() == "withdrawn":
-            self.win.deiconify()
-        if self.win.geometry() != geo:
-            self.win.geometry(geo)
-        # The taskbar is "always on top" too; stay above it without taking focus.
-        if self.hwnd:
-            SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x2, 0x1, 0x10, 0x40
-            ctypes.windll.user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0,
-                                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        self._blit(img, x, bar[1])
+        user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        self.visible = True
 
-    # moving it along the taskbar
+    def render(self, h, light):
+        """Draws the read-out (a see-through picture) for a taskbar h pixels tall."""
+        from PIL import Image, ImageDraw
+        fg = (26, 26, 26, 255) if light else (255, 255, 255, 255)
+        small, big = _font(max(10, round(12 * ui.S))), _font(max(11, round(14 * ui.S)), bold=True)
+        parts = []      # (lines, font, align)
+        if self.s.get("taskbar_desktop") and self.desk_text:
+            parts.append(([self.desk_text], big, "l"))
+        if self.s.get("taskbar_bt") and self.bt:
+            parts.append(([f"{(n if len(n) <= 16 else n[:15] + '…')}  {b}%" for n, b in self.bt[:2]], small, "r"))
+        if self.s.get("taskbar_speed"):
+            parts.append(([self.up_text, self.down_text], small, "l"))
+        tmp = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        gap, pad = ui.px(14), ui.px(6)
+        widths = []
+        for lines, font, _ in parts:
+            wmax = max((tmp.textlength(t, font=font) for t in lines), default=0)
+            if lines and lines[0].startswith("↑"):
+                wmax = max(wmax, tmp.textlength("↓: 888.88 KB/s", font=font))   # steady width: no jiggling
+            widths.append(int(wmax) + 1)
+        w = max(1, sum(widths) + gap * max(0, len(parts) - 1) + pad * 2)
+        im = Image.new("RGBA", (w, h), (0, 0, 0, 1))     # almost invisible, but you can still grab it
+        d = ImageDraw.Draw(im)
+        x = pad
+        for (lines, font, align), pw in zip(parts, widths):
+            asc, desc = font.getmetrics()
+            lh = asc + desc
+            total = lh * len(lines) - (ui.px(2) if len(lines) > 1 else 0)
+            y = (h - total) // 2
+            for t in lines:
+                tw = d.textlength(t, font=font)
+                d.text((x + (pw - tw if align == "r" else 0), y), t, font=font, fill=fg)
+                y += lh - (ui.px(2) if len(lines) > 1 else 0)
+            x += pw + gap
+        return im
 
-    def _press(self, e):
-        self.drag = (e.x_root, self.win.winfo_x())
-
-    def _motion(self, e):
-        if not self.drag:
-            return
-        x0, wx = self.drag
-        self.win.geometry(f"+{wx + e.x_root - x0}+{self.win.winfo_y()}")
-
-    def _release(self, e):
-        if not self.drag:
-            return
-        moved = abs(e.x_root - self.drag[0]) > 3
-        self.drag = None
-        if moved:
-            bar, _ = taskbar_rects()
-            if bar:
-                self.s.set("taskbar_offset", bar[2] - (self.win.winfo_x() + self.win.winfo_width()))
-
-    def _menu(self, e):
-        m = tk.Menu(self.win, tearoff=0)
-        m.add_command(label="Open Notion Laptop Sync", command=self.app.show_window)
-        m.add_separator()
-        m.add_command(label=("Hide" if self.s.get("taskbar_speed") else "Show") + " internet speed",
-                      command=lambda: self._toggle("taskbar_speed"))
-        m.add_command(label=("Hide" if self.s.get("taskbar_desktop") else "Show") + " desktop name",
-                      command=lambda: self._toggle("taskbar_desktop"))
-        m.add_command(label=("Hide" if self.s.get("taskbar_bt") else "Show") + " Bluetooth battery",
-                      command=lambda: self._toggle("taskbar_bt"))
-        m.add_command(label="Put it back next to the clock", command=self._reset)
-        m.tk_popup(e.x_root, e.y_root)
-
-    def _toggle(self, key):
-        self.s.set(key, not self.s.get(key))
+    def _blit(self, im, x, y):
+        import numpy as np
+        w, h = im.size
+        a = np.asarray(im, dtype=np.uint16)
+        alpha = a[..., 3:4]
+        rgb = (a[..., :3] * alpha // 255).astype(np.uint8)
+        bgra = np.dstack([rgb[..., 2], rgb[..., 1], rgb[..., 0], a[..., 3].astype(np.uint8)])
+        data = np.ascontiguousarray(bgra).tobytes()
+        screen = user32.GetDC(None)
+        mem = gdi32.CreateCompatibleDC(screen)
+        bi = BITMAPINFOHEADER()
+        bi.biSize, bi.biWidth, bi.biHeight = ctypes.sizeof(BITMAPINFOHEADER), w, -h
+        bi.biPlanes, bi.biBitCount = 1, 32
+        bits = ctypes.c_void_p()
+        bmp = gdi32.CreateDIBSection(mem, ctypes.byref(bi), 0, ctypes.byref(bits), None, 0)
         try:
-            self.app.taskbar_vars[key].set(self.s.get(key))
-        except Exception:
-            pass
-        self.refresh_settings()
-
-    def _reset(self):
-        self.s.set("taskbar_offset", None)
-        self._place()
+            ctypes.memmove(bits, data, len(data))
+            old = gdi32.SelectObject(mem, bmp)
+            blend = BLENDFUNCTION(0, 0, 255, 1)
+            user32.UpdateLayeredWindow(self.hwnd, screen, ctypes.byref(wt.POINT(x, y)), ctypes.byref(wt.SIZE(w, h)),
+                                       mem, ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(blend), 2)
+            gdi32.SelectObject(mem, old)
+        finally:
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(mem)
+            user32.ReleaseDC(None, screen)
+        self.size = (w, h)

@@ -1583,8 +1583,9 @@ def selftest():
         lambda: print("BATTERY read:", ascii(__import__("battery").dell_read()), "bt:", ascii(__import__("battery").bt_levels()),
                       "laptop:", __import__("battery").laptop_battery()) if clip_sync.WINDOWS else None,
         # Taskbar read-out: desktop name and speed can be read, and the window appears.
-        lambda: (app.taskbar._update(), print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
-                                              "speed:", ascii(app.taskbar.up.cget("text")) if app.taskbar.win else "-",
+        lambda: (print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
+                       "window:", bool(app.taskbar.hwnd), "shown:", app.taskbar.visible, "size:", app.taskbar.size,
+                       "speed:", ascii(app.taskbar.up_text),
                                               "rects:", __import__("taskbar").taskbar_rects()))
         if clip_sync.WINDOWS else None,
         # The new look and drag-and-drop really loaded (in the built app too).
