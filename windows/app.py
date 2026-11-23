@@ -117,6 +117,8 @@ class App:
         self._build_devices(self._tab(nb, "Devices"))
         self._build_voice(self._tab(nb, "Voice changer"))
         self.sidebar = ui.Sidebar(self, side_holder)
+        import taskbar
+        self.taskbar = taskbar.TaskbarMeter(self)
         nb.bind("<<NotebookTabChanged>>", lambda e: self._tab_changed())
         if not self.settings.get("token"):
             nb.select(TAB_NOTION)
@@ -543,6 +545,19 @@ class App:
         self.update_lbl = self._p(f, f"Version: build {BUILD}")
         ttk.Button(f, text="Check for update & install", command=lambda: self.check_update(install=True)).pack(anchor="w", pady=4)
         self._p(f, "Updating keeps your backup progress. The app restarts and picks up where it left off.",
+                foreground="#666")
+
+        self._h(f, "Taskbar")
+        self.taskbar_vars = {}
+        for key, text in (("taskbar_speed", "Show internet speed on the taskbar (↑ upload, ↓ download)"),
+                          ("taskbar_desktop", "Show the name of the desktop you're on (Win+Tab desktops) on the taskbar")):
+            v = tk.BooleanVar(value=bool(self.settings.get(key)))
+            self.taskbar_vars[key] = v
+            ttk.Checkbutton(f, text=text, variable=v,
+                            command=lambda k=key, v=v: (self.settings.set(k, v.get()), self.taskbar.refresh_settings())
+                            ).pack(anchor="w")
+        self._p(f, "Drag it left or right along the taskbar to move it. Right-click it for options; "
+                   "double-click to open this app. It hides while a full-screen video or game is showing.",
                 foreground="#666")
 
         self._h(f, "Startup")
@@ -1382,6 +1397,11 @@ def selftest():
         app.sidebar.rebuild,
         lambda: app.sidebar.select("backup"),
         lambda: app.open_files(app.settings.get("root_page")),
+        # Taskbar read-out: desktop name and speed can be read, and the window appears.
+        lambda: (app.taskbar._update(), print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
+                                              "speed:", app.taskbar.up.cget("text") if app.taskbar.win else "-",
+                                              "rects:", __import__("taskbar").taskbar_rects()))
+        if clip_sync.WINDOWS else None,
         # The new look and drag-and-drop really loaded (in the built app too).
         lambda: None if not clip_sync.WINDOWS or (app.files.can_drop and ttk.Style().theme_use().startswith("sun-valley")) else
         errors.append((RuntimeError, RuntimeError(f"look not loaded: theme={ttk.Style().theme_use()} drop={app.files.can_drop}"), None)),
