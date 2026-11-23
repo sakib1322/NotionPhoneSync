@@ -167,11 +167,29 @@ class TaskbarMeter:
         self.drag = None
         self.tick = 0
         self.last_text = None
+        self.bt = []            # [(name, %)] from the background check
+        self.bt_shown = None
         if os.name == "nt":
+            import threading
+            threading.Thread(target=self._bt_loop, daemon=True).start()
             app.root.after(1500, self._loop)
 
     def wanted(self):
-        return bool(self.s.get("taskbar_speed") or self.s.get("taskbar_desktop"))
+        return bool(self.s.get("taskbar_speed") or self.s.get("taskbar_desktop") or self.s.get("taskbar_bt"))
+
+    def _bt_loop(self):
+        """Checks Bluetooth battery levels once a minute (in the background: it takes a second or two)."""
+        import battery
+        while not getattr(self.app, "quitting", False):
+            if self.s.get("taskbar_bt"):
+                try:
+                    self.bt = battery.bt_levels()
+                except Exception:
+                    self.bt = []
+            for _ in range(60):
+                if getattr(self.app, "quitting", False):
+                    return
+                time.sleep(1)
 
     # building
 
@@ -195,7 +213,13 @@ class TaskbarMeter:
         self.up.pack(anchor="w")
         self.down.pack(anchor="w")
         self.box = box
-        for x in (w, self.desk, box, self.up, self.down):
+        btbox = tk.Frame(w, bg=bg)
+        self.bt1 = tk.Label(btbox, text="", bg=bg, fg=fg, font=(ui.FONT, 9), anchor="e")
+        self.bt2 = tk.Label(btbox, text="", bg=bg, fg=fg, font=(ui.FONT, 9), anchor="e")
+        self.bt1.pack(anchor="e")
+        self.bt2.pack(anchor="e")
+        self.btbox = btbox
+        for x in (w, self.desk, box, self.up, self.down, btbox, self.bt1, self.bt2):
             x.bind("<ButtonPress-1>", self._press)
             x.bind("<B1-Motion>", self._motion)
             x.bind("<ButtonRelease-1>", self._release)
@@ -215,10 +239,12 @@ class TaskbarMeter:
             pass
 
     def _layout(self):
-        for x in (self.desk, self.box):
+        for x in (self.desk, self.btbox, self.box):
             x.pack_forget()
         if self.s.get("taskbar_desktop"):
             self.desk.pack(side="left", fill="y")
+        if self.s.get("taskbar_bt") and self.bt:
+            self.btbox.pack(side="left", padx=(ui.px(4), ui.px(4)))
         if self.s.get("taskbar_speed"):
             self.box.pack(side="left", padx=(ui.px(4), ui.px(6)))
 
@@ -237,6 +263,7 @@ class TaskbarMeter:
             return
         if self.win is None:
             self._build()
+        self.bt_shown = None
         self._layout()
         self.last_text = None
         self._place()
@@ -274,6 +301,16 @@ class TaskbarMeter:
             if name != self.last_desktop:
                 self.last_desktop = name
                 self.desk.configure(text=name)
+        if self.s.get("taskbar_bt"):
+            shown = tuple(self.bt[:2])
+            if shown != self.bt_shown:
+                had = bool(self.bt_shown)
+                self.bt_shown = shown
+                lines = [f"{(n if len(n) <= 16 else n[:15] + '…')}  {b}%" for n, b in shown] + ["", ""]
+                self.bt1.configure(text=lines[0])
+                self.bt2.configure(text=lines[1])
+                if had != bool(shown):
+                    self._layout()
         self._place()
 
     def _place(self):
@@ -334,6 +371,8 @@ class TaskbarMeter:
                       command=lambda: self._toggle("taskbar_speed"))
         m.add_command(label=("Hide" if self.s.get("taskbar_desktop") else "Show") + " desktop name",
                       command=lambda: self._toggle("taskbar_desktop"))
+        m.add_command(label=("Hide" if self.s.get("taskbar_bt") else "Show") + " Bluetooth battery",
+                      command=lambda: self._toggle("taskbar_bt"))
         m.add_command(label="Put it back next to the clock", command=self._reset)
         m.tk_popup(e.x_root, e.y_root)
 

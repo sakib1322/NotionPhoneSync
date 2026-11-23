@@ -116,6 +116,7 @@ class App:
         self._build_about(self._tab(nb, "Settings & updates"))
         self._build_devices(self._tab(nb, "Devices"))
         self._build_voice(self._tab(nb, "Voice changer"))
+        self._build_battery(self._tab(nb, "Battery"))
         self.sidebar = ui.Sidebar(self, side_holder)
         import taskbar
         self.taskbar = taskbar.TaskbarMeter(self)
@@ -126,7 +127,7 @@ class App:
             nb.select(TAB_FILES)
             self.sidebar.select("drive")
 
-    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice"}
+    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery"}
 
     def open_files(self, sid, recent=False):
         """Sidebar: show My Drive, Recent or another device's files."""
@@ -139,6 +140,8 @@ class App:
             key = self.SIDE_KEYS.get(i)
             if key and getattr(self, "sidebar", None) and self.sidebar.current != key:
                 self.sidebar.select(key)
+            if i == 9:
+                self._battery_shown()
             if i == TAB_DEVICES:
                 self._fill_devices()
             if i == TAB_FILES:
@@ -540,6 +543,179 @@ class App:
         self.log_box.pack(fill="both", expand=True)
         self.log_box.configure(state="disabled")
 
+    # ---- battery ------------------------------------------------------------------------------
+
+    def _build_battery(self, f):
+        import battery
+        self.batt_now = self._p(f, "")
+        self._h(f, "Battery charging (Dell)")
+        self._p(f, "The same choices as Dell's battery app. They're saved in the laptop itself, so they keep "
+                   "working even when this app isn't running. Windows asks for permission when you apply one.",
+                foreground="#666")
+        box = ttk.Frame(f)
+        box.pack(fill="x", pady=(6, 4))
+        left = ttk.Frame(box)
+        left.pack(side="left", fill="y", padx=(0, 24))
+        ttk.Separator(box, orient="vertical").pack(side="left", fill="y", padx=(0, 24))
+        right = ttk.Frame(box)
+        right.pack(side="left", fill="both", expand=True)
+        self.batt_mode = tk.StringVar(value=self.settings.get("batt_mode") or "Standard")
+        for key, title, _ in battery.MODES:
+            ttk.Radiobutton(left, text=title, value=key, variable=self.batt_mode,
+                            command=self._battery_mode_changed).pack(anchor="w", pady=5)
+        self.batt_title = ttk.Label(right, text="", font=(ui.FONT, 14))
+        self.batt_title.pack(anchor="w")
+        self.batt_desc = ttk.Label(right, text="", wraplength=ui.px(460), justify="left", foreground="#555")
+        self.batt_desc.pack(anchor="w", pady=(6, 8))
+        self.batt_custom = ttk.Frame(right)
+        self.batt_start = tk.IntVar(value=self.settings.get("batt_start") or 50)
+        self.batt_stop = tk.IntVar(value=self.settings.get("batt_stop") or 80)
+        for text, var, lo, hi in (("Start charging: (at or below)", self.batt_start, 50, 95),
+                                  ("Stop charging: (at or above)", self.batt_stop, 55, 100)):
+            ttk.Label(self.batt_custom, text=text).pack(anchor="w", pady=(6, 2))
+            row = ttk.Frame(self.batt_custom)
+            row.pack(fill="x")
+            sc = ttk.Scale(row, from_=lo, to=hi, orient="horizontal", length=ui.px(320),
+                           command=lambda v, var=var: (var.set(int(float(v))), self._battery_check()))
+            sc.set(var.get())
+            sc.pack(side="left")
+            sp = ttk.Spinbox(row, from_=lo, to=hi, width=5, textvariable=var,
+                             command=lambda sc=sc, var=var: (sc.set(var.get()), self._battery_check()))
+            sp.pack(side="left", padx=10)
+            sp.bind("<KeyRelease>", lambda e, sc=sc, var=var: (sc.set(var.get()) if str(var.get()).isdigit() else None,
+                                                               self._battery_check()))
+            ttk.Label(row, text="%").pack(side="left")
+        self.batt_warn = tk.Label(self.batt_custom, text="", bg="#f2a900", fg="#1a1a1a", font=(ui.FONT, 9, "bold"),
+                                  anchor="w", padx=10, pady=6)
+        btns = ttk.Frame(f)
+        btns.pack(anchor="w", pady=(10, 4))
+        self.batt_apply = ttk.Button(btns, text="Apply", style="Accent.TButton", command=self._battery_apply)
+        self.batt_apply.pack(side="left")
+        ttk.Button(btns, text="Read the current setting", command=lambda: self._battery_read(force=True)).pack(
+            side="left", padx=8)
+        self.batt_status = self._p(f, "", foreground="#666")
+        self._battery_mode_changed()
+
+        self._h(f, "Bluetooth devices")
+        self.bt_list = self._p(f, "Checking…")
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=4)
+        ttk.Button(row, text="Check again", command=self._bt_refresh).pack(side="left")
+        self._p(f, "Shows earbuds, headphones, mice and keyboards that tell Windows their battery level. "
+                   "To show them on the taskbar, turn it on in Settings & updates → Taskbar.", foreground="#666")
+
+    def _battery_mode_changed(self):
+        import battery
+        key = self.batt_mode.get()
+        for k, title, desc in battery.MODES:
+            if k == key:
+                self.batt_title.config(text=title)
+                self.batt_desc.config(text=desc)
+        if key == "Custom":
+            self.batt_custom.pack(anchor="w", fill="x")
+        else:
+            self.batt_custom.pack_forget()
+        self._battery_check()
+
+    def _battery_check(self):
+        try:
+            a, b = int(self.batt_start.get()), int(self.batt_stop.get())
+        except (tk.TclError, ValueError):
+            a, b = 0, 0
+        msg = ""
+        if self.batt_mode.get() == "Custom":
+            if not 50 <= a <= 95:
+                msg = "Start charging must be between 50% and 95%"
+            elif not 55 <= b <= 100:
+                msg = "Stop charging must be between 55% and 100%"
+            elif b - a < 5:
+                msg = f"Stop charging must be at least 5% above start ({a + 5}% or more)"
+        if msg:
+            self.batt_warn.config(text="⚠  Warning: " + msg)
+            self.batt_warn.pack(anchor="w", fill="x", pady=(10, 0))
+        else:
+            self.batt_warn.pack_forget()
+        self.batt_apply.state(["disabled"] if msg else ["!disabled"])
+        return not msg
+
+    def _battery_shown(self):
+        import battery
+        b = battery.laptop_battery()
+        self.batt_now.config(text=(f"This laptop: {b[0]}% · {'plugged in' if b[1] else 'on battery'}" if b else
+                                   "This laptop's battery couldn't be read."))
+        if not getattr(self, "_batt_read_once", False):
+            self._batt_read_once = True
+            self._battery_read()
+            self._bt_refresh()
+
+    def _battery_read(self, force=False):
+        import battery
+        self.batt_status.config(text="Reading the laptop's charging setting…")
+
+        def work():
+            d = battery.dell_read()
+            mk = battery.maker() if d.get("error") else ""
+
+            def done():
+                if d.get("mode"):
+                    names = {k: t for k, t, _ in battery.MODES}
+                    self.batt_mode.set(d["mode"])
+                    if d.get("start"):
+                        self.batt_start.set(d["start"])
+                    if d.get("stop"):
+                        self.batt_stop.set(d["stop"])
+                    self._battery_mode_changed()
+                    extra = f" (start {d['start']}%, stop {d['stop']}%)" if d["mode"] == "Custom" and d.get("stop") else ""
+                    self.batt_status.config(text=f"Current setting: {names.get(d['mode'], d['mode'])}{extra}.")
+                elif mk and "dell" not in mk.lower():
+                    self.batt_status.config(text=f"This is a {mk} laptop. These settings are for Dell laptops.")
+                else:
+                    self.batt_status.config(text="Couldn't read the current setting here (that's normal without "
+                                                 "admin rights). You can still choose one and press Apply.")
+            self.events.put(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _battery_apply(self):
+        import battery
+        if not self._battery_check():
+            return
+        mode = self.batt_mode.get()
+        a, b = int(self.batt_start.get()), int(self.batt_stop.get())
+        self.batt_status.config(text="Applying… (say Yes to Windows' prompt)")
+        self.batt_apply.state(["disabled"])
+
+        def work():
+            err = battery.dell_set(mode, a, b)
+
+            def done():
+                self.batt_apply.state(["!disabled"])
+                if err:
+                    self.batt_status.config(text="Not changed: " + err)
+                else:
+                    self.settings.set("batt_mode", mode)
+                    self.settings.set("batt_start", a)
+                    self.settings.set("batt_stop", b)
+                    names = {k: t for k, t, _ in battery.MODES}
+                    self.batt_status.config(text=f"Done — charging is now set to {names[mode]}" +
+                                                 (f" (start {a}%, stop {b}%)." if mode == "Custom" else "."))
+                    self.log(f"Battery charging set to {names[mode]}" + (f" ({a}–{b}%)" if mode == "Custom" else ""))
+            self.events.put(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _bt_refresh(self):
+        import battery
+        self.bt_list.config(text="Checking…")
+
+        def work():
+            try:
+                items = battery.bt_levels()
+            except Exception:
+                items = []
+            self.events.put(lambda: self.bt_list.config(
+                text="\n".join(f"{n}:  {b}%" for n, b in items) if items else
+                "No connected Bluetooth device is reporting its battery right now."))
+        threading.Thread(target=work, daemon=True).start()
+
     def _build_about(self, f):
         self._h(f, "App updates")
         self.update_lbl = self._p(f, f"Version: build {BUILD}")
@@ -550,7 +726,8 @@ class App:
         self._h(f, "Taskbar")
         self.taskbar_vars = {}
         for key, text in (("taskbar_speed", "Show internet speed on the taskbar (↑ upload, ↓ download)"),
-                          ("taskbar_desktop", "Show the name of the desktop you're on (Win+Tab desktops) on the taskbar")):
+                          ("taskbar_desktop", "Show the name of the desktop you're on (Win+Tab desktops) on the taskbar"),
+                          ("taskbar_bt", "Show the battery of connected Bluetooth devices (earbuds, mouse…) on the taskbar")):
             v = tk.BooleanVar(value=bool(self.settings.get(key)))
             self.taskbar_vars[key] = v
             ttk.Checkbutton(f, text=text, variable=v,
@@ -1397,6 +1574,12 @@ def selftest():
         app.sidebar.rebuild,
         lambda: app.sidebar.select("backup"),
         lambda: app.open_files(app.settings.get("root_page")),
+        # Battery page: Dell modes UI and the Bluetooth/battery checks run without errors.
+        lambda: app.nb.select(9),
+        lambda: (app.batt_mode.set("Custom"), app._battery_mode_changed(), app.batt_start.set(80), app.batt_stop.set(82),
+                 print("BATTERY warn:", not app._battery_check()), app.batt_stop.set(90), print("BATTERY ok:", app._battery_check())),
+        lambda: print("BATTERY read:", ascii(__import__("battery").dell_read()), "bt:", ascii(__import__("battery").bt_levels()),
+                      "laptop:", __import__("battery").laptop_battery()) if clip_sync.WINDOWS else None,
         # Taskbar read-out: desktop name and speed can be read, and the window appears.
         lambda: (app.taskbar._update(), print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
                                               "speed:", ascii(app.taskbar.up.cget("text")) if app.taskbar.win else "-",
