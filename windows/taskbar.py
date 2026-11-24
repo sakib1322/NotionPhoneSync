@@ -129,6 +129,14 @@ def desktop_state():
     return names, idx
 
 
+def sys_build():
+    try:
+        import sys
+        return sys.getwindowsversion().build
+    except Exception:
+        return 0
+
+
 def switch_desktop(step):
     """Goes to the next (step=1) or previous (step=-1) virtual desktop, like Ctrl+Win+→ / ←."""
     if os.name != "nt":
@@ -500,7 +508,14 @@ class TaskbarMeter:
                 self._log(f"couldn't create the window (error {kernel32.GetLastError()})")
                 return
             user32.SetTimer(self.hwnd, 1, 1000, None)     # speed etc.: every second
-            user32.SetTimer(self.hwnd, 2, 400, None)      # stay above the taskbar
+            user32.SetTimer(self.hwnd, 2, 100, None)      # stay above the taskbar
+            # Also react the instant something else comes to the front (e.g. the tray's ^ pop-up).
+            WINEVENTPROC = ctypes.WINFUNCTYPE(None, wt.HANDLE, wt.DWORD, wt.HWND, wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)
+            self._hookproc = WINEVENTPROC(lambda *a: self._on_front_change())
+            user32.SetWinEventHook.argtypes = [wt.DWORD, wt.DWORD, wt.HMODULE, WINEVENTPROC, wt.DWORD, wt.DWORD, wt.DWORD]
+            user32.SetWinEventHook.restype = wt.HANDLE
+            self._hooks = [user32.SetWinEventHook(ev, ev, None, self._hookproc, 0, 0, 0)    # out of context
+                           for ev in (0x0003, 0x0006, 0x0007)]   # foreground, menu popup start/end
             self._tick()
             msg = MSG()
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
@@ -714,15 +729,21 @@ class TaskbarMeter:
             return
         self._away_since = None
         # Keep a steady position: the tray area briefly changes size while its ^ pop-up opens/closes.
+        # Windows 11 sometimes leaves the ^ arrow out of the tray area it reports, so remember the
+        # furthest-left edge seen in the last few minutes and stay left of that.
         if note:
-            last = getattr(self, "_note", None)
-            if last is None or abs(note[0] - last[0]) < 2:
-                self._note, self._note_n = note, 0
-            else:
-                self._note_n = getattr(self, "_note_n", 0) + 1
-                if self._note_n >= 3:           # changed for real (icons added/removed)
-                    self._note, self._note_n = note, 0
-            note = self._note
+            hist = getattr(self, "_note_hist", [])
+            hist = [(t, l) for t, l in hist if now - t < 300] + [(now, note[0])]
+            self._note_hist = hist
+            low = min(l for _, l in hist)
+            if getattr(self, "_note_low", None) is None or low < self._note_low:
+                self._note_low = low
+            first = getattr(self, "_note_first", None)
+            if first is None:
+                first = self._note_first = note[0]
+            # Until the ^ arrow has shown up in the reported area once, leave room for it.
+            extra = ui.px(40) if (self._note_low >= first and sys_build() >= 22000) else 0
+            note = (min(low, self._note_low) - extra,) + tuple(note[1:])
         h = bar[3] - bar[1]
         img = self.render(h, light_taskbar())
         w = img.width
@@ -741,13 +762,20 @@ class TaskbarMeter:
         elif not self.menu_open:
             self._raise_if_covered()
 
+    def _on_front_change(self):
+        try:
+            if self.visible and not self.drag and not self.menu_open and not fullscreen_app():
+                self._raise_if_covered()
+        except Exception:
+            pass
+
     def _raise_if_covered(self):
         """Comes back above the taskbar when the taskbar has covered it — but stays below menus and
         pop-ups (its own right-click menu, the tray's ^ menu, Start, notifications…)."""
         GW_HWNDPREV = 3
         tray = user32.FindWindowW("Shell_TrayWnd", None)
         h = self.hwnd
-        for _ in range(60):
+        for _ in range(500):
             h = user32.GetWindow(h, GW_HWNDPREV)
             if not h:
                 return
