@@ -683,7 +683,8 @@ class App:
             return
         mode = self.batt_mode.get()
         a, b = int(self.batt_start.get()), int(self.batt_stop.get())
-        self.batt_status.config(text="Applying… (say Yes to Windows' prompt)")
+        self.batt_status.config(text="Applying… say Yes to Windows' prompt. The first time this can take a few "
+                                     "minutes while Dell's helper tool is installed.")
         self.batt_apply.state(["disabled"])
 
         def work():

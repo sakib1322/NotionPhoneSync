@@ -38,14 +38,24 @@ def _ps(script, timeout=60):
 # ---- Bluetooth devices ----------------------------------------------------------------------------
 
 BT_SCRIPT = r"""
-$k = '{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2'
+$k = '{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2'      # battery level
+$c = '{83DA6326-97A6-4088-9453-A1923F573B29} 15'     # connected right now?
+$devs = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+  Where-Object { $_.InstanceId -match '^(BTHENUM|BTHLE|BTHLEDEVICE|BTHHFENUM)\\' })
 $out = @()
-Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
-  Where-Object { $_.InstanceId -match '^(BTHENUM|BTHLE|BTHLEDEVICE)\\' -and $_.Status -eq 'OK' } |
-  ForEach-Object {
-    $p = Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName $k -ErrorAction SilentlyContinue
-    if ($p -and $p.Data -ne $null) { $out += [pscustomobject]@{ n = $_.FriendlyName; b = [int]$p.Data } }
+if ($devs.Count) {
+  $props = @(Get-PnpDeviceProperty -InstanceId ($devs.InstanceId) -KeyName $k, $c -ErrorAction SilentlyContinue)
+  $byId = @{}
+  foreach ($p in $props) { if (-not $byId[$p.InstanceId]) { $byId[$p.InstanceId] = @{} }; $byId[$p.InstanceId][$p.KeyName] = $p.Data }
+  foreach ($d in $devs) {
+    $v = $byId[$d.InstanceId]
+    if ($v -and $v[$k] -ne $null) {
+      $con = $v[$c]
+      if ($con -eq $false) { continue }
+      $out += [pscustomobject]@{ n = $d.FriendlyName; b = [int]$v[$k] }
+    }
   }
+}
 ConvertTo-Json -Compress -InputObject @($out)
 """
 
@@ -160,7 +170,17 @@ try {
   S 'PrimaryBattChargeCfg' $mode
   Done 0 'ok'
 } catch { $wmiError = $_.Exception.Message }
-foreach ($c in @('C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe', 'C:\Program Files\Dell\Command Configure\X86_64\cctk.exe')) {
+$cctkPaths = @('C:\Program Files (x86)\Dell\Command Configure\X86_64\cctk.exe', 'C:\Program Files\Dell\Command Configure\X86_64\cctk.exe')
+if (-not ($cctkPaths | Where-Object { Test-Path $_ })) {
+  # Plan B: install Dell's own free tool (Dell Command | Configure) quietly with Windows' app installer.
+  $wg = Get-Command winget -ErrorAction SilentlyContinue
+  if (-not $wg) { $wg = Get-ChildItem "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue | Select-Object -Last 1 }
+  if ($wg) {
+    $exe = if ($wg.Source) { $wg.Source } else { $wg.FullName }
+    & $exe install --id Dell.CommandConfigure -e --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+  }
+}
+foreach ($c in $cctkPaths) {
   if (Test-Path $c) {
     $arg = if ($mode -eq 'Custom') { "--PrimaryBattChargeCfg=Custom:$start-$stop" } else { "--PrimaryBattChargeCfg=$mode" }
     $o = & $c $arg 2>&1 | Out-String
@@ -212,7 +232,7 @@ def dell_set(mode, start=None, stop=None):
         return "Start must be 50–95%, stop 55–100%, and stop at least 5% above start."
     script = SET_SCRIPT.replace("{mode}", mode).replace("{start}", str(start)).replace("{stop}", str(stop))
     try:
-        code, text = _elevated(script)
+        code, text = _elevated(script, timeout=900)
     except Exception as e:
         return f"It didn't run ({e})."
     dell_set.last = (code, text)
@@ -221,8 +241,9 @@ def dell_set(mode, start=None, stop=None):
     if code == 0:
         return None
     if code == 10:
-        return ("This laptop's BIOS doesn't let apps change the charging mode directly. Install Dell's free "
-                "“Dell Command | Configure” (from dell.com/support) and press Apply again — the app uses it automatically.")
+        return ("This laptop's BIOS doesn't let apps change it directly, and Dell's free helper "
+                "“Dell Command | Configure” couldn't be installed automatically (no internet?). Install it from "
+                "dell.com/support (search “Dell Command Configure”) and press Apply again — the app uses it by itself.")
     if code == 11:
         if ":2:" in text or ":6:" in text:
             return "The BIOS has an admin (setup) password, so it refused the change."

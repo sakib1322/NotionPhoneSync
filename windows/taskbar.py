@@ -99,6 +99,21 @@ def desktop_name():
     return f"Desktop {ids.index(cur) + 1}" if cur in ids else "Desktop 1"
 
 
+def switch_desktop(step):
+    """Goes to the next (step=1) or previous (step=-1) virtual desktop, like Ctrl+Win+→ / ←."""
+    if os.name != "nt":
+        return
+    u = ctypes.windll.user32
+    VK_CONTROL, VK_LWIN, KEYUP, EXT = 0x11, 0x5B, 0x2, 0x1
+    arrow = 0x27 if step > 0 else 0x25
+    u.keybd_event(VK_CONTROL, 0, 0, 0)
+    u.keybd_event(VK_LWIN, 0, EXT, 0)
+    u.keybd_event(arrow, 0, EXT, 0)
+    u.keybd_event(arrow, 0, EXT | KEYUP, 0)
+    u.keybd_event(VK_LWIN, 0, EXT | KEYUP, 0)
+    u.keybd_event(VK_CONTROL, 0, KEYUP, 0)
+
+
 def light_taskbar():
     if os.name != "nt":
         return False
@@ -136,20 +151,15 @@ def taskbar_rects():
 
 
 def fullscreen_app():
-    """Is a full-screen app (video, game, slideshow) in front? Then the read-out hides."""
-    u = ctypes.windll.user32
-    fg = u.GetForegroundWindow()
-    if not fg:
+    """Is a full-screen app (video, game, slideshow) in front? Then the read-out hides.
+    (Asks Windows itself — looking at window sizes was fooled by the tray's pop-up menus.)"""
+    try:
+        state = ctypes.c_int(0)
+        if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(state)) != 0:
+            return False
+        return state.value in (2, 3, 4)     # busy full-screen app, full-screen game, presentation mode
+    except Exception:
         return False
-    cls = ctypes.create_unicode_buffer(64)
-    u.GetClassNameW(fg, cls, 64)
-    if cls.value in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
-        return False
-    r = _rect(fg)
-    if not r:
-        return False
-    sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-    return r[0] <= 0 and r[1] <= 0 and r[2] >= sw and r[3] >= sh
 
 
 # ---- the read-out window -----------------------------------------------------------------------------
@@ -202,6 +212,7 @@ if os.name == "nt":
     user32.AppendMenuW.argtypes = [wt.HMENU, wt.UINT, ctypes.c_size_t, wt.LPCWSTR]
     user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
     user32.SetTimer.argtypes = [wt.HWND, ctypes.c_size_t, wt.UINT, wt.LPVOID]
+    user32.KillTimer.argtypes = [wt.HWND, ctypes.c_size_t]
     user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
     user32.GetDC.argtypes = [wt.HWND]
     user32.GetDC.restype = wt.HDC
@@ -225,14 +236,43 @@ WS_POPUP = 0x80000000
 WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_NOACTIVATE = 0x80000, 0x80, 0x8, 0x08000000
 
 
+_fonts = {}
+
+
 def _font(size, bold=False):
+    """Windows 11's own font (Segoe UI Variable), semibold for the desktop name; older fonts as a fallback."""
+    key = (size, bold)
+    if key in _fonts:
+        return _fonts[key]
     from PIL import ImageFont
-    for f in (("segoeuib.ttf", "seguisb.ttf") if bold else ("segoeui.ttf",)) + ("arial.ttf", "DejaVuSans.ttf"):
-        try:
-            return ImageFont.truetype(f, size)
-        except Exception:
-            pass
-    return ImageFont.load_default()
+    f = None
+    try:
+        f = ImageFont.truetype("SegUIVar.ttf", size)
+        axes = {a.get("name", b"").decode() if isinstance(a.get("name"), bytes) else str(a.get("name")): a
+                for a in f.get_variation_axes()}
+        vals = []
+        for a in f.get_variation_axes():
+            n = a.get("name")
+            n = n.decode() if isinstance(n, bytes) else str(n)
+            if n.lower().startswith("weight") or n.lower() == "wght":
+                vals.append(600 if bold else 400)
+            elif n.lower().startswith("optical") or n.lower() == "opsz":
+                vals.append(max(a["minimum"], min(a["maximum"], size * 0.75)))
+            else:
+                vals.append(a.get("default", a["minimum"]))
+        f.set_variation_by_axes(vals)
+    except Exception:
+        f = None
+    if f is None:
+        for name in (("seguisb.ttf", "segoeuib.ttf") if bold else ("segoeui.ttf",)) + ("arial.ttf", "DejaVuSans.ttf"):
+            try:
+                f = ImageFont.truetype(name, size)
+                break
+            except Exception:
+                pass
+    f = f or ImageFont.load_default()
+    _fonts[key] = f
+    return f
 
 
 # ---- Bluetooth device icons --------------------------------------------------------------------------
@@ -354,12 +394,22 @@ class TaskbarMeter:
 
     def _bt_loop(self):
         import battery
+        last = None
         while not getattr(self.app, "quitting", False):
             if self.s.get("taskbar_bt"):
                 try:
                     self.bt = battery.bt_levels()
-                except Exception:
+                    note = (", ".join(f"{n} {b}%" for n, b in self.bt) if self.bt else
+                            "no connected device is reporting its battery to Windows")
+                except Exception as e:
                     self.bt = []
+                    note = f"couldn't check ({e})"
+                names = tuple(n for n, _ in self.bt) if self.bt else note
+                if names != last:          # say what's found when it changes (not every minute)
+                    last = names
+                    self._ui(lambda n=note: self.app.log("Bluetooth battery: " + n))
+                if self.hwnd:
+                    user32.PostMessageW(self.hwnd, WM_APP, 0, 0)
             for _ in range(60):
                 if getattr(self.app, "quitting", False):
                     return
@@ -402,6 +452,9 @@ class TaskbarMeter:
                     user32.DestroyWindow(hwnd)
                 elif wp == 1:
                     self._tick()
+                elif wp == 3:
+                    user32.KillTimer(hwnd, 3)
+                    self._tick(read_net=False)
                 elif wp == 2 and self.visible and not self.drag:
                     user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
                 return 0
@@ -422,7 +475,12 @@ class TaskbarMeter:
                 if abs(pt.x - x0) > 3:
                     self.drag = (x0, wx, True)
                     r = _rect(hwnd)
-                    user32.SetWindowPos(hwnd, HWND_TOPMOST, wx + pt.x - x0, r[1] if r else 0, 0, 0,
+                    bar, note = taskbar_rects()
+                    nx = wx + pt.x - x0
+                    if bar and r:
+                        lim = (note[0] - ui.px(4)) if note else bar[2]
+                        nx = max(bar[0], min(nx, lim - (r[2] - r[0])))
+                    user32.SetWindowPos(hwnd, HWND_TOPMOST, nx, r[1] if r else 0, 0, 0,
                                         SWP_NOSIZE | SWP_NOACTIVATE)
                 return 0
             if msg == WM_LBUTTONUP and self.drag:
@@ -436,6 +494,18 @@ class TaskbarMeter:
                         off = bar[2] - r[2]
                         self.s.set("taskbar_offset", off)
                         self._offset = off
+                return 0
+            if msg == 0x020A:     # mouse wheel: over the desktop name, switch desktops
+                span = getattr(self, "_name_span", None)
+                r = _rect(hwnd)
+                sx = ctypes.c_short(lp & 0xFFFF).value
+                if span and r and r[0] + span[0] <= sx <= r[0] + span[1]:
+                    delta = ctypes.c_short((wp >> 16) & 0xFFFF).value
+                    now = time.monotonic()
+                    if now - getattr(self, "_last_switch", 0) > 0.35:
+                        self._last_switch = now
+                        switch_desktop(-1 if delta > 0 else 1)
+                        user32.SetTimer(hwnd, 3, 350, None)     # show the new name straight away
                 return 0
             if msg == WM_LBUTTONDBLCLK:
                 self._ui(self.app.show_window)
@@ -520,7 +590,8 @@ class TaskbarMeter:
         if off == "unset":
             off = self._offset = self.s.get("taskbar_offset")
         x = (bar[2] - int(off) - w) if off is not None else (right - w - ui.px(4))
-        x = max(bar[0], min(x, bar[2] - w))
+        limit = (note[0] - ui.px(4)) if note else bar[2]      # never on top of the tray icons
+        x = max(bar[0], min(x, limit - w))
         self._blit(img, x, bar[1])
         user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
@@ -537,6 +608,7 @@ class TaskbarMeter:
         gap, pad = ui.px(16), ui.px(6)
         isz = max(14, round(20 * ui.S))          # device icon size
         parts = []      # (kind, data, width)
+        self._name_span = None
         if self.s.get("taskbar_desktop") and self.desk_text:
             parts.append(("desk", self.desk_text, int(tmp.textlength(self.desk_text, font=big)) + 1))
         if self.s.get("taskbar_bt") and self.bt:
@@ -555,6 +627,7 @@ class TaskbarMeter:
         x = pad
         for kind, data, pw in parts:
             if kind == "desk":
+                self._name_span = (x - pad, x + pw + gap // 2)
                 asc, desc = big.getmetrics()
                 d.text((x, (h - asc - desc) // 2), data, font=big, fill=fg)
             elif kind == "speed":
