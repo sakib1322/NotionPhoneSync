@@ -131,16 +131,42 @@ def desktop_state():
 
 def hard_sleep(hibernate=False, app=None):
     """Puts the laptop to sleep (or hibernates it) right now, even when apps, browsers or USB
-    dongles are keeping it awake: a direct order to Windows that also ignores wake-up timers."""
+    dongles are keeping it awake."""
     time.sleep(0.6)                      # let the menu close first
+    k32 = ctypes.windll.kernel32
     pp = ctypes.windll.powrprof
     pp.SetSuspendState.argtypes = [ctypes.c_bool, ctypes.c_bool, ctypes.c_bool]
-    ok = pp.SetSuspendState(bool(hibernate), True, True)   # (hibernate, force, no wake-up events)
-    if not ok and app is not None:
-        what = "hibernate" if hibernate else "sleep"
-        msg = (f"Windows refused to {what} (error {ctypes.windll.kernel32.GetLastError()})." +
-               (" Hibernate may be turned off: Battery page → Stop devices from waking the laptop (that also turns hibernate on)." if hibernate else ""))
-        app.events.put(lambda: (app.log(msg), app.notify("Couldn't " + what, msg)))
+
+    def tell(title, msg):
+        if app is not None:
+            app.events.put(lambda: (app.log(msg), app.notify(title, msg)))
+
+    if not hibernate:
+        if pp.SetSuspendState(False, True, True):      # (hibernate, force, ignore wake-up timers)
+            return
+        # Newer laptops ("Modern Standby", like yours) don't take that order (error 50). Press the
+        # keyboard's Sleep key instead: Windows treats it exactly like the Sleep button in Start,
+        # and it isn't blocked by apps that keep the laptop awake.
+        u = ctypes.windll.user32
+        VK_SLEEP = 0x5F
+        u.keybd_event(VK_SLEEP, 0, 0, 0)
+        u.keybd_event(VK_SLEEP, 0, 2, 0)
+        return
+    if pp.SetSuspendState(True, True, True):
+        return
+    err = k32.GetLastError()
+    # Hibernate is switched off on this laptop: switch it on (Windows asks permission), then retry.
+    try:
+        import battery
+        code, _ = battery._elevated("powercfg /hibernate on | Out-Null\nexit $LASTEXITCODE\n", timeout=60)
+    except Exception:
+        code = -1
+    if code == 0 and pp.SetSuspendState(True, True, True):
+        return
+    if code is None:
+        tell("Couldn't hibernate", "Hibernate is turned off on this laptop. Say Yes to Windows' prompt to turn it on.")
+    else:
+        tell("Couldn't hibernate", f"Windows refused to hibernate (error {err}).")
 
 
 def sys_build():

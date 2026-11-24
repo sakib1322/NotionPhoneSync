@@ -667,11 +667,25 @@ class App:
             threading.Thread(target=work, daemon=True).start()
         ttk.Button(srow, text="Stop devices from waking the laptop", command=stop_wake).pack(side="left")
 
+        def stop_blockers():
+            self.sleep_status.config(text="Working… say Yes to Windows' prompt.")
+
+            def work():
+                done, err = battery.stop_awake_blockers()
+                self.events.put(lambda: self.sleep_status.config(
+                    text=("Not changed: " + err) if err else
+                    ("Done. Windows now ignores these when deciding to sleep: " + ", ".join(done) if done else
+                     "Nothing is keeping the laptop awake right now.")))
+            threading.Thread(target=work, daemon=True).start()
+        ttk.Button(srow, text="Stop apps keeping it awake", command=stop_blockers).pack(side="left", padx=(8, 0))
+
         def go(hib):
             import taskbar
             threading.Thread(target=taskbar.hard_sleep, args=(hib, self), daemon=True).start()
-        ttk.Button(srow, text="Sleep now (force)", command=lambda: go(False)).pack(side="left", padx=8)
-        ttk.Button(srow, text="Hibernate now", command=lambda: go(True)).pack(side="left")
+        srow2 = ttk.Frame(f)
+        srow2.pack(anchor="w", pady=4)
+        ttk.Button(srow2, text="Sleep now (force)", command=lambda: go(False)).pack(side="left")
+        ttk.Button(srow2, text="Hibernate now", command=lambda: go(True)).pack(side="left", padx=8)
         self.sleep_status = self._p(f, "", foreground="#666")
 
         self._h(f, "Bluetooth devices")

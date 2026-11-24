@@ -348,3 +348,39 @@ def awake_reasons():
         return _ps("powercfg /requests", timeout=20)
     except Exception:
         return ""
+
+
+BLOCKERS_SCRIPT = r"""
+$out = Join-Path $env:ProgramData 'NotionLaptopSync\battery-result.txt'
+New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
+$done = @()
+foreach ($line in (powercfg /requests)) {
+  $l = "$line".Trim()
+  if ($l -match '^\[PROCESS\]\s+(.+)$') {
+    $name = Split-Path $matches[1] -Leaf
+    powercfg /requestsoverride PROCESS "$name" DISPLAY SYSTEM AWAYMODE EXECUTION | Out-Null; $done += $name
+  } elseif ($l -match '^\[SERVICE\]\s+.*\((.+)\)\s*$') {
+    $name = $matches[1]
+    powercfg /requestsoverride SERVICE "$name" DISPLAY SYSTEM AWAYMODE EXECUTION | Out-Null; $done += "service $name"
+  } elseif ($l -match '^\[DRIVER\]\s+(.+)$') {
+    $name = $matches[1]
+    powercfg /requestsoverride DRIVER "$name" DISPLAY SYSTEM AWAYMODE EXECUTION | Out-Null; $done += $name
+  }
+}
+(($done | Select-Object -Unique) -join "`n") | Out-File -Encoding utf8 -Force $out
+exit 0
+"""
+
+
+def stop_awake_blockers():
+    """Tells Windows to ignore the apps/drivers that are keeping the laptop awake right now (browsers,
+    Claude, audio dongles…), so it sleeps on its own again. Asks permission. Returns (names, error)."""
+    try:
+        code, text = _elevated(BLOCKERS_SCRIPT, timeout=120)
+    except Exception as e:
+        return [], str(e)
+    if code is None:
+        return [], "You said No to Windows' permission prompt."
+    if code != 0:
+        return [], text or f"code {code}"
+    return [l.strip() for l in (text or "").splitlines() if l.strip()], None
