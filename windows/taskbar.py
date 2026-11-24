@@ -153,21 +153,10 @@ def hard_sleep(hibernate=False, app=None):
         WM_SYSCOMMAND, SC_MONITORPOWER, HWND_BROADCAST = 0x0112, 0xF170, 0xFFFF
         u.SendMessageTimeoutW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2, 0x0002, 2000, None)  # SMTO_ABORTIFHUNG
         return
-    if pp.SetSuspendState(True, True, True):
-        return
-    err = k32.GetLastError()
-    # Hibernate is switched off on this laptop: switch it on (Windows asks permission), then retry.
-    try:
-        import battery
-        code, _ = battery._elevated("powercfg /hibernate on | Out-Null\nexit $LASTEXITCODE\n", timeout=60)
-    except Exception:
-        code = -1
-    if code == 0 and pp.SetSuspendState(True, True, True):
-        return
-    if code is None:
-        tell("Couldn't hibernate", "Hibernate is turned off on this laptop. Say Yes to Windows' prompt to turn it on.")
-    else:
-        tell("Couldn't hibernate", f"Windows refused to hibernate (error {err}).")
+    import battery
+    err = battery.hibernate_now()
+    if err:
+        tell("Couldn't hibernate", err)
 
 
 def sys_build():

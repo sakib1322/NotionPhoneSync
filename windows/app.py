@@ -663,7 +663,7 @@ class App:
                 self.events.put(lambda: self.sleep_status.config(
                     text=("Not changed: " + err) if err else
                     ("Done. These can't wake the laptop any more: " + ", ".join(done) if done else
-                     "Done. No device was set to wake the laptop.") + " Hibernate is turned on."))
+                     "Done. No device was set to wake the laptop.")))
             threading.Thread(target=work, daemon=True).start()
         ttk.Button(srow, text="Stop devices from waking the laptop", command=stop_wake).pack(side="left")
 
@@ -687,6 +687,17 @@ class App:
         ttk.Button(srow2, text="Sleep now (force)", command=lambda: go(False)).pack(side="left")
         ttk.Button(srow2, text="Hibernate now", command=lambda: go(True)).pack(side="left", padx=8)
         self.sleep_status = self._p(f, "", foreground="#666")
+        self._p(f, "Hibernate here doesn't keep Windows' big hibernate file (about 40% of your RAM) on drive C: "
+                   "it's made just before hibernating and deleted as soon as the laptop wakes. Windows asks "
+                   "permission the first time only.", foreground="#666")
+
+        def free_hib():
+            def work():
+                err = battery.hibernate_file_off()
+                self.events.put(lambda: self.sleep_status.config(
+                    text=("Not changed: " + err) if err else "Done — the hibernate file is deleted and its space is free."))
+            threading.Thread(target=work, daemon=True).start()
+        ttk.Button(f, text="Delete the hibernate file now (free its space)", command=free_hib).pack(anchor="w", pady=2)
 
         self._h(f, "Bluetooth devices")
         self.bt_list = self._p(f, "Checking…")

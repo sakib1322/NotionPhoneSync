@@ -322,7 +322,6 @@ foreach ($d in (powercfg /devicequery wake_armed)) {
   $d = "$d".Trim()
   if ($d -and $d -ne 'NONE') { powercfg /devicedisablewake "$d" | Out-Null; $done += $d }
 }
-powercfg /hibernate on | Out-Null
 ($done -join "`n") | Out-File -Encoding utf8 -Force $out
 exit 0
 """
@@ -330,7 +329,7 @@ exit 0
 
 def stop_wake_devices():
     """Stops mice, keyboards, USB dongles and network cards from waking the laptop up (and turns
-    hibernate on). Asks Windows for permission. Returns (list of devices changed, error or None)."""
+    nothing else). Asks Windows for permission. Returns (list of devices changed, error or None)."""
     try:
         code, text = _elevated(WAKE_SCRIPT, timeout=120)
     except Exception as e:
@@ -384,3 +383,80 @@ def stop_awake_blockers():
     if code != 0:
         return [], text or f"code {code}"
     return [l.strip() for l in (text or "").splitlines() if l.strip()], None
+
+
+# ---- hibernate without keeping the big hibernate file ---------------------------------------------------
+# Windows' hibernate file (hiberfil.sys) takes about 40% of your RAM on drive C: all the time. Here it only
+# exists while the laptop is hibernating: it's switched on just before, and off again (file deleted) as soon
+# as the laptop wakes. Two small scheduled tasks do the admin-only parts, so Windows asks permission once.
+
+HIB_TASK, HIB_CLEAN = "NotionSync Hibernate", "NotionSync Hibernate Cleanup"
+
+HIB_SETUP = r"""
+$ErrorActionPreference = 'Stop'
+try {
+  $u = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest
+  $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+  $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -Command "powercfg /hibernate on; Start-Sleep -Seconds 2; shutdown.exe /h"'
+  Register-ScheduledTask -TaskName 'NotionSync Hibernate' -Action $a1 -Principal $p -Settings $s -Force | Out-Null
+  $cls = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+  $t = New-CimInstance -CimClass $cls -ClientOnly
+  $t.Enabled = $true
+  $t.Subscription = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name=''Microsoft-Windows-Power-Troubleshooter''] and EventID=1]]</Select></Query></QueryList>'
+  $t2 = New-ScheduledTaskTrigger -AtLogOn
+  $a2 = New-ScheduledTaskAction -Execute 'powercfg.exe' -Argument '/hibernate off'
+  Register-ScheduledTask -TaskName 'NotionSync Hibernate Cleanup' -Action $a2 -Trigger @($t, $t2) -Principal $p -Settings $s -Force | Out-Null
+  powercfg /hibernate off
+  exit 0
+} catch {
+  $out = Join-Path $env:ProgramData 'NotionLaptopSync\battery-result.txt'
+  New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
+  $_.Exception.Message | Out-File -Encoding utf8 -Force $out
+  exit 12
+}
+"""
+
+
+def _task_exists(name):
+    r = subprocess.run(["schtasks", "/query", "/tn", name], capture_output=True, text=True, creationflags=NO_WINDOW)
+    return r.returncode == 0
+
+
+def hib_space_needed():
+    """(bytes needed for the hibernate file, bytes free on C:)"""
+    import shutil
+    try:
+        import psutil
+        ram = psutil.virtual_memory().total
+    except Exception:
+        ram = 8 * 1024 ** 3
+    free = shutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\").free
+    return int(ram * 0.42), free
+
+
+def hibernate_now():
+    """Hibernates now, creating the hibernate file just for this time. Returns None or an error message."""
+    need, free = hib_space_needed()
+    hiber = os.path.join(os.environ.get("SystemDrive", "C:") + "\\", "hiberfil.sys")
+    have_file = os.path.exists(hiber)
+    if not have_file and free < need + 512 * 1024 ** 2:
+        gb = lambda b: f"{b / 1024 ** 3:.1f} GB"
+        return (f"Hibernating needs about {gb(need)} free on drive C: for a moment (it's deleted again when the "
+                f"laptop wakes), but only {gb(free)} is free.")
+    if not (_task_exists(HIB_TASK) and _task_exists(HIB_CLEAN)):
+        code, text = _elevated(HIB_SETUP, timeout=120)
+        if code is None:
+            return "You said No to Windows' permission prompt (it's only asked once)."
+        if code != 0:
+            return f"Couldn't set it up: {text or code}"
+    r = subprocess.run(["schtasks", "/run", "/tn", HIB_TASK], capture_output=True, text=True, creationflags=NO_WINDOW)
+    if r.returncode != 0:
+        return f"Couldn't start hibernating: {(r.stderr or r.stdout).strip()}"
+    return None
+
+
+def hibernate_file_off():
+    """Deletes a hibernate file left from before (frees its space). Asks permission."""
+    code, text = _elevated("powercfg /hibernate off\nexit $LASTEXITCODE\n", timeout=60)
+    return None if code == 0 else ("You said No to Windows' prompt." if code is None else f"Couldn't: {text or code}")
