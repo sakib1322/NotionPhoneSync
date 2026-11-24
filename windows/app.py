@@ -587,6 +587,20 @@ class App:
             ttk.Label(row, text="%").pack(side="left")
         self.batt_warn = tk.Label(self.batt_custom, text="", bg="#f2a900", fg="#1a1a1a", font=(ui.FONT, 9, "bold"),
                                   anchor="w", padx=10, pady=6)
+        # BIOS setup password (only for laptops that have one).
+        self.pw_box = ttk.Frame(f)
+        ttk.Label(self.pw_box, text="BIOS setup password:").pack(side="left")
+        self.bios_pw = tk.StringVar(value=battery.unprotect(self.settings.get("bios_pwd")) if self.settings.get("bios_pwd") else "")
+        self.pw_entry = ttk.Entry(self.pw_box, textvariable=self.bios_pw, show="•", width=22)
+        self.pw_entry.pack(side="left", padx=8)
+        self.pw_remember = tk.BooleanVar(value=bool(self.settings.get("bios_pwd")))
+        ttk.Checkbutton(self.pw_box, text="Remember it on this laptop (encrypted by Windows)",
+                        variable=self.pw_remember).pack(side="left", padx=8)
+        self.pw_note = ttk.Label(f, text="Your laptop has a BIOS setup password, so Dell asks for it before changing "
+                                         "charging. Type it above and press Apply. (It's only sent to Dell's tool on this "
+                                         "laptop.)", foreground="#666", wraplength=ui.px(640), justify="left")
+        if self.settings.get("bios_pwd") or self.settings.get("bios_pwd_needed"):
+            self.pw_box.pack(anchor="w", pady=(10, 0))
         btns = ttk.Frame(f)
         btns.pack(anchor="w", pady=(10, 4))
         self.batt_apply = ttk.Button(btns, text="Apply", style="Accent.TButton", command=self._battery_apply)
@@ -687,15 +701,30 @@ class App:
                                      "minutes while Dell's helper tool is installed.")
         self.batt_apply.state(["disabled"])
 
+        pw = self.bios_pw.get() if self.pw_box.winfo_ismapped() else ""
+
         def work():
-            err = battery.dell_set(mode, a, b)
+            err = battery.dell_set(mode, a, b, password=pw or None)
 
             def done():
                 self.batt_apply.state(["!disabled"])
+                if err == "PASSWORD":
+                    self.settings.set("bios_pwd_needed", True)
+                    if not self.pw_box.winfo_ismapped():
+                        self.pw_box.pack(anchor="w", pady=(10, 0), before=self.batt_apply.master)
+                    self.pw_note.pack(anchor="w", pady=(4, 0), before=self.batt_apply.master)
+                    self.pw_entry.focus_set()
+                    self.batt_status.config(text="Not changed yet: this laptop needs its BIOS setup password (see above).")
+                    return
                 if err:
                     self.batt_status.config(text="Not changed: " + err)
                     self.log(f"Battery charging not changed: {err} [{getattr(battery.dell_set, 'last', '')}]")
                 else:
+                    self.pw_note.pack_forget()
+                    try:
+                        self.settings.set("bios_pwd", battery.protect(pw) if (pw and self.pw_remember.get()) else None)
+                    except Exception:
+                        pass
                     self.settings.set("batt_mode", mode)
                     self.settings.set("batt_start", a)
                     self.settings.set("batt_stop", b)

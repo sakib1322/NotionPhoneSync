@@ -155,12 +155,15 @@ $msgFile = Join-Path $env:ProgramData 'NotionLaptopSync\battery-result.txt'
 New-Item -ItemType Directory -Force -Path (Split-Path $msgFile) | Out-Null
 function Done($code, $text) { try { $text | Out-File -Encoding utf8 -Force $msgFile } catch {}; exit $code }
 $mode = '{mode}'; $start = {start}; $stop = {stop}
+$pw = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{pwb64}'))
+$pwBytes = [Text.Encoding]::UTF8.GetBytes($pw)
 $wmiError = ''
 try {
   $bai = Get-WmiObject -Namespace root\dcim\sysman\biosattributes -Class BIOSAttributeInterface -ErrorAction Stop
   if (-not $bai) { throw 'no BIOS interface' }
   function S($n, $v) {
-    $r = $bai.SetAttribute(0, 0, 0, $n, "$v")
+    if ($pw) { $r = $bai.SetAttribute(1, $pwBytes.Length, $pwBytes, $n, "$v") }
+    else { $r = $bai.SetAttribute(0, 0, 0, $n, "$v") }
     if ($r.Status -ne 0) { throw "status:$($r.Status):$n" }
   }
   if ($mode -eq 'Custom') {
@@ -183,7 +186,11 @@ if (-not ($cctkPaths | Where-Object { Test-Path $_ })) {
 foreach ($c in $cctkPaths) {
   if (Test-Path $c) {
     $arg = if ($mode -eq 'Custom') { "--PrimaryBattChargeCfg=Custom:$start-$stop" } else { "--PrimaryBattChargeCfg=$mode" }
-    $o = & $c $arg 2>&1 | Out-String
+    $args2 = @($arg)
+    if ($pw) { $args2 += "--ValSetupPwd=$pw" }
+    $o = & $c @args2 2>&1 | Out-String
+    if ($o -match 'Setup Password is required') { Done 20 'password needed' }
+    if ($pw -and $o -match '(?i)password.*(incorrect|invalid|wrong)|(incorrect|invalid).*password') { Done 21 'wrong password' }
     if ($LASTEXITCODE -eq 0) { Done 0 'ok' }
     Done 13 ("Dell Command Configure said: " + $o.Trim())
   }
@@ -222,7 +229,7 @@ def _elevated(script, timeout=180):
     return code, text
 
 
-def dell_set(mode, start=None, stop=None):
+def dell_set(mode, start=None, stop=None, password=None):
     """Changes the charging mode in the BIOS. Windows asks for permission (it's a system setting).
     Returns None when done, or a message saying what went wrong."""
     if mode not in [m[0] for m in MODES]:
@@ -230,7 +237,10 @@ def dell_set(mode, start=None, stop=None):
     start, stop = int(start or 50), int(stop or 100)
     if mode == "Custom" and not (50 <= start <= 95 and 55 <= stop <= 100 and stop - start >= 5):
         return "Start must be 50–95%, stop 55–100%, and stop at least 5% above start."
-    script = SET_SCRIPT.replace("{mode}", mode).replace("{start}", str(start)).replace("{stop}", str(stop))
+    import base64
+    pwb64 = base64.b64encode((password or "").encode("utf-8")).decode()
+    script = (SET_SCRIPT.replace("{mode}", mode).replace("{start}", str(start)).replace("{stop}", str(stop))
+              .replace("{pwb64}", pwb64))
     try:
         code, text = _elevated(script, timeout=900)
     except Exception as e:
@@ -244,8 +254,54 @@ def dell_set(mode, start=None, stop=None):
         return ("This laptop's BIOS doesn't let apps change it directly, and Dell's free helper "
                 "“Dell Command | Configure” couldn't be installed automatically (no internet?). Install it from "
                 "dell.com/support (search “Dell Command Configure”) and press Apply again — the app uses it by itself.")
+    if code == 20:
+        return "PASSWORD"
+    if code == 21:
+        return "That BIOS setup password isn't right. Check it and press Apply again."
     if code == 11:
         if ":2:" in text or ":6:" in text:
-            return "The BIOS has an admin (setup) password, so it refused the change."
+            return "PASSWORD" if not password else "That BIOS setup password isn't right. Check it and press Apply again."
         return f"The BIOS refused the change ({text})."
     return f"It didn't work: {text or 'no details'} (code {code})."
+
+
+# ---- remembering the BIOS password (encrypted by Windows for this user only) -----------------------------
+
+def protect(text):
+    """Encrypts with Windows (DPAPI): only this Windows user on this laptop can read it back."""
+    import base64
+    import ctypes
+    from ctypes import wintypes as wt
+
+    class BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+    data = text.encode("utf-8")
+    src = BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+    out = BLOB()
+    if not ctypes.windll.crypt32.CryptProtectData(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
+        raise OSError("couldn't encrypt")
+    try:
+        return base64.b64encode(ctypes.string_at(out.pbData, out.cbData)).decode()
+    finally:
+        ctypes.windll.kernel32.LocalFree(out.pbData)
+
+
+def unprotect(b64):
+    import base64
+    import ctypes
+    from ctypes import wintypes as wt
+
+    class BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+    try:
+        data = base64.b64decode(b64)
+        src = BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+        out = BLOB()
+        if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
+            return ""
+        try:
+            return ctypes.string_at(out.pbData, out.cbData).decode("utf-8")
+        finally:
+            ctypes.windll.kernel32.LocalFree(out.pbData)
+    except Exception:
+        return ""
