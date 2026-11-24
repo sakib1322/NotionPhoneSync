@@ -610,6 +610,36 @@ class App:
         self.batt_status = self._p(f, "", foreground="#666")
         self._battery_mode_changed()
 
+        self._h(f, "Charge reminders (works on any laptop, no BIOS needed)")
+        self._p(f, "The app can't stop the charger itself, but it can tell you when to unplug and when to plug "
+                   "back in — keeping the battery between two levels makes it last for years.", foreground="#666")
+        self.rem_on = tk.BooleanVar(value=bool(self.settings.get("remind_on")))
+        ttk.Checkbutton(f, text="Remind me to unplug and plug in", variable=self.rem_on,
+                        command=lambda: self.settings.set("remind_on", self.rem_on.get())).pack(anchor="w", pady=(4, 2))
+        rr = ttk.Frame(f)
+        rr.pack(anchor="w", pady=2)
+        self.rem_stop = tk.IntVar(value=self.settings.get("remind_stop") or 80)
+        self.rem_start = tk.IntVar(value=self.settings.get("remind_start") or 40)
+
+        def save_rem(*_):
+            try:
+                a, b = int(self.rem_start.get()), int(self.rem_stop.get())
+            except (tk.TclError, ValueError):
+                return
+            if 5 <= a < b <= 100:
+                self.settings.set("remind_start", a)
+                self.settings.set("remind_stop", b)
+        ttk.Label(rr, text="Unplug at").pack(side="left")
+        ttk.Spinbox(rr, from_=50, to=100, increment=5, width=5, textvariable=self.rem_stop, command=save_rem).pack(side="left", padx=6)
+        ttk.Label(rr, text="%      Plug in at").pack(side="left")
+        ttk.Spinbox(rr, from_=5, to=95, increment=5, width=5, textvariable=self.rem_start, command=save_rem).pack(side="left", padx=6)
+        ttk.Label(rr, text="%").pack(side="left")
+        self.rem_stop.trace_add("write", save_rem)
+        self.rem_start.trace_add("write", save_rem)
+        ttk.Button(f, text="Show a test reminder", command=lambda: self._charge_popup(
+            "Battery 80% — unplug the charger", "Example of the reminder you'll see.")).pack(anchor="w", pady=4)
+        self.root.after(20000, self._remind_loop)
+
         self._h(f, "Bluetooth devices")
         self.bt_list = self._p(f, "Checking…")
         row = ttk.Frame(f)
@@ -617,6 +647,61 @@ class App:
         ttk.Button(row, text="Check again", command=self._bt_refresh).pack(side="left")
         self._p(f, "Shows earbuds, headphones, mice and keyboards that tell Windows their battery level. "
                    "To show them on the taskbar, turn it on in Settings & updates → Taskbar.", foreground="#666")
+
+    def _remind_loop(self):
+        """Every 30 s: is it time to unplug / plug in? Reminds once, then every 10 minutes while it's still so."""
+        try:
+            if self.settings.get("remind_on"):
+                import battery
+                b = battery.laptop_battery()
+                if b:
+                    pct, plugged = b
+                    stop, start = int(self.settings.get("remind_stop") or 80), int(self.settings.get("remind_start") or 40)
+                    want = ("unplug" if plugged and pct >= stop else "plug" if not plugged and pct <= start else None)
+                    now = time.time()
+                    st = getattr(self, "_remind_state", (None, 0))
+                    if want is None:
+                        self._remind_state = (None, 0)
+                    elif want != st[0] or now - st[1] > 600:
+                        self._remind_state = (want, now)
+                        if want == "unplug":
+                            self._charge_popup(f"Battery {pct}% — unplug the charger",
+                                               f"You asked to stop charging at {stop}%.")
+                        else:
+                            self._charge_popup(f"Battery {pct}% — plug in the charger",
+                                               f"You asked to start charging at {start}%.")
+        except Exception as e:
+            self.log(f"Charge reminder: {e}")
+        self.root.after(30000, self._remind_loop)
+
+    def _charge_popup(self, title, text):
+        """A clear pop-up near the clock (plus a Windows notification and a sound)."""
+        self.notify(title, text)
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+        old = getattr(self, "_popup", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg="#c4c7c5")
+        card = tk.Frame(w, bg="white", padx=ui.px(18), pady=ui.px(14))
+        card.pack(padx=1, pady=1)
+        tk.Label(card, text="🔋  " + title, bg="white", fg="#1f1f1f", font=(ui.FONT, 12, "bold")).pack(anchor="w")
+        tk.Label(card, text=text, bg="white", fg="#5f6368", font=(ui.FONT, 10)).pack(anchor="w", pady=(4, 10))
+        ttk.Button(card, text="OK", command=w.destroy).pack(anchor="e")
+        w.update_idletasks()
+        sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
+        w.geometry(f"+{sw - w.winfo_reqwidth() - ui.px(16)}+{sh - w.winfo_reqheight() - ui.px(64)}")
+        self._popup = w
+        w.after(60000, lambda: w.winfo_exists() and w.destroy())
 
     def _battery_mode_changed(self):
         import battery
@@ -1613,6 +1698,8 @@ def selftest():
                  print("BATTERY warn:", not app._battery_check()), app.batt_stop.set(90), print("BATTERY ok:", app._battery_check())),
         lambda: print("BATTERY read:", ascii(__import__("battery").dell_read()), "bt:", ascii(__import__("battery").bt_levels()),
                       "laptop:", __import__("battery").laptop_battery()) if clip_sync.WINDOWS else None,
+        lambda: app._charge_popup("Battery 80% — unplug the charger", "Self-test"),
+        lambda: (app._popup.destroy(), print("REMINDER OK")),
         # Taskbar read-out: desktop name and speed can be read, and the window appears.
         lambda: (print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
                        "window:", bool(app.taskbar.hwnd), "shown:", app.taskbar.visible, "size:", app.taskbar.size,
