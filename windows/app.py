@@ -607,6 +607,14 @@ class App:
         self.batt_apply.pack(side="left")
         ttk.Button(btns, text="Read the current setting", command=lambda: self._battery_read(force=True)).pack(
             side="left", padx=8)
+
+        def open_dell():
+            def work():
+                ok = battery.open_dell_app()
+                self.events.put(lambda: None if ok else self.batt_status.config(
+                    text="Dell Power Manager isn't installed on this laptop."))
+            threading.Thread(target=work, daemon=True).start()
+        ttk.Button(btns, text="Open Dell Power Manager", command=open_dell).pack(side="left")
         self.batt_status = self._p(f, "", foreground="#666")
         self._battery_mode_changed()
 

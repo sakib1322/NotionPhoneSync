@@ -305,3 +305,10 @@ def unprotect(b64):
             ctypes.windll.kernel32.LocalFree(out.pbData)
     except Exception:
         return ""
+
+
+def open_dell_app():
+    """Opens Dell Power Manager (or Dell Optimizer) if it's installed. Returns True if it was found."""
+    out = _ps("$a = Get-StartApps | Where-Object { $_.Name -match 'Power Manager|Dell Optimizer' } | Select-Object -First 1; "
+              "if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID); 'ok' }", timeout=30)
+    return "ok" in out
