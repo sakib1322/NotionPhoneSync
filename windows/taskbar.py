@@ -144,13 +144,14 @@ def hard_sleep(hibernate=False, app=None):
     if not hibernate:
         if pp.SetSuspendState(False, True, True):      # (hibernate, force, ignore wake-up timers)
             return
-        # Newer laptops ("Modern Standby", like yours) don't take that order (error 50). Press the
-        # keyboard's Sleep key instead: Windows treats it exactly like the Sleep button in Start,
-        # and it isn't blocked by apps that keep the laptop awake.
+        # Newer laptops ("Modern Standby", like yours) don't take that order (error 50). On those,
+        # turning the screen off the way the power button does is what puts them into standby
+        # (Microsoft's own suggestion).
         u = ctypes.windll.user32
-        VK_SLEEP = 0x5F
-        u.keybd_event(VK_SLEEP, 0, 0, 0)
-        u.keybd_event(VK_SLEEP, 0, 2, 0)
+        u.SendMessageTimeoutW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t,
+                                          ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
+        WM_SYSCOMMAND, SC_MONITORPOWER, HWND_BROADCAST = 0x0112, 0xF170, 0xFFFF
+        u.SendMessageTimeoutW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2, 0x0002, 2000, None)  # SMTO_ABORTIFHUNG
         return
     if pp.SetSuspendState(True, True, True):
         return
