@@ -101,7 +101,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "build-${{ github.run_number }}" NotionPhoneSync.apk \
+          echo -n "${{ github.run_number }}" > version.txt
+          gh release create "build-${{ github.run_number }}" NotionPhoneSync.apk version.txt \
             --latest \
             --title "Notion Phone Sync (build ${{ github.run_number }})" \
             --notes "Install from the app's Update button, or download NotionPhoneSync.apk below."

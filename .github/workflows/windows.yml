@@ -92,3 +92,11 @@ jobs:
             --latest=false `
             --title "Notion Laptop Sync for Windows (build ${{ github.run_number }})" `
             --notes "Run NotionLaptopSync-Setup.exe on your Windows laptop. Later updates install from the app."
+          # A fixed download address the app checks for updates (plain downloads, so GitHub's
+          # 60-checks-an-hour limit on its API never blocks updates).
+          "${{ github.run_number }}" | Out-File -Encoding ascii -NoNewline win-version.txt
+          gh release view win-latest *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create win-latest --prerelease --latest=false --title "Notion Laptop Sync (newest, for the app's updater)" --notes "Used by the app to update itself."
+          }
+          gh release upload win-latest Output/NotionLaptopSync-Setup.exe win-version.txt --clobber

@@ -1611,11 +1611,26 @@ class App:
 
         def work():
             try:
-                r = requests.get(f"https://api.github.com/repos/{REPO}/releases?per_page=30",
-                                 headers={"Accept": "application/vnd.github+json"}, timeout=20)
-                r.raise_for_status()
                 latest = None
-                for rel in r.json():
+                # 1) The fixed download address (not limited like GitHub's API).
+                base = f"https://github.com/{REPO}/releases/download/win-latest/"
+                try:
+                    v = requests.get(base + "win-version.txt", timeout=20)
+                    if v.ok and v.text.strip().isdigit():
+                        latest = (int(v.text.strip()), base + "NotionLaptopSync-Setup.exe", 0)
+                except requests.RequestException:
+                    pass
+                rels = []
+                if latest is None:
+                    # 2) Older way: GitHub's API (limited to 60 checks an hour per internet connection).
+                    r = requests.get(f"https://api.github.com/repos/{REPO}/releases?per_page=30",
+                                     headers={"Accept": "application/vnd.github+json"}, timeout=20)
+                    if r.status_code in (403, 429):
+                        raise RuntimeError("GitHub is busy right now (too many update checks from your internet "
+                                           "connection). Try again in an hour.")
+                    r.raise_for_status()
+                    rels = r.json()
+                for rel in rels:
                     tag = rel.get("tag_name", "")
                     if tag.startswith("win-build-") and tag[10:].isdigit():
                         asset = next((a for a in rel.get("assets", []) if a["name"].lower().endswith(".exe")), None)

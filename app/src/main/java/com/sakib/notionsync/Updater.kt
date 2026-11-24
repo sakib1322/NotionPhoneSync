@@ -28,12 +28,25 @@ object Updater {
         PackageInfoCompat.getLongVersionCode(ctx.packageManager.getPackageInfo(ctx.packageName, 0)).toInt()
 
     fun latest(): Release? {
+        // Plain downloads first: not limited like GitHub's API (60 checks an hour per connection).
+        try {
+            val base = "https://github.com/$REPO/releases/latest/download/"
+            http.newCall(Request.Builder().url(base + "version.txt").build()).execute().use { r ->
+                val v = r.body?.string()?.trim()?.toIntOrNull()
+                if (r.isSuccessful && v != null) return Release(v, base + "NotionPhoneSync.apk", 0)
+            }
+        } catch (e: IOException) { }
+        return latestFromApi()
+    }
+
+    private fun latestFromApi(): Release? {
         val req = Request.Builder()
             .url("https://api.github.com/repos/$REPO/releases/latest")
             .header("Accept", "application/vnd.github+json")
             .build()
         http.newCall(req).execute().use { r ->
             if (r.code == 404) return null
+            if (r.code == 403 || r.code == 429) throw IOException("GitHub is busy (too many update checks from this connection). Try again in an hour.")
             if (!r.isSuccessful) throw IOException("GitHub answered ${r.code}")
             val j = JSONObject(r.body?.string() ?: "{}")
             val build = j.optString("tag_name").removePrefix("build-").toIntOrNull() ?: return null
