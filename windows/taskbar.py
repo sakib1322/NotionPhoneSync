@@ -144,6 +144,19 @@ def switch_desktop(step):
     u.keybd_event(VK_CONTROL, 0, KEYUP, 0)
 
 
+def accent_colour():
+    """Windows' accent colour (the one you picked in Settings → Personalisation → Colours)."""
+    if os.name != "nt":
+        return (0, 103, 192)
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as k:
+            v = int(winreg.QueryValueEx(k, "AccentColor")[0]) & 0xFFFFFFFF
+            return (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)     # stored as ABGR
+    except OSError:
+        return (0, 103, 192)
+
+
 def light_taskbar():
     if os.name != "nt":
         return False
@@ -722,7 +735,9 @@ class TaskbarMeter:
             names = getattr(self, "desk_names", None) or [self.desk_text]
             idx = min(getattr(self, "desk_idx", 0), len(names) - 1)
             near = [names[i] for i in range(max(0, idx - 1), min(len(names), idx + 2))]
-            dw = max(int(tmp.textlength(n, font=big)) + 1 for n in near)
+            name_font = _font(max(11, round(13 * ui.S)), bold=True)
+            dw = (ui.px(4) + ui.px(8) + ui.px(10) * 2 +
+                  max(int(tmp.textlength(n, font=name_font)) + 1 for n in near))
             parts.append(("desk", (names, idx), dw))
         if self.s.get("taskbar_bt") and self.bt:
             items = []
@@ -762,26 +777,61 @@ class TaskbarMeter:
         return im
 
     def _draw_wheel(self, im, data, x, pw, h, fg):
-        """Desktop names stacked like a wheel: the one you're on in the middle (bold), the previous one
-        faintly above and the next one below. They glide up/down when you switch."""
+        """Windows 11-style desktop switcher: a soft accent pill holds the desktop you're on, the
+        previous/next names fade in above and below, and a dot column shows where you are.
+        Everything glides when you switch."""
         from PIL import Image, ImageDraw
         names, idx = data
         off = getattr(self, "anim_off", 0.0)
-        step = h * 0.34
-        big_px, small_px = max(11, round(14 * ui.S)), max(8, round(10 * ui.S))
+        light = fg[0] < 128
+        acc = getattr(self, "_accent", None)
+        if acc is None or time.monotonic() - getattr(self, "_accent_t", 0) > 30:
+            acc = self._accent = accent_colour()
+            self._accent_t = time.monotonic()
+        k = 4                                     # draw shapes 4x bigger, then shrink: smooth edges
+        dot_w, gap, padx = ui.px(4), ui.px(8), ui.px(10)
+        shapes = Image.new("RGBA", (pw * k, h * k), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(shapes)
+        # the pill
+        ph = max(ui.px(22), int(h * 0.46))
+        px0 = dot_w + gap
+        pill = (px0 * k, (h - ph) // 2 * k, (pw - 1) * k, ((h - ph) // 2 + ph) * k)
+        sd.rounded_rectangle(pill, radius=ph * k // 2,
+                             fill=acc + ((46,) if light else (70,)))
+        # the dots (one per desktop, the current one is a longer accent bar that slides)
+        n = len(names)
+        if n > 1:
+            sp = min(ui.px(7), (h - ui.px(10)) / max(1, n - 1 + 2))
+            top = h / 2 - sp * (n - 1) / 2 - sp / 2
+            cur = idx - off
+            for i in range(n):
+                cy = top + sp / 2 + i * sp
+                if abs(i - cur) < 0.5:
+                    continue
+                r = dot_w / 2 * 0.75
+                sd.ellipse([(dot_w / 2 - r) * k, (cy - r) * k, (dot_w / 2 + r) * k, (cy + r) * k],
+                           fill=fg[:3] + (90,))
+            cy = top + sp / 2 + cur * sp
+            sd.rounded_rectangle([0, (cy - sp * 0.9) * k, dot_w * k, (cy + sp * 0.9) * k], radius=dot_w * k // 2,
+                                 fill=acc + (255,))
+        im.alpha_composite(shapes.resize((pw, h), Image.LANCZOS), (x, 0))
+        # the names
+        step = h * 0.36
+        big_px, small_px = max(11, round(13 * ui.S)), max(8, round(9.5 * ui.S))
+        tx = x + px0 + padx
         for i, name in enumerate(names):
             dpos = (i - idx) + off
             a = abs(dpos)
-            if a > 1.45:
+            if a > 1.4:
                 continue
-            k = min(1.0, a)
-            size = round(big_px + (small_px - big_px) * k)
+            kk = min(1.0, a)
+            size = round(big_px + (small_px - big_px) * kk)
             font = _font(size, bold=a < 0.5)
-            alpha = (1 - 0.55 * k) if a <= 1 else 0.45 * max(0.0, (1.45 - a) / 0.45)
+            alpha = (1 - 0.62 * kk) if a <= 1 else 0.38 * max(0.0, (1.4 - a) / 0.4)
             asc, desc = font.getmetrics()
             cy = h / 2 + dpos * step
             layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
-            ImageDraw.Draw(layer).text((x, cy - (asc + desc) / 2), name, font=font,
+            ImageDraw.Draw(layer).text((tx, cy - (asc + desc) / 2 + ui.px(1)), name, font=font,
                                        fill=fg[:3] + (int(255 * alpha),))
             im.alpha_composite(layer)
 
