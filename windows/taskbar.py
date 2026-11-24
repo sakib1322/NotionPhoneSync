@@ -99,6 +99,36 @@ def desktop_name():
     return f"Desktop {ids.index(cur) + 1}" if cur in ids else "Desktop 1"
 
 
+def desktop_state():
+    """([names of all your virtual desktops in order], index of the one you're on)."""
+    if os.name != "nt":
+        return ["Desktop 1"], 0
+    import winreg
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, VD_KEY)
+    except OSError:
+        return [desktop_name()], 0
+    with k:
+        try:
+            raw = winreg.QueryValueEx(k, "VirtualDesktopIDs")[0] or b""
+        except OSError:
+            raw = b""
+    ids = [_guid(raw[i:i + 16]) for i in range(0, len(raw) - 15, 16)]
+    cur_name = desktop_name()
+    if not ids:
+        return [cur_name], 0
+    names = []
+    for n, g in enumerate(ids):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, VD_KEY + "\\Desktops\\" + g) as k3:
+                nm = winreg.QueryValueEx(k3, "Name")[0]
+        except OSError:
+            nm = ""
+        names.append(str(nm) if nm else f"Desktop {n + 1}")
+    idx = names.index(cur_name) if cur_name in names else 0
+    return names, idx
+
+
 def switch_desktop(step):
     """Goes to the next (step=1) or previous (step=-1) virtual desktop, like Ctrl+Win+→ / ←."""
     if os.name != "nt":
@@ -459,6 +489,8 @@ class TaskbarMeter:
                 elif wp == 3:
                     user32.KillTimer(hwnd, 3)
                     self._tick(read_net=False)
+                elif wp == 4:
+                    self._anim_frame()
                 elif wp == 2 and self.visible and not self.drag and not self.menu_open:
                     self._raise_if_covered()
                 return 0
@@ -491,6 +523,16 @@ class TaskbarMeter:
                 moved = self.drag[2]
                 self.drag = None
                 user32.ReleaseCapture()
+                span = getattr(self, "_name_span", None)
+                if not moved and span:
+                    cx, cy = ctypes.c_short(lp & 0xFFFF).value, ctypes.c_short((lp >> 16) & 0xFFFF).value
+                    if span[0] <= cx <= span[1]:
+                        h = self.size[1] or 48
+                        if cy < h * 0.32:
+                            self._go(-1)        # clicked the name above: previous desktop
+                        elif cy > h * 0.68:
+                            self._go(1)         # the name below: next desktop
+                    return 0
                 if moved:
                     bar, _ = taskbar_rects()
                     r = _rect(hwnd)
@@ -506,10 +548,9 @@ class TaskbarMeter:
                 if span and r and r[0] + span[0] <= sx <= r[0] + span[1]:
                     delta = ctypes.c_short((wp >> 16) & 0xFFFF).value
                     now = time.monotonic()
-                    if now - getattr(self, "_last_switch", 0) > 0.35:
+                    if now - getattr(self, "_last_switch", 0) > 0.3:
                         self._last_switch = now
-                        switch_desktop(-1 if delta > 0 else 1)
-                        user32.SetTimer(hwnd, 3, 350, None)     # show the new name straight away
+                        self._go(-1 if delta > 0 else 1)
                 return 0
             if msg == WM_LBUTTONDBLCLK:
                 self._ui(self.app.show_window)
@@ -571,9 +612,52 @@ class TaskbarMeter:
             self.up_text, self.down_text = "↑: " + speed_text(up), "↓: " + speed_text(down)
         if self.s.get("taskbar_desktop"):
             try:
-                self.desk_text = desktop_name()
+                names, idx = desktop_state()
             except Exception:
-                self.desk_text = ""
+                names, idx = [""], 0
+            old = getattr(self, "desk_idx", None)
+            tgt = getattr(self, "_target", None)
+            if tgt is not None and idx != tgt and time.monotonic() - getattr(self, "_anim_t0", 0) < 0.8:
+                idx = tgt                       # Windows hasn't caught up with the switch yet
+            self.desk_names = names
+            if old is not None and idx != old and not self._animating_to(idx):
+                self._slide(old - idx)          # moved by keyboard / Task View: slide too
+            self.desk_idx = idx
+            self.desk_text = names[idx] if names else ""
+        self._place()
+
+    # the sliding desktop names
+
+    def _go(self, step):
+        names = getattr(self, "desk_names", None) or [self.desk_text]
+        idx = getattr(self, "desk_idx", 0)
+        new = idx + step
+        if not 0 <= new < len(names):
+            return                               # already the first / last desktop
+        switch_desktop(step)
+        self.desk_idx = new
+        self.desk_text = names[new]
+        self._target = new
+        self._slide(-step)
+        user32.SetTimer(self.hwnd, 3, 400, None)   # then check what Windows says
+
+    def _animating_to(self, idx):
+        return getattr(self, "_target", None) == idx and time.monotonic() - getattr(self, "_anim_t0", 0) < 1.0
+
+    def _slide(self, start):
+        """Starts a smooth slide: the names start `start` rows away and glide into place."""
+        self._anim_from = getattr(self, "anim_off", 0.0) + start
+        self.anim_off = self._anim_from
+        self._anim_t0 = time.monotonic()
+        user32.SetTimer(self.hwnd, 4, 15, None)    # ~60 frames a second
+
+    def _anim_frame(self):
+        t = (time.monotonic() - self._anim_t0) / 0.22
+        if t >= 1:
+            self.anim_off = 0.0
+            user32.KillTimer(self.hwnd, 4)
+        else:
+            self.anim_off = self._anim_from * (1 - t) ** 3      # ease-out
         self._place()
 
     def _hide(self):
@@ -635,7 +719,11 @@ class TaskbarMeter:
         parts = []      # (kind, data, width)
         self._name_span = None
         if self.s.get("taskbar_desktop") and self.desk_text:
-            parts.append(("desk", self.desk_text, int(tmp.textlength(self.desk_text, font=big)) + 1))
+            names = getattr(self, "desk_names", None) or [self.desk_text]
+            idx = min(getattr(self, "desk_idx", 0), len(names) - 1)
+            near = [names[i] for i in range(max(0, idx - 1), min(len(names), idx + 2))]
+            dw = max(int(tmp.textlength(n, font=big)) + 1 for n in near)
+            parts.append(("desk", (names, idx), dw))
         if self.s.get("taskbar_bt") and self.bt:
             items = []
             for name, b in self.bt[:5]:
@@ -653,8 +741,7 @@ class TaskbarMeter:
         for kind, data, pw in parts:
             if kind == "desk":
                 self._name_span = (x - pad, x + pw + gap // 2)
-                asc, desc = big.getmetrics()
-                d.text((x, (h - asc - desc) // 2), data, font=big, fill=fg)
+                self._draw_wheel(im, data, x, pw, h, fg)
             elif kind == "speed":
                 asc, desc = small.getmetrics()
                 lh = asc + desc - ui.px(2)
@@ -673,6 +760,30 @@ class TaskbarMeter:
                     cx += tw + ui.px(12)
             x += pw + gap
         return im
+
+    def _draw_wheel(self, im, data, x, pw, h, fg):
+        """Desktop names stacked like a wheel: the one you're on in the middle (bold), the previous one
+        faintly above and the next one below. They glide up/down when you switch."""
+        from PIL import Image, ImageDraw
+        names, idx = data
+        off = getattr(self, "anim_off", 0.0)
+        step = h * 0.34
+        big_px, small_px = max(11, round(14 * ui.S)), max(8, round(10 * ui.S))
+        for i, name in enumerate(names):
+            dpos = (i - idx) + off
+            a = abs(dpos)
+            if a > 1.45:
+                continue
+            k = min(1.0, a)
+            size = round(big_px + (small_px - big_px) * k)
+            font = _font(size, bold=a < 0.5)
+            alpha = (1 - 0.55 * k) if a <= 1 else 0.45 * max(0.0, (1.45 - a) / 0.45)
+            asc, desc = font.getmetrics()
+            cy = h / 2 + dpos * step
+            layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+            ImageDraw.Draw(layer).text((x, cy - (asc + desc) / 2), name, font=font,
+                                       fill=fg[:3] + (int(255 * alpha),))
+            im.alpha_composite(layer)
 
     def _blit(self, im, x, y):
         import numpy as np
