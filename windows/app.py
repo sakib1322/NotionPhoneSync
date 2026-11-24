@@ -1725,7 +1725,7 @@ def selftest():
         lambda: (app._popup.destroy(), print("REMINDER OK")),
         # Taskbar read-out: desktop name and speed can be read, and the window appears.
         lambda: (print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
-                       "window:", bool(app.taskbar.hwnd), "shown:", app.taskbar.visible, "size:", app.taskbar.size,
+                       "window:", bool(app.taskbar.hwnd), "in taskbar:", app.taskbar.embedded, "shown:", app.taskbar.visible, "size:", app.taskbar.size,
                        "speed:", ascii(app.taskbar.up_text),
                                               "rects:", __import__("taskbar").taskbar_rects()))
         if clip_sync.WINDOWS else None,

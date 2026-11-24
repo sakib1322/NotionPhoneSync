@@ -282,6 +282,11 @@ if os.name == "nt":
     user32.SetTimer.argtypes = [wt.HWND, ctypes.c_size_t, wt.UINT, wt.LPVOID]
     user32.KillTimer.argtypes = [wt.HWND, ctypes.c_size_t]
     user32.GetWindow.argtypes = [wt.HWND, wt.UINT]
+    user32.GetParent.argtypes = [wt.HWND]
+    user32.GetParent.restype = wt.HWND
+    user32.IsWindow.argtypes = [wt.HWND]
+    user32.SetForegroundWindow.argtypes = [wt.HWND]
+    user32.DestroyWindow.argtypes = [wt.HWND]
     user32.GetWindow.restype = wt.HWND
     user32.FindWindowW.restype = wt.HWND
     user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
@@ -433,6 +438,8 @@ class TaskbarMeter:
         self.desk_text = ""
         self.visible = False
         self.menu_open = False
+        self.embedded = False
+        self._bar = None
         self.drag = None
         self.size = (0, 0)
         self.errors = 0
@@ -490,6 +497,9 @@ class TaskbarMeter:
     # the window's own thread
 
     def _run(self):
+        """Creates the read-out as part of the taskbar itself (like TrafficMonitor), so it can never be
+        covered by it — no blinking when you hover app icons or open the ^ pop-up. If Explorer restarts,
+        it's created again."""
         try:
             hinst = kernel32.GetModuleHandleW(None)
             self._proc = WNDPROC(self._wndproc)       # keep a reference, or Python frees it
@@ -501,28 +511,62 @@ class TaskbarMeter:
             wc.hCursor = user32.LoadCursorW(None, ctypes.c_void_p(32512))
             wc.lpszClassName = "NotionSyncTaskbarMeter"
             user32.RegisterClassExW(ctypes.byref(wc))
+        except Exception as e:
+            self._log(str(e))
+            return
+        while not getattr(self.app, "quitting", False):
+            try:
+                self._run_once(hinst)
+            except Exception as e:
+                self._log(str(e))
+            self.hwnd = None
+            self.visible = False
+            for _ in range(30):                       # Explorer restarting: try again shortly
+                if getattr(self.app, "quitting", False):
+                    return
+                time.sleep(0.1)
+
+    def _run_once(self, hinst):
+        tray = user32.FindWindowW("Shell_TrayWnd", None)
+        self.embedded = bool(tray) and not self.s.get("taskbar_float") and not getattr(self, "_embed_failed", False)
+        if self.embedded:
+            self.hwnd = user32.CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                               "NotionSyncTaskbarMeter", "Notion Sync taskbar",
+                                               0x40000000 | 0x04000000,          # WS_CHILD | WS_CLIPSIBLINGS
+                                               0, 0, 10, 10, tray, None, hinst, None)
+            if not self.hwnd:
+                self._embed_failed = True
+                self.embedded = False
+        if not self.embedded:
             self.hwnd = user32.CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                                                "NotionSyncTaskbarMeter", "Notion Sync taskbar", WS_POPUP,
                                                0, 0, 10, 10, None, None, hinst, None)
-            if not self.hwnd:
-                self._log(f"couldn't create the window (error {kernel32.GetLastError()})")
-                return
-            user32.SetTimer(self.hwnd, 1, 1000, None)     # speed etc.: every second
-            user32.SetTimer(self.hwnd, 2, 100, None)      # stay above the taskbar
-            # Also react the instant something else comes to the front (e.g. the tray's ^ pop-up).
+        if not self.hwnd:
+            self._log(f"couldn't create the window (error {kernel32.GetLastError()})")
+            time.sleep(5)
+            return
+        self.visible = False
+        user32.SetTimer(self.hwnd, 1, 1000, None)        # speed etc.: every second
+        user32.SetTimer(self.hwnd, 2, 250 if self.embedded else 100, None)   # stay on top
+        if not self.embedded:
+            # React the instant something else comes to the front (e.g. the tray's ^ pop-up).
             WINEVENTPROC = ctypes.WINFUNCTYPE(None, wt.HANDLE, wt.DWORD, wt.HWND, wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)
             self._hookproc = WINEVENTPROC(lambda *a: self._on_front_change())
             user32.SetWinEventHook.argtypes = [wt.DWORD, wt.DWORD, wt.HMODULE, WINEVENTPROC, wt.DWORD, wt.DWORD, wt.DWORD]
             user32.SetWinEventHook.restype = wt.HANDLE
-            self._hooks = [user32.SetWinEventHook(ev, ev, None, self._hookproc, 0, 0, 0)    # out of context
-                           for ev in (0x0003, 0x0006, 0x0007)]   # foreground, menu popup start/end
-            self._tick()
-            msg = MSG()
-            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-                user32.TranslateMessage(ctypes.byref(msg))
-                user32.DispatchMessageW(ctypes.byref(msg))
-        except Exception as e:
-            self._log(str(e))
+            self._hooks = [user32.SetWinEventHook(ev, ev, None, self._hookproc, 0, 0, 0)
+                           for ev in (0x0003, 0x0006, 0x0007)]
+        self._tick()
+        msg = MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        for hk in getattr(self, "_hooks", []) or []:
+            try:
+                user32.UnhookWinEvent(hk)
+            except Exception:
+                pass
+        self._hooks = []
 
     def _wndproc(self, hwnd, msg, wp, lp):
         try:
@@ -537,7 +581,13 @@ class TaskbarMeter:
                 elif wp == 4:
                     self._anim_frame()
                 elif wp == 2 and self.visible and not self.drag and not self.menu_open:
-                    self._raise_if_covered()
+                    if self.embedded:
+                        if not user32.IsWindow(user32.GetParent(hwnd)):
+                            user32.DestroyWindow(hwnd)       # Explorer restarted: start again
+                        elif user32.GetWindow(user32.GetParent(hwnd), 5) != hwnd:     # GW_CHILD = top child
+                            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                    else:
+                        self._raise_if_covered()
                 return 0
             if msg == WM_APP:
                 self._tick(read_net=False)
@@ -561,8 +611,11 @@ class TaskbarMeter:
                     if bar and r:
                         lim = (note[0] - ui.px(4)) if note else bar[2]
                         nx = max(bar[0], min(nx, lim - (r[2] - r[0])))
-                    user32.SetWindowPos(hwnd, HWND_TOPMOST, nx, r[1] if r else 0, 0, 0,
-                                        SWP_NOSIZE | SWP_NOACTIVATE)
+                    if self.embedded and bar:
+                        user32.SetWindowPos(hwnd, 0, nx - bar[0], 0, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
+                    else:
+                        user32.SetWindowPos(hwnd, HWND_TOPMOST, nx, r[1] if r else 0, 0, 0,
+                                            SWP_NOSIZE | SWP_NOACTIVATE)
                 return 0
             if msg == WM_LBUTTONUP and self.drag:
                 moved = self.drag[2]
@@ -610,6 +663,16 @@ class TaskbarMeter:
             self._log(str(e))
         return user32.DefWindowProcW(hwnd, msg, wp, lp)
 
+    def _menu_owner(self):
+        """An invisible window of our own to own the right-click menu (the read-out itself lives
+        inside the taskbar, which belongs to Windows)."""
+        o = getattr(self, "_owner", None)
+        if o and user32.IsWindow(o):
+            return o
+        self._owner = user32.CreateWindowExW(WS_EX_TOOLWINDOW, "NotionSyncTaskbarMeter", "", WS_POPUP,
+                                             -100, -100, 1, 1, None, None, kernel32.GetModuleHandleW(None), None)
+        return self._owner
+
     def _menu(self, hwnd):
         m = user32.CreatePopupMenu()
         items = [(1, "Open Notion Laptop Sync"), (0, None),
@@ -621,13 +684,14 @@ class TaskbarMeter:
             user32.AppendMenuW(m, 0x800 if cid == 0 else 0, cid, text)
         pt = wt.POINT()
         user32.GetCursorPos(ctypes.byref(pt))
-        user32.SetForegroundWindow(hwnd)        # so the menu closes when you click elsewhere
+        owner = self._menu_owner()
+        user32.SetForegroundWindow(owner)       # so the menu closes when you click elsewhere
         self.menu_open = True
         try:
-            cmd = user32.TrackPopupMenu(m, 0x0100 | 0x0002 | 0x0020, pt.x, pt.y, 0, hwnd, None)  # RETURNCMD|RIGHTBUTTON|BOTTOMALIGN
+            cmd = user32.TrackPopupMenu(m, 0x0100 | 0x0002 | 0x0020, pt.x, pt.y, 0, owner, None)  # RETURNCMD|RIGHTBUTTON|BOTTOMALIGN
         finally:
             self.menu_open = False
-        user32.PostMessageW(hwnd, 0, 0, 0)
+        user32.PostMessageW(owner, 0, 0, 0)
         user32.DestroyMenu(m)
         keys = {2: "taskbar_speed", 3: "taskbar_desktop", 4: "taskbar_bt"}
         if cmd == 1:
@@ -717,7 +781,8 @@ class TaskbarMeter:
             return self._hide()
         bar, note = taskbar_rects()
         sh = user32.GetSystemMetrics(1)
-        away = not bar or fullscreen_app() or bar[1] >= sh - 2 or not 20 <= bar[3] - bar[1] <= 200
+        away = (not bar or bar[1] >= sh - 2 or not 20 <= bar[3] - bar[1] <= 200 or
+                (not self.embedded and fullscreen_app()))     # (as part of the taskbar, it hides with it)
         now = time.monotonic()
         if away:
             # Only hide if it stays that way for a moment: tray pop-ups and menus opening/closing
@@ -754,12 +819,16 @@ class TaskbarMeter:
         x = (bar[2] - int(off) - w) if off is not None else (right - w - ui.px(4))
         limit = (note[0] - ui.px(4)) if note else bar[2]      # never on top of the tray icons
         x = max(bar[0], min(x, limit - w))
+        self._bar = bar
         self._blit(img, x, bar[1])
         if not self.visible:
-            user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            if self.embedded:
+                user32.ShowWindow(self.hwnd, 8)       # SW_SHOWNA
+            else:
+                user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
             self.visible = True
-        elif not self.menu_open:
+        elif not self.menu_open and not self.embedded:
             self._raise_if_covered()
 
     def _on_front_change(self):
@@ -918,8 +987,19 @@ class TaskbarMeter:
             ctypes.memmove(bits, data, len(data))
             old = gdi32.SelectObject(mem, bmp)
             blend = BLENDFUNCTION(0, 0, 255, 1)
-            user32.UpdateLayeredWindow(self.hwnd, screen, ctypes.byref(wt.POINT(x, y)), ctypes.byref(wt.SIZE(w, h)),
-                                       mem, ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(blend), 2)
+            if self.embedded:
+                bar = self._bar
+                user32.SetWindowPos(self.hwnd, 0, x - bar[0], y - bar[1], w, h, SWP_NOACTIVATE)
+                ok = user32.UpdateLayeredWindow(self.hwnd, screen, None, ctypes.byref(wt.SIZE(w, h)),
+                                                mem, ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(blend), 2)
+                if not ok:
+                    # This Windows doesn't allow it inside the taskbar: float above it instead.
+                    self._embed_failed = True
+                    self._log(f"couldn't draw inside the taskbar (error {kernel32.GetLastError()}); floating above it")
+                    user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
+            else:
+                user32.UpdateLayeredWindow(self.hwnd, screen, ctypes.byref(wt.POINT(x, y)), ctypes.byref(wt.SIZE(w, h)),
+                                           mem, ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(blend), 2)
             gdi32.SelectObject(mem, old)
         finally:
             gdi32.DeleteObject(bmp)
