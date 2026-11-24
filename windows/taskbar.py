@@ -213,6 +213,9 @@ if os.name == "nt":
     user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
     user32.SetTimer.argtypes = [wt.HWND, ctypes.c_size_t, wt.UINT, wt.LPVOID]
     user32.KillTimer.argtypes = [wt.HWND, ctypes.c_size_t]
+    user32.GetWindow.argtypes = [wt.HWND, wt.UINT]
+    user32.GetWindow.restype = wt.HWND
+    user32.FindWindowW.restype = wt.HWND
     user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
     user32.GetDC.argtypes = [wt.HWND]
     user32.GetDC.restype = wt.HDC
@@ -361,6 +364,7 @@ class TaskbarMeter:
         self.up_text = self.down_text = ""
         self.desk_text = ""
         self.visible = False
+        self.menu_open = False
         self.drag = None
         self.size = (0, 0)
         self.errors = 0
@@ -455,8 +459,8 @@ class TaskbarMeter:
                 elif wp == 3:
                     user32.KillTimer(hwnd, 3)
                     self._tick(read_net=False)
-                elif wp == 2 and self.visible and not self.drag:
-                    user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                elif wp == 2 and self.visible and not self.drag and not self.menu_open:
+                    self._raise_if_covered()
                 return 0
             if msg == WM_APP:
                 self._tick(read_net=False)
@@ -532,7 +536,11 @@ class TaskbarMeter:
         pt = wt.POINT()
         user32.GetCursorPos(ctypes.byref(pt))
         user32.SetForegroundWindow(hwnd)        # so the menu closes when you click elsewhere
-        cmd = user32.TrackPopupMenu(m, 0x0100 | 0x0002 | 0x0020, pt.x, pt.y, 0, hwnd, None)  # RETURNCMD|RIGHTBUTTON|BOTTOMALIGN
+        self.menu_open = True
+        try:
+            cmd = user32.TrackPopupMenu(m, 0x0100 | 0x0002 | 0x0020, pt.x, pt.y, 0, hwnd, None)  # RETURNCMD|RIGHTBUTTON|BOTTOMALIGN
+        finally:
+            self.menu_open = False
         user32.PostMessageW(hwnd, 0, 0, 0)
         user32.DestroyMenu(m)
         keys = {2: "taskbar_speed", 3: "taskbar_desktop", 4: "taskbar_bt"}
@@ -593,9 +601,26 @@ class TaskbarMeter:
         limit = (note[0] - ui.px(4)) if note else bar[2]      # never on top of the tray icons
         x = max(bar[0], min(x, limit - w))
         self._blit(img, x, bar[1])
-        user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
-        self.visible = True
+        if not self.visible:
+            user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            self.visible = True
+        elif not self.menu_open:
+            self._raise_if_covered()
+
+    def _raise_if_covered(self):
+        """Comes back above the taskbar when the taskbar has covered it — but stays below menus and
+        pop-ups (its own right-click menu, the tray's ^ menu, Start, notifications…)."""
+        GW_HWNDPREV = 3
+        tray = user32.FindWindowW("Shell_TrayWnd", None)
+        h = self.hwnd
+        for _ in range(60):
+            h = user32.GetWindow(h, GW_HWNDPREV)
+            if not h:
+                return
+            if h == tray:
+                user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                return
 
     def render(self, h, light):
         """Draws the read-out (a see-through picture) for a taskbar h pixels tall."""
