@@ -312,3 +312,39 @@ def open_dell_app():
     out = _ps("$a = Get-StartApps | Where-Object { $_.Name -match 'Power Manager|Dell Optimizer' } | Select-Object -First 1; "
               "if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID); 'ok' }", timeout=30)
     return "ok" in out
+
+
+WAKE_SCRIPT = r"""
+$out = Join-Path $env:ProgramData 'NotionLaptopSync\battery-result.txt'
+New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
+$done = @()
+foreach ($d in (powercfg /devicequery wake_armed)) {
+  $d = "$d".Trim()
+  if ($d -and $d -ne 'NONE') { powercfg /devicedisablewake "$d" | Out-Null; $done += $d }
+}
+powercfg /hibernate on | Out-Null
+($done -join "`n") | Out-File -Encoding utf8 -Force $out
+exit 0
+"""
+
+
+def stop_wake_devices():
+    """Stops mice, keyboards, USB dongles and network cards from waking the laptop up (and turns
+    hibernate on). Asks Windows for permission. Returns (list of devices changed, error or None)."""
+    try:
+        code, text = _elevated(WAKE_SCRIPT, timeout=120)
+    except Exception as e:
+        return [], str(e)
+    if code is None:
+        return [], "You said No to Windows' permission prompt."
+    if code != 0:
+        return [], text or f"code {code}"
+    return [l.strip() for l in (text or "").splitlines() if l.strip()], None
+
+
+def awake_reasons():
+    """What's keeping the laptop awake right now (Windows' own list; needs admin, so may be empty)."""
+    try:
+        return _ps("powercfg /requests", timeout=20)
+    except Exception:
+        return ""

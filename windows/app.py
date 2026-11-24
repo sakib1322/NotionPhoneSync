@@ -648,6 +648,32 @@ class App:
             "Battery 80% — unplug the charger", "Example of the reminder you'll see.")).pack(anchor="w", pady=4)
         self.root.after(20000, self._remind_loop)
 
+        self._h(f, "Sleep")
+        self._p(f, "If the laptop won't stay asleep (a USB dongle, mouse or network card wakes it), stop those "
+                   "devices from waking it. To put it to sleep even when apps keep it awake, right-click the "
+                   "taskbar read-out → Sleep now (force), or use the buttons below.", foreground="#666")
+        srow = ttk.Frame(f)
+        srow.pack(anchor="w", pady=4)
+
+        def stop_wake():
+            self.sleep_status.config(text="Working… say Yes to Windows' prompt.")
+
+            def work():
+                done, err = battery.stop_wake_devices()
+                self.events.put(lambda: self.sleep_status.config(
+                    text=("Not changed: " + err) if err else
+                    ("Done. These can't wake the laptop any more: " + ", ".join(done) if done else
+                     "Done. No device was set to wake the laptop.") + " Hibernate is turned on."))
+            threading.Thread(target=work, daemon=True).start()
+        ttk.Button(srow, text="Stop devices from waking the laptop", command=stop_wake).pack(side="left")
+
+        def go(hib):
+            import taskbar
+            threading.Thread(target=taskbar.hard_sleep, args=(hib, self), daemon=True).start()
+        ttk.Button(srow, text="Sleep now (force)", command=lambda: go(False)).pack(side="left", padx=8)
+        ttk.Button(srow, text="Hibernate now", command=lambda: go(True)).pack(side="left")
+        self.sleep_status = self._p(f, "", foreground="#666")
+
         self._h(f, "Bluetooth devices")
         self.bt_list = self._p(f, "Checking…")
         row = ttk.Frame(f)

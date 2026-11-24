@@ -129,6 +129,20 @@ def desktop_state():
     return names, idx
 
 
+def hard_sleep(hibernate=False, app=None):
+    """Puts the laptop to sleep (or hibernates it) right now, even when apps, browsers or USB
+    dongles are keeping it awake: a direct order to Windows that also ignores wake-up timers."""
+    time.sleep(0.6)                      # let the menu close first
+    pp = ctypes.windll.powrprof
+    pp.SetSuspendState.argtypes = [ctypes.c_bool, ctypes.c_bool, ctypes.c_bool]
+    ok = pp.SetSuspendState(bool(hibernate), True, True)   # (hibernate, force, no wake-up events)
+    if not ok and app is not None:
+        what = "hibernate" if hibernate else "sleep"
+        msg = (f"Windows refused to {what} (error {ctypes.windll.kernel32.GetLastError()})." +
+               (" Hibernate may be turned off: Battery page → Stop devices from waking the laptop (that also turns hibernate on)." if hibernate else ""))
+        app.events.put(lambda: (app.log(msg), app.notify("Couldn't " + what, msg)))
+
+
 def sys_build():
     try:
         import sys
@@ -679,7 +693,8 @@ class TaskbarMeter:
                  (2, ("Hide" if self.s.get("taskbar_speed") else "Show") + " internet speed"),
                  (3, ("Hide" if self.s.get("taskbar_desktop") else "Show") + " desktop name"),
                  (4, ("Hide" if self.s.get("taskbar_bt") else "Show") + " Bluetooth battery"),
-                 (0, None), (5, "Put it back next to the clock")]
+                 (0, None), (5, "Put it back next to the clock"),
+                 (0, None), (6, "Sleep now (force)"), (7, "Hibernate now (deepest, saves the most battery)")]
         for cid, text in items:
             user32.AppendMenuW(m, 0x800 if cid == 0 else 0, cid, text)
         pt = wt.POINT()
@@ -708,6 +723,9 @@ class TaskbarMeter:
                     pass
             self._ui(tick_box)
             self._tick(read_net=False)
+        elif cmd in (6, 7):
+            import threading
+            threading.Thread(target=hard_sleep, args=(cmd == 7, self.app), daemon=True).start()
         elif cmd == 5:
             self._offset = None
             self.s.set("taskbar_offset", None)
