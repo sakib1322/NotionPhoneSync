@@ -193,14 +193,31 @@ def taskbar_rects():
     return bar, note
 
 
+SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "NotifyIconOverflowWindow",
+                 "TopLevelWindowForOverflowXamlIsland", "XamlExplorerHostIslandWindow", "Windows.UI.Core.CoreWindow",
+                 "Shell_InputSwitchTopLevelWindow", "TaskListThumbnailWnd", "#32768", "ControlCenterWindow"}
+
+
 def fullscreen_app():
-    """Is a full-screen app (video, game, slideshow) in front? Then the read-out hides.
-    (Asks Windows itself — looking at window sizes was fooled by the tray's pop-up menus.)"""
+    """Is a real full-screen app (video, game, slideshow) in front? Then the read-out hides.
+    Windows' own pop-ups (the tray's ^ menu, Start, Quick Settings…) don't count."""
     try:
         state = ctypes.c_int(0)
         if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(state)) != 0:
             return False
-        return state.value in (2, 3, 4)     # busy full-screen app, full-screen game, presentation mode
+        if state.value not in (2, 3, 4):     # busy full-screen app, full-screen game, presentation mode
+            return False
+        u = ctypes.windll.user32
+        fg = u.GetForegroundWindow()
+        if not fg:
+            return False
+        cls = ctypes.create_unicode_buffer(128)
+        u.GetClassNameW(fg, cls, 128)
+        if cls.value in SHELL_CLASSES:
+            return False
+        r = _rect(fg)
+        sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+        return bool(r) and r[0] <= 0 and r[1] <= 0 and r[2] >= sw and r[3] >= sh
     except Exception:
         return False
 
@@ -685,8 +702,27 @@ class TaskbarMeter:
             return self._hide()
         bar, note = taskbar_rects()
         sh = user32.GetSystemMetrics(1)
-        if not bar or fullscreen_app() or bar[1] >= sh - 2 or not 20 <= bar[3] - bar[1] <= 200:
-            return self._hide()     # no taskbar, it's hidden or on the side, or a full-screen app is showing
+        away = not bar or fullscreen_app() or bar[1] >= sh - 2 or not 20 <= bar[3] - bar[1] <= 200
+        now = time.monotonic()
+        if away:
+            # Only hide if it stays that way for a moment: tray pop-ups and menus opening/closing
+            # briefly look like this, and hiding for them made it flicker.
+            if not getattr(self, "_away_since", None):
+                self._away_since = now
+            if now - self._away_since > 1.5:
+                return self._hide()
+            return
+        self._away_since = None
+        # Keep a steady position: the tray area briefly changes size while its ^ pop-up opens/closes.
+        if note:
+            last = getattr(self, "_note", None)
+            if last is None or abs(note[0] - last[0]) < 2:
+                self._note, self._note_n = note, 0
+            else:
+                self._note_n = getattr(self, "_note_n", 0) + 1
+                if self._note_n >= 3:           # changed for real (icons added/removed)
+                    self._note, self._note_n = note, 0
+            note = self._note
         h = bar[3] - bar[1]
         img = self.render(h, light_taskbar())
         w = img.width
