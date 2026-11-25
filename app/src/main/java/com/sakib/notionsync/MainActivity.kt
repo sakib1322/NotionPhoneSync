@@ -853,9 +853,15 @@ class MainActivity : AppCompatActivity() {
             status.text = "Asking the AI…"
             val sample = "i has went to the market yesterday and buyed some vegetable for my family"
             Thread {
-                val msg = try { "Works! “$sample” → “${AiWriter.rewrite(prefs, AiWriter.COMMANDS["/im"]!!, sample)}”" }
-                    catch (t: Throwable) { "Not working: ${t.message}" }
-                runOnUiThread { status.text = msg }
+                val msg = try {
+                    val out = AiWriter.rewrite(prefs, AiWriter.COMMANDS["/im"]!!, sample)
+                    "Works (${AiWriter.model(prefs)})! “$sample” → “$out”"
+                } catch (t: Throwable) { "Not working: ${t.message}" }
+                runOnUiThread {
+                    status.text = msg
+                    val m = AiWriter.model(prefs)
+                    if (modelEt.text.toString() != m) { loading = true; modelEt.setText(m); loading = false }
+                }
             }.start()
         }
         findViewById<TextView>(R.id.writer_cmds).text = "Type in any app, then end with a command:\n" +

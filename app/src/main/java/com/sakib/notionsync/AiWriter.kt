@@ -18,7 +18,7 @@ object AiWriter {
                         val model: String, val keyUrl: String)
 
     val PROVIDERS = listOf(
-        Provider("gemini", "Google Gemini", false, "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", "aistudio.google.com/apikey"),
+        Provider("gemini", "Google Gemini", false, "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.8-flash", "aistudio.google.com/apikey"),
         Provider("claude", "Claude (Anthropic)", true, "https://api.anthropic.com/v1", "claude-haiku-5-5", "console.anthropic.com"),
         Provider("openai", "ChatGPT (OpenAI)", false, "https://api.openai.com/v1", "gpt-4.1-mini", "platform.openai.com/api-keys"),
         Provider("deepseek", "DeepSeek", false, "https://api.deepseek.com/v1", "deepseek-chat", "platform.deepseek.com"),
@@ -80,8 +80,61 @@ object AiWriter {
     fun setKey(p: Prefs, id: String, v: String) { val o = try { JSONObject(p.writerKeys) } catch (e: Exception) { JSONObject() }; o.put(id, v); p.writerKeys = o.toString() }
     fun setModel(p: Prefs, id: String, v: String) { val o = try { JSONObject(p.writerModels) } catch (e: Exception) { JSONObject() }; o.put(id, v); p.writerModels = o.toString() }
 
-    /** Asks the AI. Runs on a background thread. */
-    fun rewrite(p: Prefs, instruction: String, text: String): String {
+    class ModelGone(msg: String, val suggestion: String?) : IOException(msg)
+
+    private val FAMILY = mapOf("gemini" to "flash", "claude" to "haiku", "openai" to "mini", "deepseek" to "chat",
+        "qwen" to "plus", "grok" to "mini", "groq" to "llama", "mistral" to "small")
+    private val BAD = listOf("embed", "tts", "image", "audio", "vision", "live", "transcribe", "realtime", "search",
+        "moderation", "guard", "whisper", "dall", "veo", "imagen", "lite", "nano", "thinking", "learnlm", "gemma")
+
+    /** The newest model of the usual quick family from what the provider offers. */
+    fun pickModel(prov: String, names: List<String>): String? {
+        val fam = FAMILY[prov] ?: ""
+        val good = names.filter { n -> BAD.none { n.lowercase().contains(it) } }
+        val pool = good.filter { fam.isNotEmpty() && it.lowercase().contains(fam) }.ifEmpty { good.ifEmpty { names } }
+        val stable = pool.filter { !it.lowercase().contains("preview") && !it.lowercase().contains("exp") }.ifEmpty { pool }
+        fun ver(n: String) = Regex("\\d+").findAll(n).take(3).map { it.value.toInt() }.toList()
+        val cmp = Comparator<String> { a, b ->
+            val va = ver(a); val vb = ver(b)
+            for (i in 0 until maxOf(va.size, vb.size)) {
+                val d = (va.getOrNull(i) ?: -1).compareTo(vb.getOrNull(i) ?: -1)
+                if (d != 0) return@Comparator d
+            }
+            b.length.compareTo(a.length)
+        }
+        return stable.maxWithOrNull(cmp)
+    }
+
+    fun listModels(p: Prefs, prov: String, key: String): List<String> {
+        val pr = provider(prov)
+        val base = (if (prov == "custom") p.writerBase else pr.base).trimEnd('/')
+        val rb = Request.Builder().url("$base/models")
+        if (pr.anthropic) rb.header("x-api-key", key).header("anthropic-version", "2023-06-01") else rb.header("Authorization", "Bearer $key")
+        return http.newCall(rb.build()).execute().use { r ->
+            val s = r.body?.string() ?: ""
+            if (!r.isSuccessful) throw IOException(errorText(r.code, s))
+            val j = JSONObject(s)
+            val arr = j.optJSONArray("data") ?: j.optJSONArray("models") ?: JSONArray()
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.getJSONObject(i)
+                o.optString("id").ifBlank { o.optString("name") }.removePrefix("models/").ifBlank { null }
+            }.distinct().sorted()
+        }
+    }
+
+    /** Asks the AI. Runs on a background thread. If the model was retired, switches to a current one. */
+    fun rewrite(p: Prefs, instruction: String, text: String): String = try {
+        rewriteOnce(p, instruction, text)
+    } catch (e: ModelGone) {
+        val prov = p.writerProvider
+        val old = model(p, prov)
+        val new = e.suggestion ?: try { pickModel(prov, listModels(p, prov, key(p, prov))) } catch (x: Exception) { null }
+        if (new == null || new == old) throw IOException("The model “$old” isn't available. Type another model name in settings.")
+        setModel(p, prov, new)
+        rewriteOnce(p, instruction, text)
+    }
+
+    private fun rewriteOnce(p: Prefs, instruction: String, text: String): String {
         val prov = provider(p.writerProvider)
         val key = key(p, prov.id)
         if (key.isBlank()) throw IOException("No API key yet: add one in Notion Sync › Settings › Writing helper.")
@@ -123,9 +176,15 @@ object AiWriter {
 
     private fun errorText(code: Int, body: String): String {
         val msg = try {
-            val j = JSONObject(body)
+            val t = body.trim()
+            val j = if (t.startsWith("[")) JSONArray(t).getJSONObject(0) else JSONObject(t)
             j.optJSONObject("error")?.optString("message") ?: j.optString("error").ifBlank { j.optString("message") }
         } catch (e: Exception) { body.take(150) }
+        val low = msg.lowercase()
+        if (code == 404 || (low.contains("model") && (low.contains("not found") || low.contains("no longer available")
+                || low.contains("does not exist") || low.contains("not supported")))) {
+            throw ModelGone(msg, Regex("use (?:models/)?([\\w.\\-]+)").find(msg)?.groupValues?.get(1))
+        }
         return when (code) {
             401, 403 -> "The API key was refused ($msg)."
             429 -> "Too many requests or out of credit for this AI right now."

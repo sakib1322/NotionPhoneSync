@@ -667,8 +667,11 @@ class App:
         def work():
             try:
                 names = writer.list_models(self.settings, p, key, self.wr_base.get().strip() if p == "custom" else None)
+                best = writer.pick_model(p, names)
                 self.events.put(lambda: (self.wr_model_cb.config(values=names),
-                                         self.wr_status.config(text=f"{len(names)} models — pick one from the list.")))
+                                         best and self.wr_model.set(best),
+                                         self.wr_status.config(text=f"{len(names)} models. Picked {best} — "
+                                                                    "you can choose another from the list.")))
             except Exception as e:
                 self.events.put(lambda e=e: self.wr_status.config(text=f"Couldn't load models: {e}"))
         threading.Thread(target=work, daemon=True).start()
@@ -681,7 +684,9 @@ class App:
         def work():
             try:
                 out = writer.rewrite(self.settings, writer.COMMANDS["/im"], sample)
-                self.events.put(lambda: self.wr_status.config(text=f"Works! “{sample}” → “{out}”"))
+                model = writer.config(self.settings)[3]
+                self.events.put(lambda: (self.wr_model.set(model) if self.wr_model.get() != model else None,
+                                         self.wr_status.config(text=f"Works ({model})! “{sample}” → “{out}”")))
             except Exception as e:
                 self.events.put(lambda e=e: self.wr_status.config(text=f"Not working: {e}"))
         threading.Thread(target=work, daemon=True).start()

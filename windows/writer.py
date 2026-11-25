@@ -14,7 +14,7 @@ import requests
 # kind "openai" = the common OpenAI-style API most providers offer; "anthropic" = Claude's own API.
 
 PROVIDERS = {
-    "gemini": ("Google Gemini", "openai", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash",
+    "gemini": ("Google Gemini", "openai", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.8-flash",
                "aistudio.google.com/apikey"),
     "claude": ("Claude (Anthropic)", "anthropic", "https://api.anthropic.com/v1", "claude-haiku-5-5",
                "console.anthropic.com"),
@@ -71,7 +71,51 @@ def config(settings):
     return prov, kind, base, (models.get(prov) or model), keys.get(prov) or ""
 
 
+class ModelGone(RuntimeError):
+    """The chosen model doesn't exist (any more) for this key."""
+    def __init__(self, msg, suggestion=None):
+        super().__init__(msg)
+        self.suggestion = suggestion
+
+
+FAMILY = {"gemini": "flash", "claude": "haiku", "openai": "mini", "deepseek": "chat", "qwen": "plus",
+          "grok": "mini", "groq": "llama", "mistral": "small"}
+BAD = ("embed", "tts", "image", "audio", "vision", "live", "transcribe", "realtime", "search", "moderation",
+       "guard", "whisper", "dall", "veo", "imagen", "lite", "nano", "thinking", "learnlm", "gemma")
+
+
+def pick_model(prov, names):
+    """The best current model for quick rewriting from what the provider offers (newest of the usual family)."""
+    import re
+    fam = FAMILY.get(prov, "")
+    good = [n for n in names if not any(b in n.lower() for b in BAD)]
+    pool = [n for n in good if fam and fam in n.lower()] or good or list(names)
+    stable = [n for n in pool if "preview" not in n.lower() and "exp" not in n.lower()] or pool
+    ver = lambda n: tuple(int(x) for x in re.findall(r"\d+", n)[:3])
+    return sorted(stable, key=lambda n: (ver(n), -len(n)), reverse=True)[0] if stable else None
+
+
 def rewrite(settings, instruction, text, timeout=45):
+    try:
+        return _rewrite(settings, instruction, text, timeout)
+    except ModelGone as e:
+        # The model was retired (AI companies do this often): switch to a current one by itself and retry.
+        prov, kind, base, model, key = config(settings)
+        new = e.suggestion
+        if not new:
+            try:
+                new = pick_model(prov, list_models(settings, prov, key, base if prov == "custom" else None))
+            except Exception:
+                new = None
+        if not new or new == model:
+            raise RuntimeError(f"The model “{model}” isn't available. Press “Load the list of models” and pick one.")
+        ms = dict(settings.get("writer_models") or {})
+        ms[prov] = new
+        settings.set("writer_models", ms)
+        return _rewrite(settings, instruction, text, timeout)
+
+
+def _rewrite(settings, instruction, text, timeout=45):
     prov, kind, base, model, key = config(settings)
     if not key:
         raise RuntimeError("No API key yet: add one in the app (Writing helper).")
@@ -107,9 +151,18 @@ def _check(r):
         return
     try:
         j = r.json()
+        if isinstance(j, list) and j:
+            j = j[0]
         msg = (j.get("error") or {}).get("message") if isinstance(j.get("error"), dict) else j.get("error") or j.get("message")
     except Exception:
         msg = r.text[:200]
+    msg = str(msg or "")
+    low = msg.lower()
+    if r.status_code == 404 or ("model" in low and ("not found" in low or "no longer available" in low
+                                                    or "does not exist" in low or "not supported" in low)):
+        import re
+        m = re.search(r"use (?:models/)?([\w.\-]+)", msg)
+        raise ModelGone(msg, m.group(1) if m else None)
     if r.status_code in (401, 403):
         raise RuntimeError(f"The API key was refused ({msg or r.status_code}).")
     if r.status_code == 429:
