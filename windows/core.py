@@ -44,8 +44,9 @@ class Settings:
         "voice_monitor": False,    # hear yourself
         "voice_on": True,          # effect on (off = pass your normal voice through)
         "taskbar_speed": True,     # internet speed on the taskbar
-        "taskbar_desktop": True,
-        "taskbar_bt": True,        # charge of connected Bluetooth devices, on the taskbar   # name of the virtual desktop you're on, on the taskbar
+        "taskbar_desktop": True,   # name of the virtual desktop you're on, on the taskbar
+        "taskbar_bt": True,        # charge of connected Bluetooth devices, on the taskbar
+        "writer_on": True,         # AI writing helper: finish text with /im etc.
         "taskbar_offset": None,    # where you dragged it (pixels from the taskbar's right end)
         "google_refresh": "",
         "google_email": "",

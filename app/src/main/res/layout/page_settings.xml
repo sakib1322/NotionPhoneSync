@@ -138,6 +138,59 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Writing helper (AI) -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout style="@style/CardBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Writing helper (AI)" />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_writer" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Rewrite text with /im and other commands" />
+                <TextView android:id="@+id/writer_note" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" />
+
+                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="AI">
+                    <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                        android:id="@+id/writer_provider" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="none" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp"
+                    android:hint="API key" app:endIconMode="password_toggle">
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/writer_key" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textPassword" android:singleLine="true" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Model">
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/writer_model" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="text" android:singleLine="true" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/writer_base_box"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:hint="Address (https://…/v1)">
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/writer_base" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textUri" android:singleLine="true" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                    <com.google.android.material.button.MaterialButton android:id="@+id/writer_test" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Test it" />
+                    <com.google.android.material.button.MaterialButton android:id="@+id/writer_getkey" style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:text="Get a key" />
+                </LinearLayout>
+                <TextView android:id="@+id/writer_status" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" />
+                <TextView android:id="@+id/writer_cmds" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textSize="12sp" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Call recording -->
         <com.google.android.material.card.MaterialCardView
             style="@style/Card"

@@ -83,6 +83,9 @@ class App:
         threading.Thread(target=self._scheduler, daemon=True).start()
         self.clip = clip_sync.ClipSync(self)
         self.clip.start()
+        import writer
+        self.writer = writer.Writer(self)
+        self.writer.start()
         self.signin = None
         if not self.settings.get("signed_in"):
             self.signin = device_setup.SignInScreen(self, self._signed_in)
@@ -117,6 +120,7 @@ class App:
         self._build_devices(self._tab(nb, "Devices"))
         self._build_voice(self._tab(nb, "Voice changer"))
         self._build_battery(self._tab(nb, "Battery"))
+        self._build_writer(self._tab(nb, "Writing helper (AI)"))
         self.sidebar = ui.Sidebar(self, side_holder)
         import taskbar
         self.taskbar = taskbar.TaskbarMeter(self)
@@ -127,7 +131,7 @@ class App:
             nb.select(TAB_FILES)
             self.sidebar.select("drive")
 
-    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery"}
+    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery", 10: "writer"}
 
     def open_files(self, sid, recent=False):
         """Sidebar: show My Drive, Recent or another device's files."""
@@ -542,6 +546,183 @@ class App:
         self.log_box = scrolledtext.ScrolledText(f, font=("Consolas", 9), wrap="none", height=30)
         self.log_box.pack(fill="both", expand=True)
         self.log_box.configure(state="disabled")
+
+    # ---- writing helper (AI) ---------------------------------------------------------------------
+
+    def _build_writer(self, f):
+        import writer
+        self._p(f, "Type in any app — WhatsApp, Chrome, Word, email — then finish with a command like /im. "
+                   "Your text is rewritten in place by the AI you choose. Ctrl+Z puts the original back.")
+        self.wr_on = tk.BooleanVar(value=bool(self.settings.get("writer_on")))
+        ttk.Checkbutton(f, text="Turn on the writing helper", variable=self.wr_on,
+                        command=lambda: self.settings.set("writer_on", self.wr_on.get())).pack(anchor="w", pady=(4, 8))
+
+        self._h(f, "Which AI")
+        g = ttk.Frame(f)
+        g.pack(anchor="w", fill="x")
+        labels = [v[0] for v in writer.PROVIDERS.values()]
+        keys = list(writer.PROVIDERS)
+        prov = self.settings.get("writer_provider") or "gemini"
+        self.wr_prov = tk.StringVar(value=writer.PROVIDERS.get(prov, writer.PROVIDERS["gemini"])[0])
+        self.wr_key = tk.StringVar()
+        self.wr_model = tk.StringVar()
+        self.wr_base = tk.StringVar(value=self.settings.get("writer_base") or "")
+        ttk.Label(g, text="AI").grid(row=0, column=0, sticky="w", pady=4)
+        cb = ttk.Combobox(g, textvariable=self.wr_prov, values=labels, state="readonly", width=34)
+        cb.grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Label(g, text="API key").grid(row=1, column=0, sticky="w", pady=4)
+        ke = ttk.Entry(g, textvariable=self.wr_key, show="•", width=48)
+        ke.grid(row=1, column=1, sticky="w", padx=8)
+        self.wr_keylink = ttk.Label(g, text="", foreground="#0b57d0", cursor="hand2")
+        self.wr_keylink.grid(row=1, column=2, sticky="w")
+        ttk.Label(g, text="Model").grid(row=2, column=0, sticky="w", pady=4)
+        self.wr_model_cb = ttk.Combobox(g, textvariable=self.wr_model, width=34)
+        self.wr_model_cb.grid(row=2, column=1, sticky="w", padx=8)
+        ttk.Button(g, text="Load the list of models", command=self._writer_models).grid(row=2, column=2, sticky="w")
+        self.wr_base_lbl = ttk.Label(g, text="Address")
+        self.wr_base_e = ttk.Entry(g, textvariable=self.wr_base, width=48)
+
+        def cur():
+            return keys[labels.index(self.wr_prov.get())] if self.wr_prov.get() in labels else "gemini"
+
+        def load(*_):
+            p = cur()
+            self.settings.set("writer_provider", p)
+            self.wr_key.set((self.settings.get("writer_keys") or {}).get(p, ""))
+            self.wr_model.set((self.settings.get("writer_models") or {}).get(p) or writer.PROVIDERS[p][3])
+            url = writer.PROVIDERS[p][4]
+            self.wr_keylink.config(text=("Get a key ↗" if url else ""))
+            self.wr_keylink.bind("<Button-1>", lambda e, u=url: url and __import__("webbrowser").open("https://" + u))
+            if p == "custom":
+                self.wr_base_lbl.grid(row=3, column=0, sticky="w", pady=4)
+                self.wr_base_e.grid(row=3, column=1, sticky="w", padx=8)
+            else:
+                self.wr_base_lbl.grid_remove()
+                self.wr_base_e.grid_remove()
+
+        def save(*_):
+            p = cur()
+            ks = dict(self.settings.get("writer_keys") or {})
+            ks[p] = self.wr_key.get().strip()
+            self.settings.set("writer_keys", ks)
+            ms = dict(self.settings.get("writer_models") or {})
+            ms[p] = self.wr_model.get().strip()
+            self.settings.set("writer_models", ms)
+            if p == "custom":
+                self.settings.set("writer_base", self.wr_base.get().strip())
+        cb.bind("<<ComboboxSelected>>", load)
+        for v in (self.wr_key, self.wr_model, self.wr_base):
+            v.trace_add("write", save)
+        self._wr_cur = cur
+        load()
+
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=(8, 2))
+        ttk.Button(row, text="Test it", style="Accent.TButton", command=self._writer_test).pack(side="left")
+        self.wr_status = ttk.Label(row, text="", foreground="#666", wraplength=ui.px(560), justify="left")
+        self.wr_status.pack(side="left", padx=10)
+
+        self._h(f, "What gets rewritten")
+        self.wr_sel = tk.StringVar(value=self.settings.get("writer_select") or "smart")
+        for val, text in (("smart", "Smart: the whole message box in chats and browsers; just the paragraph in Word, "
+                                    "Google Docs, Notion and similar"),
+                          ("box", "Always everything in the text box"),
+                          ("paragraph", "Always just the current paragraph")):
+            ttk.Radiobutton(f, text=text, value=val, variable=self.wr_sel,
+                            command=lambda: self.settings.set("writer_select", self.wr_sel.get())).pack(anchor="w")
+
+        self._h(f, "Commands")
+        cmds = "\n".join(f"{k:<10} {v}" for k, v in writer.COMMANDS.items())
+        t = tk.Text(f, height=10, wrap="word", font=(ui.FONT, 9), relief="flat", bg="#f3f3f3")
+        t.insert("1.0", cmds)
+        t.config(state="disabled")
+        t.pack(fill="x", pady=(2, 6))
+        self._p(f, "Your own commands (one per line, like:  /lawyer = Rewrite it in a formal legal style):",
+                foreground="#666")
+        self.wr_custom = tk.Text(f, height=4, wrap="word", font=(ui.FONT, 9))
+        self.wr_custom.insert("1.0", "\n".join(f"{k} = {v}" for k, v in (self.settings.get("writer_custom") or {}).items()))
+        self.wr_custom.pack(fill="x")
+
+        def save_custom(_=None):
+            out = {}
+            for line in self.wr_custom.get("1.0", "end").splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    if k.startswith("/") and len(k) > 1 and " " not in k and v.strip():
+                        out[k] = v.strip()
+            self.settings.set("writer_custom", out)
+        self.wr_custom.bind("<FocusOut>", save_custom)
+        self.wr_custom.bind("<KeyRelease>", save_custom)
+
+    def _writer_models(self):
+        import writer
+        p = self._wr_cur()
+        key = self.wr_key.get().strip()
+        if not key:
+            self.wr_status.config(text="Paste your API key first.")
+            return
+        self.wr_status.config(text="Loading models…")
+
+        def work():
+            try:
+                names = writer.list_models(self.settings, p, key, self.wr_base.get().strip() if p == "custom" else None)
+                self.events.put(lambda: (self.wr_model_cb.config(values=names),
+                                         self.wr_status.config(text=f"{len(names)} models — pick one from the list.")))
+            except Exception as e:
+                self.events.put(lambda e=e: self.wr_status.config(text=f"Couldn't load models: {e}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _writer_test(self):
+        import writer
+        self.wr_status.config(text="Asking the AI…")
+        sample = "i has went to the market yesterday and buyed some vegetable for my family"
+
+        def work():
+            try:
+                out = writer.rewrite(self.settings, writer.COMMANDS["/im"], sample)
+                self.events.put(lambda: self.wr_status.config(text=f"Works! “{sample}” → “{out}”"))
+            except Exception as e:
+                self.events.put(lambda e=e: self.wr_status.config(text=f"Not working: {e}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def writer_notice(self, text, error=False):
+        """A small pill near where you're typing: “✨ Writing…”, or what went wrong."""
+        old = getattr(self, "_wr_pill", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+            self._wr_pill = None
+        if not text:
+            return
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        bg = "#b3261e" if error else "#1f1f1f"
+        w.configure(bg=bg)
+        tk.Label(w, text=text, bg=bg, fg="white", font=(ui.FONT, 10), padx=ui.px(12), pady=ui.px(6)).pack()
+        x, y = self.root.winfo_pointerx(), self.root.winfo_pointery()
+        try:
+            import ctypes
+            from ctypes import wintypes as wt
+
+            class GUITHREADINFO(ctypes.Structure):
+                _fields_ = [("cbSize", wt.DWORD), ("flags", wt.DWORD), ("hwndActive", wt.HWND), ("hwndFocus", wt.HWND),
+                            ("hwndCapture", wt.HWND), ("hwndMenuOwner", wt.HWND), ("hwndMoveSize", wt.HWND),
+                            ("hwndCaret", wt.HWND), ("rcCaret", wt.RECT)]
+            gi = GUITHREADINFO()
+            gi.cbSize = ctypes.sizeof(GUITHREADINFO)
+            if ctypes.windll.user32.GetGUIThreadInfo(0, ctypes.byref(gi)) and gi.hwndCaret:
+                pt = wt.POINT(gi.rcCaret.left, gi.rcCaret.bottom)
+                ctypes.windll.user32.ClientToScreen(gi.hwndCaret, ctypes.byref(pt))
+                x, y = pt.x, pt.y
+        except Exception:
+            pass
+        w.geometry(f"+{x + ui.px(8)}+{y + ui.px(10)}")
+        self._wr_pill = w
+        w.after(6000 if error else 60000, lambda: w.winfo_exists() and w.destroy())
 
     # ---- battery ------------------------------------------------------------------------------
 
@@ -1811,6 +1992,9 @@ def selftest():
                       "laptop:", __import__("battery").laptop_battery()) if clip_sync.WINDOWS else None,
         lambda: app._charge_popup("Battery 80% — unplug the charger", "Self-test"),
         lambda: (app._popup.destroy(), print("REMINDER OK")),
+        lambda: app.nb.select(10),
+        lambda: print("WRITER keyboard watcher:", bool(app.writer.hook), "commands:", len(__import__("writer").commands(app.settings)))
+        if clip_sync.WINDOWS else None,
         # Taskbar read-out: desktop name and speed can be read, and the window appears.
         lambda: (print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
                        "window:", bool(app.taskbar.hwnd), "in taskbar:", app.taskbar.embedded, "shown:", app.taskbar.visible, "size:", app.taskbar.size,

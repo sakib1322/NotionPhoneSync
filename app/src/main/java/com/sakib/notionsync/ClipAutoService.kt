@@ -16,6 +16,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.Toast
 
 /**
  * Sends what you copy on the phone to your other devices with no tap.
@@ -95,6 +96,10 @@ class ClipAutoService : AccessibilityService() {
         if (pkg == packageName || pkg in SKIP_PACKAGES) return
         if (e.isPassword) return
         val p = Prefs(this)
+        if (e.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+            if (p.writerOn) writerCheck(e, p)
+            return
+        }
         if (p.signedIn.isEmpty() || !p.clipboardSync || !p.clipAuto) return
         val words = buildString {
             e.text?.forEach { append(it).append(' ') }
@@ -184,6 +189,61 @@ class ClipAutoService : AccessibilityService() {
         } catch (t: Throwable) {
             Logger.log(this, "Helper: couldn't read the clipboard (${t.javaClass.simpleName}).")
         }
+    }
+
+    // ---- AI writing helper: text ending in /im (etc.) is rewritten in place ----
+
+    @Volatile private var writing = false
+
+    private fun writerCheck(e: AccessibilityEvent, p: Prefs) {
+        if (writing) return
+        val node = e.source ?: return
+        if (node.isPassword) return
+        val text = (node.text ?: e.text?.firstOrNull() ?: return).toString()
+        // Some apps show their hint text when the box is empty; ignore that.
+        if (node.isShowingHintText) return
+        val trig = AiWriter.findTrigger(p, text) ?: return
+        val original = text.dropLast(trig.length)
+        if (original.isBlank()) return
+        val instruction = AiWriter.commands(p)[trig] ?: return
+        if (AiWriter.key(p).isBlank()) {
+            Toast.makeText(this, "Writing helper: add an AI key in Notion Sync › Settings first.", Toast.LENGTH_LONG).show()
+            return
+        }
+        writing = true
+        setText(node, original.trimEnd() + " ⏳")
+        Toast.makeText(this, "✨ Writing…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val result = try { AiWriter.rewrite(p, instruction, original.trimEnd()) } catch (t: Throwable) {
+                main.post {
+                    try { node.refresh(); setText(node, original) } catch (x: Throwable) { }
+                    Toast.makeText(this, "Writing helper: ${t.message}", Toast.LENGTH_LONG).show()
+                    writing = false
+                }
+                Logger.log(this, "Writing helper: ${t.message}")
+                return@Thread
+            }
+            main.post {
+                try {
+                    node.refresh()
+                    val now = node.text?.toString() ?: ""
+                    // Only replace if you haven't typed something else meanwhile.
+                    if (now == original.trimEnd() + " ⏳" || now.isEmpty() || now == original) setText(node, result)
+                    else Toast.makeText(this, "Text changed while writing; left as it is.", Toast.LENGTH_SHORT).show()
+                } catch (x: Throwable) { }
+                writing = false
+            }
+        }.start()
+    }
+
+    private fun setText(node: android.view.accessibility.AccessibilityNodeInfo, t: String) {
+        val args = android.os.Bundle()
+        args.putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, t)
+        node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        val sel = android.os.Bundle()
+        sel.putInt(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, t.length)
+        sel.putInt(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, t.length)
+        node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
     }
 
     private fun appLabel(pkg: String): String = try {

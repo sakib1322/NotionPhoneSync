@@ -108,6 +108,26 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putBoolean("clip_auto", v).apply() }
 
     /** Record calls automatically (needs the helper and microphone permission). */
+    // AI writing helper (/im etc.)
+    var writerOn: Boolean
+        get() = sp.getBoolean("writer_on", true)
+        set(v) { sp.edit().putBoolean("writer_on", v).apply() }
+    var writerProvider: String
+        get() = sp.getString("writer_provider", "gemini") ?: "gemini"
+        set(v) { sp.edit().putString("writer_provider", v).apply() }
+    var writerKeys: String
+        get() = sp.getString("writer_keys", "{}") ?: "{}"
+        set(v) { sp.edit().putString("writer_keys", v).apply() }
+    var writerModels: String
+        get() = sp.getString("writer_models", "{}") ?: "{}"
+        set(v) { sp.edit().putString("writer_models", v).apply() }
+    var writerBase: String
+        get() = sp.getString("writer_base", "") ?: ""
+        set(v) { sp.edit().putString("writer_base", v).apply() }
+    var writerCustom: String
+        get() = sp.getString("writer_custom", "{}") ?: "{}"
+        set(v) { sp.edit().putString("writer_custom", v).apply() }
+
     var callRecord: Boolean
         get() = sp.getBoolean("call_record", false)
         set(v) { sp.edit().putBoolean("call_record", v).apply() }

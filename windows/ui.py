@@ -22,7 +22,7 @@ GLYPHS = {
     "search": ("\uE721", "⌕"), "add": ("\uE710", "+"), "list": ("\uE8FD", "☰"), "grid": ("\uF0E2", "▦"),
     "info": ("\uE946", "i"), "refresh": ("\uE72C", "⟳"), "delete": ("\uE74D", "✕"), "download": ("\uE896", "↓"),
     "upload": ("\uE898", "↑"), "rename": ("\uE8AC", "✎"), "move": ("\uE8DE", "→"), "open": ("\uE8E5", "↗"),
-    "close": ("\uE711", "✕"), "battery": ("\uE83F", "▮"), "down": ("\uE70D", "▾"), "newfolder": ("\uE8F4", "+"),
+    "close": ("\uE711", "✕"), "battery": ("\uE83F", "▮"), "writer": ("\uE70F", "✎"), "down": ("\uE70D", "▾"), "newfolder": ("\uE8F4", "+"),
 }
 ICON_FONT = None
 
@@ -357,6 +357,7 @@ class Sidebar:
         self._item(self.nav, "space", "storage", "Storage on this laptop", lambda: a.nb.select(2))
         self._item(self.nav, "voice", "voice", "Voice changer", lambda: a.nb.select(8))
         self._item(self.nav, "battery", "battery", "Battery", lambda: a.nb.select(9))
+        self._item(self.nav, "writer", "writer", "Writing helper (AI)", lambda: a.nb.select(10))
         self._section("Account")
         self._item(self.nav, "devices", "devices", "Devices", lambda: a.nb.select(7))
         self._item(self.nav, "account", "account", "Account & clipboard", lambda: a.nb.select(4))

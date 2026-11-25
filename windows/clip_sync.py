@@ -246,7 +246,7 @@ class ClipSync:
             if seq == last:
                 continue
             last = seq
-            if seq == self.ignore_seq or not self.enabled():
+            if seq == self.ignore_seq or not self.enabled() or time.time() < getattr(self, "pause_until", 0):
                 continue
             try:
                 item = read()

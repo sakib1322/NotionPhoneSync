@@ -494,6 +494,7 @@ class MainActivity : AppCompatActivity() {
                 toast("Turned off. You can also switch the helper off in Settings › Accessibility.")
             }
         }
+        setupWriter()
         findViewById<MaterialSwitch>(R.id.sw_calls).setOnClickListener { v ->
             val sw = v as MaterialSwitch
             if (!sw.isChecked) {
@@ -797,6 +798,83 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---- AI writing helper ----
+
+    private fun setupWriter() {
+        val sw = findViewById<MaterialSwitch>(R.id.sw_writer) ?: return
+        val provBox = findViewById<com.google.android.material.textfield.MaterialAutoCompleteTextView>(R.id.writer_provider)
+        val keyEt = findViewById<android.widget.EditText>(R.id.writer_key)
+        val modelEt = findViewById<android.widget.EditText>(R.id.writer_model)
+        val baseEt = findViewById<android.widget.EditText>(R.id.writer_base)
+        val baseBox = findViewById<View>(R.id.writer_base_box)
+        val status = findViewById<TextView>(R.id.writer_status)
+        val labels = AiWriter.PROVIDERS.map { it.label }
+        provBox.setSimpleItems(labels.toTypedArray())
+        var loading = false
+        fun load() {
+            loading = true
+            val pr = AiWriter.provider(prefs.writerProvider)
+            provBox.setText(pr.label, false)
+            keyEt.setText(AiWriter.key(prefs, pr.id))
+            modelEt.setText(AiWriter.model(prefs, pr.id))
+            baseEt.setText(prefs.writerBase)
+            baseBox.visibility = if (pr.id == "custom") View.VISIBLE else View.GONE
+            loading = false
+        }
+        provBox.setOnItemClickListener { _, _, pos, _ -> prefs.writerProvider = AiWriter.PROVIDERS[pos].id; load() }
+        val watcher = object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (loading) return
+                val id = prefs.writerProvider
+                AiWriter.setKey(prefs, id, keyEt.text.toString().trim())
+                AiWriter.setModel(prefs, id, modelEt.text.toString().trim())
+                if (id == "custom") prefs.writerBase = baseEt.text.toString().trim()
+                showWriter()
+            }
+        }
+        keyEt.addTextChangedListener(watcher); modelEt.addTextChangedListener(watcher); baseEt.addTextChangedListener(watcher)
+        load()
+        sw.setOnClickListener {
+            prefs.writerOn = sw.isChecked
+            if (sw.isChecked && !ClipAutoService.enabled(this)) {
+                sw.isChecked = false
+                askHelper("Writing helper", "The writing helper runs inside the app's helper. Tap Open settings, find " +
+                    "“Notion Sync helper”, switch it on and allow. Then come back and turn this on.")
+            }
+            showWriter()
+        }
+        findViewById<View>(R.id.writer_getkey).setOnClickListener {
+            val u = AiWriter.provider(prefs.writerProvider).keyUrl
+            if (u.isNotEmpty()) startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://$u")))
+        }
+        findViewById<View>(R.id.writer_test).setOnClickListener {
+            status.text = "Asking the AI…"
+            val sample = "i has went to the market yesterday and buyed some vegetable for my family"
+            Thread {
+                val msg = try { "Works! “$sample” → “${AiWriter.rewrite(prefs, AiWriter.COMMANDS["/im"]!!, sample)}”" }
+                    catch (t: Throwable) { "Not working: ${t.message}" }
+                runOnUiThread { status.text = msg }
+            }.start()
+        }
+        findViewById<TextView>(R.id.writer_cmds).text = "Type in any app, then end with a command:\n" +
+            AiWriter.COMMANDS.entries.joinToString("\n") { "${it.key} — ${it.value.substringBefore('.').substringBefore(" (")}" } +
+            "\nThe same commands work on your laptop."
+        showWriter()
+    }
+
+    private fun showWriter() {
+        val ready = prefs.writerOn && ClipAutoService.enabled(this)
+        findViewById<MaterialSwitch>(R.id.sw_writer)?.let { if (it.isChecked != ready) it.isChecked = ready }
+        findViewById<TextView>(R.id.writer_note)?.text = when {
+            !prefs.writerOn -> "Off."
+            !ClipAutoService.enabled(this) -> "Needs the helper switched on in Android's Accessibility settings (tap the switch)."
+            AiWriter.key(prefs).isBlank() -> "On — add an API key below to start."
+            else -> "On: end any text with /im (or another command) and it's rewritten."
+        }
+    }
+
     private fun showCalls() {
         val ready = prefs.callRecord && CallRecorder.allowed(this) && ClipAutoService.enabled(this)
         findViewById<MaterialSwitch>(R.id.sw_calls)?.let { if (it.isChecked != ready) it.isChecked = ready }
@@ -810,6 +888,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showClipAuto() {
         showCalls()
+        showWriter()
         // The helper was on before but Android switched it off: say so plainly.
         if (prefs.clipAuto && prefs.helperEverOn && !ClipAutoService.enabled(this) && !helperWarned) {
             helperWarned = true
