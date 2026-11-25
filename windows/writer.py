@@ -14,7 +14,7 @@ import requests
 # kind "openai" = the common OpenAI-style API most providers offer; "anthropic" = Claude's own API.
 
 PROVIDERS = {
-    "gemini": ("Google Gemini", "openai", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.8-flash",
+    "gemini": ("Google Gemini", "openai", "https://generativelanguage.googleapis.com/v1beta/openai", "auto",
                "aistudio.google.com/apikey"),
     "claude": ("Claude (Anthropic)", "anthropic", "https://api.anthropic.com/v1", "claude-haiku-5-5",
                "console.anthropic.com"),
@@ -23,10 +23,10 @@ PROVIDERS = {
     "qwen": ("Qwen (Alibaba)", "openai", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-plus",
              "bailian.console.alibabacloud.com"),
     "grok": ("Grok (xAI)", "openai", "https://api.x.ai/v1", "grok-3-mini", "console.x.ai"),
-    "groq": ("Groq (fast, free tier)", "openai", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile",
+    "groq": ("Groq (fast, free tier)", "openai", "https://api.groq.com/openai/v1", "auto",
              "console.groq.com/keys"),
     "mistral": ("Mistral", "openai", "https://api.mistral.ai/v1", "mistral-small-latest", "console.mistral.ai"),
-    "openrouter": ("OpenRouter (hundreds of models)", "openai", "https://openrouter.ai/api/v1", "openrouter/auto",
+    "openrouter": ("OpenRouter (hundreds of models)", "openai", "https://openrouter.ai/api/v1", "auto",
                    "openrouter.ai/keys"),
     "custom": ("Other (OpenAI-compatible)", "openai", "", "", ""),
 }
@@ -95,28 +95,146 @@ def pick_model(prov, names):
     return sorted(stable, key=lambda n: (ver(n), -len(n)), reverse=True)[0] if stable else None
 
 
-def rewrite(settings, instruction, text, timeout=60):
-    try:
-        return _rewrite(settings, instruction, text, timeout)
-    except ModelGone as e:
-        # The model was retired (AI companies do this often): switch to a current one by itself and retry.
-        prov, kind, base, model, key = config(settings)
-        new = e.suggestion
-        if not new:
-            try:
-                new = pick_model(prov, list_models(settings, prov, key, base if prov == "custom" else None))
-            except Exception:
-                new = None
-        if not new or new == model:
-            raise RuntimeError(f"The model “{model}” isn't available. Press “Load the list of models” and pick one.")
-        ms = dict(settings.get("writer_models") or {})
-        ms[prov] = new
-        settings.set("writer_models", ms)
-        return _rewrite(settings, instruction, text, timeout)
+AUTO = "auto"
+AUTO_LABEL = "Auto — best free model (moves down when its free limit runs out)"
 
 
-def _rewrite(settings, instruction, text, timeout=60):
+class QuotaHit(RuntimeError):
+    """This model's free limit is used up for now; `until` = when it's expected back (epoch seconds)."""
+    def __init__(self, msg, until):
+        super().__init__(msg)
+        self.until = until
+
+
+class SlowModel(RuntimeError):
+    pass
+
+
+def _pacific_midnight():
+    """Next midnight in California, when Google resets daily free limits (approximate summer time)."""
+    import datetime as dt
+    now = dt.datetime.utcnow()
+    off = 7 if 3 < now.month < 11 else 8
+    local = now - dt.timedelta(hours=off)
+    nxt = (local + dt.timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+    return (nxt + dt.timedelta(hours=off) - dt.datetime(1970, 1, 1)).total_seconds()
+
+
+TIERS = (("lite", 1), ("nano", 0.5), ("8b", 0.5), ("opus", 5), ("ultra", 5), ("pro", 4), ("large", 4), ("max", 4), ("sonnet", 3.5), ("plus", 3),
+         ("medium", 3), ("70b", 3), ("flash", 2), ("haiku", 2), ("chat", 2), ("mini", 1.5), ("small", 1.5),
+         )
+AUTO_BAD = tuple(b for b in BAD if b not in ("lite", "nano", "thinking")) + ("latest", "tuning", "001", "aqa")
+
+
+def rank_models(prov, names):
+    """Models from most to least powerful (newest generation first, then the bigger tier)."""
+    import re
+    names = [n for n in names if not any(b in n.lower() for b in AUTO_BAD)]
+    if prov == "openrouter":
+        names = [n for n in names if n.endswith(":free")]        # only the free ones
+
+    def score(n):
+        low = n.lower()
+        ver = tuple(int(x) for x in re.findall(r"\d+", re.sub(r"\d+b\b", "", low))[:2]) or (0,)
+        tier = next((w for k, w in TIERS if k in low), 2)
+        size = max([int(x) for x in re.findall(r"(\d+)b\b", low)] or [0])
+        stable = 0 if ("preview" in low or "exp" in low) else 1
+        return (ver, tier, size, stable)
+    return sorted(set(names), key=score, reverse=True)
+
+
+def auto_models(settings, prov, key, base):
+    """The ranked list, refreshed twice a day."""
+    import time as _t
+    cache = dict(settings.get("writer_auto_list") or {})
+    c = cache.get(prov)
+    if c and _t.time() - c.get("at", 0) < 12 * 3600 and c.get("names"):
+        return c["names"]
+    names = rank_models(prov, list_models(settings, prov, key, base if prov == "custom" else None))
+    cache[prov] = {"at": _t.time(), "names": names}
+    settings.set("writer_auto_list", cache)
+    return names
+
+
+def auto_status(settings):
+    """[(model, None or 'free limit used up until 1:05 PM')] for showing in the app."""
+    import time as _t
+    prov = config(settings)[0]
+    cool = (settings.get("writer_cool") or {}).get(prov, {})
+    out = []
+    for m in ((settings.get("writer_auto_list") or {}).get(prov) or {}).get("names", []):
+        u = cool.get(m, 0)
+        out.append((m, None if u <= _t.time() else "resting until " + _t.strftime("%d %b %I:%M %p", _t.localtime(u))))
+    return out
+
+
+def rewrite(settings, instruction, text, timeout=60, log=None):
+    """Rewrites the text. With the model set to Auto, it uses the most powerful model that still has free
+    use left, steps down when a limit runs out, and goes back up once the limit has reset."""
+    import time as _t
     prov, kind, base, model, key = config(settings)
+    if model != AUTO:
+        try:
+            return _rewrite(settings, instruction, text, timeout)
+        except ModelGone as e:
+            # The model was retired (AI companies do this often): switch to a current one by itself and retry.
+            new = e.suggestion
+            if not new:
+                try:
+                    new = pick_model(prov, list_models(settings, prov, key, base if prov == "custom" else None))
+                except Exception:
+                    new = None
+            if not new or new == model:
+                raise RuntimeError(f"The model “{model}” isn't available. Press “Load the list of models” and pick one.")
+            ms = dict(settings.get("writer_models") or {})
+            ms[prov] = new
+            settings.set("writer_models", ms)
+            return _rewrite(settings, instruction, text, timeout)
+    if not key:
+        raise RuntimeError("No API key yet: add one in the app (Writing helper).")
+    names = auto_models(settings, prov, key, base)
+    if not names:
+        raise RuntimeError("This AI didn't list any models to choose from. Pick a model yourself.")
+    allcool = dict(settings.get("writer_cool") or {})
+    cool = dict(allcool.get(prov) or {})
+    now = _t.time()
+    soonest = None
+    last_err = None
+    for m in names:
+        if cool.get(m, 0) > now:
+            soonest = min(soonest or cool[m], cool[m])
+            continue
+        try:
+            out = _rewrite(settings, instruction, text, timeout=min(timeout, 30), model=m)
+            settings.set("writer_last_model", m)
+            return out
+        except QuotaHit as e:
+            cool[m] = e.until
+            why = f"free limit used up until {_t.strftime('%I:%M %p', _t.localtime(e.until)).lstrip('0')}"
+        except ModelGone as e:
+            cool[m] = now + 7 * 86400
+            why = "not available with this key"
+        except SlowModel as e:
+            cool[m] = now + 15 * 60
+            why = "too slow right now"
+        except RuntimeError as e:
+            last_err = e
+            if "API key was refused" in str(e):
+                raise
+            cool[m] = now + 10 * 60
+            why = str(e)[:80]
+        allcool[prov] = cool
+        settings.set("writer_cool", allcool)
+        if log:
+            log(f"Writing helper: {m} — {why}; trying the next one.")
+    when = f" The first one is back at {_t.strftime('%I:%M %p', _t.localtime(soonest)).lstrip('0')}." if soonest else ""
+    raise RuntimeError(f"All free models of this AI are used up or failing right now.{when}"
+                       + (f" Last error: {last_err}" if last_err and not soonest else ""))
+
+
+def _rewrite(settings, instruction, text, timeout=60, model=None):
+    prov, kind, base, model0, key = config(settings)
+    model = model or model0
     if not key:
         raise RuntimeError("No API key yet: add one in the app (Writing helper).")
     if not base:
@@ -144,7 +262,7 @@ def _rewrite(settings, instruction, text, timeout=60):
                 r = requests.post(f"{base}/chat/completions", timeout=(15, timeout), headers=headers, json=body)
             except requests.Timeout:
                 if attempt:
-                    raise RuntimeError("The AI took too long to answer. Try again, or pick a faster model "
+                    raise SlowModel("The AI took too long to answer. Try again, or pick a faster model "
                                        "(names with “flash”, “mini” or “haiku”).")
                 continue
             if r.status_code == 400 and "reasoning" in r.text.lower() and "reasoning_effort" in body:
@@ -181,7 +299,17 @@ def _check(r):
     if r.status_code in (401, 403):
         raise RuntimeError(f"The API key was refused ({msg or r.status_code}).")
     if r.status_code == 429:
-        raise RuntimeError("Too many requests or out of credit for this AI right now.")
+        import re
+        import time as _t
+        raw = r.text
+        if re.search(r"limit:\s*0\b", raw):
+            raise QuotaHit("This model has no free use with this key.", _t.time() + 7 * 86400)
+        if re.search(r"(?i)per ?day|perday|daily", raw):
+            raise QuotaHit("Today's free limit is used up.", _pacific_midnight())
+        m = re.search(r'retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s', raw) or re.search(r"(?i)retry in (\d+(?:\.\d+)?)\s*s", raw)
+        ra = r.headers.get("retry-after")
+        secs = float(m.group(1)) if m else (float(ra) if ra and ra.replace(".", "").isdigit() else 60)
+        raise QuotaHit("Too many requests right now.", _t.time() + max(20, secs))
     raise RuntimeError(f"The AI said: {msg or r.status_code}")
 
 
@@ -398,7 +526,7 @@ class Writer:
             cmds = commands(self.s)
             self._notice("✨ Writing…")
             try:
-                result = rewrite(self.s, cmds[trig], text.rstrip())
+                result = rewrite(self.s, cmds[trig], text.rstrip(), log=self._log)
             except Exception as e:
                 press(VK_RIGHT)
                 self._notice(str(e), error=True)

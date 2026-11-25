@@ -810,6 +810,11 @@ class MainActivity : AppCompatActivity() {
         val status = findViewById<TextView>(R.id.writer_status)
         val labels = AiWriter.PROVIDERS.map { it.label }
         provBox.setSimpleItems(labels.toTypedArray())
+        if (!prefs.writerAutoMigrated) {
+            // Switch to Auto once: best free model, steps down/up by itself.
+            listOf("gemini", "groq", "openrouter").forEach { AiWriter.setModel(prefs, it, AiWriter.AUTO) }
+            prefs.writerAutoMigrated = true
+        }
         var loading = false
         fun load() {
             loading = true
@@ -855,7 +860,8 @@ class MainActivity : AppCompatActivity() {
             Thread {
                 val msg = try {
                     val out = AiWriter.rewrite(prefs, AiWriter.COMMANDS["/im"]!!, sample)
-                    "Works (${AiWriter.model(prefs)})! “$sample” → “$out”"
+                    val used = AiWriter.model(prefs).let { if (it == AiWriter.AUTO) prefs.writerLastModel else it }
+                    "Works ($used)! “$sample” → “$out”"
                 } catch (t: Throwable) { "Not working: ${t.message}" }
                 runOnUiThread {
                     status.text = msg

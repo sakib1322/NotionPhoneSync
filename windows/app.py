@@ -576,7 +576,7 @@ class App:
         self.wr_keylink = ttk.Label(g, text="", foreground="#0b57d0", cursor="hand2")
         self.wr_keylink.grid(row=1, column=2, sticky="w")
         ttk.Label(g, text="Model").grid(row=2, column=0, sticky="w", pady=4)
-        self.wr_model_cb = ttk.Combobox(g, textvariable=self.wr_model, width=34)
+        self.wr_model_cb = ttk.Combobox(g, textvariable=self.wr_model, width=58)
         self.wr_model_cb.grid(row=2, column=1, sticky="w", padx=8)
         ttk.Button(g, text="Load the list of models", command=self._writer_models).grid(row=2, column=2, sticky="w")
         self.wr_base_lbl = ttk.Label(g, text="Address")
@@ -585,11 +585,21 @@ class App:
         def cur():
             return keys[labels.index(self.wr_prov.get())] if self.wr_prov.get() in labels else "gemini"
 
+        if not self.settings.get("writer_auto_migrated"):
+            # Switch to the new Auto mode once (best free model, steps down/up by itself).
+            ms = dict(self.settings.get("writer_models") or {})
+            for pv in ("gemini", "groq", "openrouter"):
+                ms[pv] = writer.AUTO
+            self.settings.set("writer_models", ms)
+            self.settings.set("writer_auto_migrated", True)
+
         def load(*_):
             p = cur()
             self.settings.set("writer_provider", p)
             self.wr_key.set((self.settings.get("writer_keys") or {}).get(p, ""))
-            self.wr_model.set((self.settings.get("writer_models") or {}).get(p) or writer.PROVIDERS[p][3])
+            m = (self.settings.get("writer_models") or {}).get(p) or writer.PROVIDERS[p][3]
+            self.wr_model.set(writer.AUTO_LABEL if m == writer.AUTO else m)
+            self.wr_model_cb.config(values=[writer.AUTO_LABEL])
             url = writer.PROVIDERS[p][4]
             self.wr_keylink.config(text=("Get a key ↗" if url else ""))
             self.wr_keylink.bind("<Button-1>", lambda e, u=url: url and __import__("webbrowser").open("https://" + u))
@@ -606,7 +616,7 @@ class App:
             ks[p] = self.wr_key.get().strip()
             self.settings.set("writer_keys", ks)
             ms = dict(self.settings.get("writer_models") or {})
-            ms[p] = self.wr_model.get().strip()
+            ms[p] = writer.AUTO if self.wr_model.get().strip() in (writer.AUTO_LABEL, writer.AUTO) else self.wr_model.get().strip()
             self.settings.set("writer_models", ms)
             if p == "custom":
                 self.settings.set("writer_base", self.wr_base.get().strip())
@@ -667,11 +677,11 @@ class App:
         def work():
             try:
                 names = writer.list_models(self.settings, p, key, self.wr_base.get().strip() if p == "custom" else None)
-                best = writer.pick_model(p, names)
-                self.events.put(lambda: (self.wr_model_cb.config(values=names),
-                                         best and self.wr_model.set(best),
-                                         self.wr_status.config(text=f"{len(names)} models. Picked {best} — "
-                                                                    "you can choose another from the list.")))
+                ranked = writer.rank_models(p, names)
+                order = " → ".join(ranked[:6]) + (" …" if len(ranked) > 6 else "")
+                self.events.put(lambda: (self.wr_model_cb.config(values=[writer.AUTO_LABEL] + names),
+                                         self.wr_status.config(text=f"{len(names)} models. Auto tries them in this "
+                                                                    f"order: {order}")))
             except Exception as e:
                 self.events.put(lambda e=e: self.wr_status.config(text=f"Couldn't load models: {e}"))
         threading.Thread(target=work, daemon=True).start()
@@ -683,10 +693,12 @@ class App:
 
         def work():
             try:
-                out = writer.rewrite(self.settings, writer.COMMANDS["/im"], sample)
+                out = writer.rewrite(self.settings, writer.COMMANDS["/im"], sample, log=lambda m: self.events.put(lambda: self.log(m)))
                 model = writer.config(self.settings)[3]
-                self.events.put(lambda: (self.wr_model.set(model) if self.wr_model.get() != model else None,
-                                         self.wr_status.config(text=f"Works ({model})! “{sample}” → “{out}”")))
+                used = self.settings.get("writer_last_model") if model == writer.AUTO else model
+                if model != writer.AUTO:
+                    self.events.put(lambda: self.wr_model.set(model) if self.wr_model.get() != model else None)
+                self.events.put(lambda: self.wr_status.config(text=f"Works ({used})! “{sample}” → “{out}”"))
             except Exception as e:
                 self.events.put(lambda e=e: self.wr_status.config(text=f"Not working: {e}"))
         threading.Thread(target=work, daemon=True).start()

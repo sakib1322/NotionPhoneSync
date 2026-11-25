@@ -124,6 +124,18 @@ class Prefs(ctx: Context) {
     var writerBase: String
         get() = sp.getString("writer_base", "") ?: ""
         set(v) { sp.edit().putString("writer_base", v).apply() }
+    var writerAutoList: String
+        get() = sp.getString("writer_auto_list", "{}") ?: "{}"
+        set(v) { sp.edit().putString("writer_auto_list", v).apply() }
+    var writerCool: String
+        get() = sp.getString("writer_cool", "{}") ?: "{}"
+        set(v) { sp.edit().putString("writer_cool", v).apply() }
+    var writerLastModel: String
+        get() = sp.getString("writer_last_model", "") ?: ""
+        set(v) { sp.edit().putString("writer_last_model", v).apply() }
+    var writerAutoMigrated: Boolean
+        get() = sp.getBoolean("writer_auto_migrated", false)
+        set(v) { sp.edit().putBoolean("writer_auto_migrated", v).apply() }
     var writerCustom: String
         get() = sp.getString("writer_custom", "{}") ?: "{}"
         set(v) { sp.edit().putString("writer_custom", v).apply() }

@@ -18,15 +18,15 @@ object AiWriter {
                         val model: String, val keyUrl: String)
 
     val PROVIDERS = listOf(
-        Provider("gemini", "Google Gemini", false, "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.8-flash", "aistudio.google.com/apikey"),
+        Provider("gemini", "Google Gemini", false, "https://generativelanguage.googleapis.com/v1beta/openai", "auto", "aistudio.google.com/apikey"),
         Provider("claude", "Claude (Anthropic)", true, "https://api.anthropic.com/v1", "claude-haiku-5-5", "console.anthropic.com"),
         Provider("openai", "ChatGPT (OpenAI)", false, "https://api.openai.com/v1", "gpt-4.1-mini", "platform.openai.com/api-keys"),
         Provider("deepseek", "DeepSeek", false, "https://api.deepseek.com/v1", "deepseek-chat", "platform.deepseek.com"),
         Provider("qwen", "Qwen (Alibaba)", false, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-plus", "bailian.console.alibabacloud.com"),
         Provider("grok", "Grok (xAI)", false, "https://api.x.ai/v1", "grok-3-mini", "console.x.ai"),
-        Provider("groq", "Groq (fast, free tier)", false, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "console.groq.com/keys"),
+        Provider("groq", "Groq (fast, free tier)", false, "https://api.groq.com/openai/v1", "auto", "console.groq.com/keys"),
         Provider("mistral", "Mistral", false, "https://api.mistral.ai/v1", "mistral-small-latest", "console.mistral.ai"),
-        Provider("openrouter", "OpenRouter (hundreds of models)", false, "https://openrouter.ai/api/v1", "openrouter/auto", "openrouter.ai/keys"),
+        Provider("openrouter", "OpenRouter (hundreds of models)", false, "https://openrouter.ai/api/v1", "auto", "openrouter.ai/keys"),
         Provider("custom", "Other (OpenAI-compatible)", false, "", "", ""),
     )
 
@@ -123,25 +123,107 @@ object AiWriter {
     }
 
     /** Asks the AI. Runs on a background thread. If the model was retired, switches to a current one. */
-    fun rewrite(p: Prefs, instruction: String, text: String): String = try {
-        rewriteOnce(p, instruction, text)
-    } catch (e: ModelGone) {
-        val prov = p.writerProvider
-        val old = model(p, prov)
-        val new = e.suggestion ?: try { pickModel(prov, listModels(p, prov, key(p, prov))) } catch (x: Exception) { null }
-        if (new == null || new == old) throw IOException("The model “$old” isn't available. Type another model name in settings.")
-        setModel(p, prov, new)
-        rewriteOnce(p, instruction, text)
+    const val AUTO = "auto"
+
+    class QuotaHit(msg: String, val until: Long) : IOException(msg)
+    class SlowModel(msg: String) : IOException(msg)
+
+    private val TIERS = listOf("lite" to 1.0, "nano" to 0.5, "8b" to 0.5, "opus" to 5.0, "ultra" to 5.0, "pro" to 4.0,
+        "large" to 4.0, "max" to 4.0, "sonnet" to 3.5, "plus" to 3.0, "medium" to 3.0, "70b" to 3.0, "flash" to 2.0,
+        "haiku" to 2.0, "chat" to 2.0, "mini" to 1.5, "small" to 1.5)
+    private val AUTO_BAD = BAD.filter { it != "lite" && it != "nano" && it != "thinking" } + listOf("latest", "tuning", "001", "aqa")
+
+    /** Models from most to least powerful (newest generation first, then the bigger tier). */
+    fun rankModels(prov: String, all: List<String>): List<String> {
+        var names = all.filter { n -> AUTO_BAD.none { n.lowercase().contains(it) } }.distinct()
+        if (prov == "openrouter") names = names.filter { it.endsWith(":free") }
+        fun score(n: String): List<Double> {
+            val low = n.lowercase()
+            val ver = Regex("\\d+").findAll(low.replace(Regex("\\d+b\\b"), "")).take(2).map { it.value.toDouble() }.toList()
+            val tier = TIERS.firstOrNull { low.contains(it.first) }?.second ?: 2.0
+            val size = Regex("(\\d+)b\\b").findAll(low).map { it.groupValues[1].toDouble() }.maxOrNull() ?: 0.0
+            val stable = if (low.contains("preview") || low.contains("exp")) 0.0 else 1.0
+            return listOf(ver.getOrElse(0) { 0.0 }, ver.getOrElse(1) { 0.0 }, tier, size, stable)
+        }
+        val cmp = Comparator<String> { a, b ->
+            val sa = score(a); val sb = score(b)
+            for (i in sa.indices) { val d = sa[i].compareTo(sb[i]); if (d != 0) return@Comparator d }
+            0
+        }
+        return names.sortedWith(cmp).reversed()
     }
 
-    private fun rewriteOnce(p: Prefs, instruction: String, text: String): String {
+    private fun autoModels(p: Prefs, prov: String, key: String): List<String> {
+        val cache = try { JSONObject(p.writerAutoList) } catch (e: Exception) { JSONObject() }
+        cache.optJSONObject(prov)?.let { c ->
+            val arr = c.optJSONArray("names")
+            if (System.currentTimeMillis() - c.optLong("at") < 12 * 3600_000L && arr != null && arr.length() > 0)
+                return (0 until arr.length()).map { arr.getString(it) }
+        }
+        val names = rankModels(prov, listModels(p, prov, key))
+        cache.put(prov, JSONObject().put("at", System.currentTimeMillis()).put("names", JSONArray(names)))
+        p.writerAutoList = cache.toString()
+        return names
+    }
+
+    private fun pacificMidnight(): Long {
+        val z = java.time.ZoneId.of("America/Los_Angeles")
+        return java.time.LocalDate.now(z).plusDays(1).atTime(0, 1).atZone(z).toInstant().toEpochMilli()
+    }
+
+    /** Rewrites the text. With the model set to "auto", it uses the most powerful model that still has free
+     *  use left, steps down when a limit runs out, and goes back up once the limit has reset. */
+    fun rewrite(p: Prefs, instruction: String, text: String): String {
+        val prov = p.writerProvider
+        if (model(p, prov) != AUTO) {
+            return try { rewriteOnce(p, instruction, text) } catch (e: ModelGone) {
+                val old = model(p, prov)
+                val new = e.suggestion ?: try { pickModel(prov, listModels(p, prov, key(p, prov))) } catch (x: Exception) { null }
+                if (new == null || new == old) throw IOException("The model “$old” isn't available. Type another model name (or auto) in settings.")
+                setModel(p, prov, new)
+                rewriteOnce(p, instruction, text)
+            }
+        }
+        val key = key(p, prov)
+        if (key.isBlank()) throw IOException("No API key yet: add one in Notion Sync › Settings › Writing helper.")
+        val names = autoModels(p, prov, key)
+        if (names.isEmpty()) throw IOException("This AI didn't list any models. Type a model name in settings.")
+        val all = try { JSONObject(p.writerCool) } catch (e: Exception) { JSONObject() }
+        val cool = all.optJSONObject(prov) ?: JSONObject()
+        val now = System.currentTimeMillis()
+        var soonest = Long.MAX_VALUE
+        var lastErr: Exception? = null
+        for (m in names) {
+            val until = cool.optLong(m, 0)
+            if (until > now) { soonest = minOf(soonest, until); continue }
+            try {
+                val out = rewriteOnce(p, instruction, text, m)
+                p.writerLastModel = m
+                return out
+            } catch (e: QuotaHit) { cool.put(m, e.until)
+            } catch (e: ModelGone) { cool.put(m, now + 7 * 86400_000L)
+            } catch (e: SlowModel) { cool.put(m, now + 15 * 60_000L)
+            } catch (e: IOException) {
+                if (e.message?.contains("API key was refused") == true) throw e
+                lastErr = e; cool.put(m, now + 10 * 60_000L)
+            }
+            all.put(prov, cool); p.writerCool = all.toString()
+            android.util.Log.i("AiWriter", "$m not usable now; trying the next one")
+        }
+        val fmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+        throw IOException("All free models of this AI are used up or failing right now." +
+            (if (soonest != Long.MAX_VALUE) " The first one is back at ${fmt.format(java.util.Date(soonest))}." else "") +
+            (if (soonest == Long.MAX_VALUE && lastErr != null) " Last error: ${lastErr.message}" else ""))
+    }
+
+    private fun rewriteOnce(p: Prefs, instruction: String, text: String, modelOverride: String? = null): String {
         val prov = provider(p.writerProvider)
         val key = key(p, prov.id)
         if (key.isBlank()) throw IOException("No API key yet: add one in Notion Sync › Settings › Writing helper.")
         val base = (if (prov.id == "custom") p.writerBase else prov.base).trimEnd('/')
         if (base.isBlank()) throw IOException("No address set for this AI.")
         val user = "Instruction: $instruction\n\nText:\n$text"
-        val model = model(p, prov.id)
+        val model = modelOverride ?: model(p, prov.id)
         var out: String
         if (prov.anthropic) {
             val body = JSONObject().put("model", model).put("max_tokens", 2048).put("system", SYSTEM)
@@ -167,7 +249,7 @@ object AiWriter {
                     .header("Authorization", "Bearer $key")
                 if (prov.id == "openrouter") rb.header("HTTP-Referer", "https://github.com/sakib1322/NotionPhoneSync").header("X-Title", "Notion Sync")
                 val r = try { http.newCall(rb.build()).execute() } catch (e: java.net.SocketTimeoutException) {
-                    if (attempt == 1) throw IOException("The AI took too long to answer. Try again, or pick a faster model (with “flash”, “mini” or “haiku” in its name).")
+                    if (attempt == 1) throw SlowModel("The AI took too long to answer. Try again, or pick a faster model (with “flash”, “mini” or “haiku” in its name).")
                     continue
                 }
                 val s = r.use { it.body?.string() ?: "" }
@@ -199,7 +281,18 @@ object AiWriter {
         }
         return when (code) {
             401, 403 -> "The API key was refused ($msg)."
-            429 -> "Too many requests or out of credit for this AI right now."
+            429 -> {
+                val now = System.currentTimeMillis()
+                when {
+                    Regex("limit:\\s*0\\b").containsMatchIn(body) -> throw QuotaHit("No free use for this model.", now + 7 * 86400_000L)
+                    Regex("(?i)per ?day|perday|daily").containsMatchIn(body) -> throw QuotaHit("Today's free limit is used up.", pacificMidnight())
+                    else -> {
+                        val secs = Regex("retryDelay\"?\\s*:\\s*\"?(\\d+(?:\\.\\d+)?)s").find(body)?.groupValues?.get(1)?.toDoubleOrNull()
+                            ?: Regex("(?i)retry in (\\d+(?:\\.\\d+)?)\\s*s").find(body)?.groupValues?.get(1)?.toDoubleOrNull() ?: 60.0
+                        throw QuotaHit("Too many requests right now.", now + (maxOf(20.0, secs) * 1000).toLong())
+                    }
+                }
+            }
             else -> "The AI said: ${msg.ifBlank { code.toString() }}"
         }
     }
