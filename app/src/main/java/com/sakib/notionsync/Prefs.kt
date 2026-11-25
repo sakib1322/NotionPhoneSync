@@ -134,7 +134,7 @@ class Prefs(ctx: Context) {
         get() = sp.getString("writer_last_model", "") ?: ""
         set(v) { sp.edit().putString("writer_last_model", v).apply() }
     var writerPrefix: String
-        get() = sp.getString("writer_prefix", "/") ?: "/"
+        get() = sp.getString("writer_prefix", "both") ?: "both"
         set(v) { sp.edit().putString("writer_prefix", v).apply() }
     var writerProbeAt: Long
         get() = sp.getLong("writer_probe_at", 0)

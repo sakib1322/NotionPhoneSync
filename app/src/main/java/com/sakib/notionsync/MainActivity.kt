@@ -880,7 +880,7 @@ class MainActivity : AppCompatActivity() {
             }.start()
         }
         val pg = findViewById<android.widget.RadioGroup>(R.id.writer_prefix)
-        pg.check(when (prefs.writerPrefix) { "." -> R.id.prefix_dot; "both" -> R.id.prefix_both; else -> R.id.prefix_slash })
+        pg.check(when (prefs.writerPrefix) { "." -> R.id.prefix_dot; "/" -> R.id.prefix_slash; else -> R.id.prefix_both })
         pg.setOnCheckedChangeListener { _, id ->
             prefs.writerPrefix = when (id) { R.id.prefix_dot -> "."; R.id.prefix_both -> "both"; else -> "/" }
         }

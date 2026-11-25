@@ -555,7 +555,26 @@ class App:
                    "Your text is rewritten in place by the AI you choose. Ctrl+Z puts the original back.")
         self.wr_on = tk.BooleanVar(value=bool(self.settings.get("writer_on")))
         ttk.Checkbutton(f, text="Turn on the writing helper", variable=self.wr_on,
-                        command=lambda: self.settings.set("writer_on", self.wr_on.get())).pack(anchor="w", pady=(4, 8))
+                        command=lambda: self.settings.set("writer_on", self.wr_on.get())).pack(anchor="w", pady=(4, 2))
+        self.wr_alive = ttk.Label(f, text="", foreground="#666")
+        self.wr_alive.pack(anchor="w", pady=(0, 8))
+
+        def alive():
+            try:
+                w = getattr(self, "writer", None)
+                if not self.settings.get("writer_on"):
+                    t = "Off."
+                elif not w or not w.hook:
+                    t = "⚠ Not watching the keyboard — restart the app (Activity shows why)."
+                elif w.last_key and time.time() - w.last_key < 120:
+                    t = f"✓ Watching your typing (last key {int(time.time() - w.last_key)} s ago). Type a test anywhere, e.g. “i has went.im”."
+                else:
+                    t = "✓ Ready. Type something in any app to test it, e.g. “i has went.im”."
+                self.wr_alive.config(text=t)
+            except Exception:
+                pass
+            self.root.after(2000, alive)
+        alive()
 
         self._h(f, "Which AI")
         g = ttk.Frame(f)
@@ -642,7 +661,7 @@ class App:
         self.root.after(60000, self._writer_probe_loop)
 
         self._h(f, "How to start a command")
-        self.wr_prefix = tk.StringVar(value=self.settings.get("writer_prefix") or "/")
+        self.wr_prefix = tk.StringVar(value=self.settings.get("writer_prefix") or "both")
         for val, text in (("/", "Slash — type a space, then /im   (example:  i has went /im)"),
                           (".", "Full stop — right after your text, .im   (example:  i has went.im)"),
                           ("both", "Either one")):

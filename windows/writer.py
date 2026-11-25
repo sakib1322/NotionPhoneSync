@@ -64,7 +64,7 @@ def commands(settings):
 def triggers(settings):
     """[(what you type, the command it means)], e.g. ("/im", "/im") or (".im", "/im"), longest first.
     You choose the starting character in the app: / (slash), . (full stop) or both."""
-    pre = settings.get("writer_prefix") or "/"
+    pre = settings.get("writer_prefix") or "both"
     starts = ["/", "."] if pre == "both" else [pre]
     out = []
     for cmd in commands(settings):
@@ -487,6 +487,7 @@ class Writer:
         self.s = app.settings
         self.buf = ""
         self.busy = False
+        self.last_key = 0
         self.hook = None
         self._proc = None
         self.thread = None
@@ -502,14 +503,31 @@ class Writer:
 
     # the keyboard watcher thread
 
+    def _install(self):
+        if self.hook:
+            try:
+                user32.UnhookWindowsHookEx(self.hook)
+            except Exception:
+                pass
+        self.hook = user32.SetWindowsHookExW(13, self._proc, kernel32.GetModuleHandleW(None), 0)   # WH_KEYBOARD_LL
+        return bool(self.hook)
+
     def _loop(self):
         self._proc = HOOKPROC(self._hookproc)
-        self.hook = user32.SetWindowsHookExW(13, self._proc, kernel32.GetModuleHandleW(None), 0)   # WH_KEYBOARD_LL
-        if not self.hook:
+        user32.UnhookWindowsHookEx.argtypes = [wt.HHOOK]
+        user32.SetTimer.argtypes = [wt.HWND, ctypes.c_size_t, wt.UINT, ctypes.c_void_p]
+        if not self._install():
             self._log(f"Writing helper couldn't watch the keyboard (error {kernel32.GetLastError()}).")
             return
+        # Windows quietly drops a keyboard watcher that's ever slow to answer (e.g. while a big backup keeps
+        # the app busy). So put it back every minute; it costs nothing.
+        user32.SetTimer(None, 0, 60000, None)
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == 0x0113 and not msg.hWnd:      # WM_TIMER for this thread
+                if not self.busy:
+                    self._install()
+                continue
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
@@ -517,7 +535,8 @@ class Writer:
         try:
             if code == 0 and wp in (0x100, 0x104) and self.enabled() and not self.busy:   # key down
                 k = ctypes.cast(lp, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                if k.dwExtraInfo != MAGIC and not (k.flags & 0x10):      # not a key we (or another app) faked
+                if k.dwExtraInfo != MAGIC:          # not a key we pressed ourselves
+                    self.last_key = time.time()
                     self._typed(k.vkCode, k.scanCode)
         except Exception:
             pass
@@ -545,6 +564,7 @@ class Writer:
         self.buf = (self.buf + out.value[:n])[-40:]
         hit = match_trigger(self.s, self.buf)
         if hit:
+            self._log(f"Writing helper: noticed {hit[0]} — rewriting…")
             self.buf = ""
             self.busy = True
             threading.Thread(target=self._run, args=hit, daemon=True).start()
