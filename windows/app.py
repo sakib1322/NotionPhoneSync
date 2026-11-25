@@ -734,8 +734,7 @@ class App:
         self.root.after(30000, self._remind_loop)
 
     def _charge_popup(self, title, text):
-        """A clear pop-up near the clock (plus a Windows notification and a sound)."""
-        self.notify(title, text)
+        """A clear pop-up near the clock, with a sound. (Only this one — not a Windows notification too.)"""
         try:
             import winsound
             winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
