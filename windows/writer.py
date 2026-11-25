@@ -409,7 +409,7 @@ if os.name == "nt":
     import ctypes
     from ctypes import wintypes as wt
 
-    user32 = ctypes.windll.user32
+    user32 = ctypes.WinDLL("user32")      # its own copy: other parts of the app set different call types
     kernel32 = ctypes.windll.kernel32
     ULONG_PTR = ctypes.c_size_t
 
