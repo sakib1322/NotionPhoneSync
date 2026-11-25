@@ -133,6 +133,12 @@ class Prefs(ctx: Context) {
     var writerLastModel: String
         get() = sp.getString("writer_last_model", "") ?: ""
         set(v) { sp.edit().putString("writer_last_model", v).apply() }
+    var writerPrefix: String
+        get() = sp.getString("writer_prefix", "/") ?: "/"
+        set(v) { sp.edit().putString("writer_prefix", v).apply() }
+    var writerProbeAt: Long
+        get() = sp.getLong("writer_probe_at", 0)
+        set(v) { sp.edit().putLong("writer_probe_at", v).apply() }
     var writerAutoMigrated: Boolean
         get() = sp.getBoolean("writer_auto_migrated", false)
         set(v) { sp.edit().putBoolean("writer_auto_migrated", v).apply() }

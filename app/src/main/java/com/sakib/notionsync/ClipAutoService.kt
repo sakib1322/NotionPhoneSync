@@ -70,9 +70,23 @@ class ClipAutoService : AccessibilityService() {
             null
         }
         Logger.log(this, "Shared clipboard: automatic sending is on — copies go to your other devices with no tap.")
+        main.postDelayed(probeTick, 60_000)
+    }
+
+    /** Every 2 hours: is a more powerful AI model available again? (Writing helper, Auto mode.) */
+    private val probeTick = object : Runnable {
+        override fun run() {
+            val p = Prefs(this@ClipAutoService)
+            if (p.writerOn && AiWriter.model(p) == AiWriter.AUTO && AiWriter.key(p).isNotBlank() &&
+                System.currentTimeMillis() - p.writerProbeAt > 2 * 3600_000L) {
+                Thread { try { AiWriter.probe(p) } catch (t: Throwable) { } }.start()
+            }
+            main.postDelayed(this, 10 * 60_000L)
+        }
     }
 
     override fun onDestroy() {
+        main.removeCallbacks(probeTick)
         try { calls?.stop() } catch (t: Throwable) { }
         calls = null
         if (running === this) running = null
@@ -202,10 +216,10 @@ class ClipAutoService : AccessibilityService() {
         val text = (node.text ?: e.text?.firstOrNull() ?: return).toString()
         // Some apps show their hint text when the box is empty; ignore that.
         if (node.isShowingHintText) return
-        val trig = AiWriter.findTrigger(p, text) ?: return
+        val (trig, cmd) = AiWriter.findTrigger(p, text) ?: return
         val original = text.dropLast(trig.length)
         if (original.isBlank()) return
-        val instruction = AiWriter.commands(p)[trig] ?: return
+        val instruction = AiWriter.commands(p)[cmd] ?: return
         if (AiWriter.key(p).isBlank()) {
             Toast.makeText(this, "Writing helper: add an AI key in Notion Sync › Settings first.", Toast.LENGTH_LONG).show()
             return

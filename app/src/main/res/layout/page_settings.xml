@@ -186,7 +186,15 @@
                     <com.google.android.material.button.MaterialButton android:id="@+id/writer_test" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Test it" />
                     <com.google.android.material.button.MaterialButton android:id="@+id/writer_getkey" style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:text="Get a key" />
                 </LinearLayout>
+                <com.google.android.material.button.MaterialButton android:id="@+id/writer_probe" style="@style/Widget.Material3.Button.OutlinedButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Check the best model now" />
                 <TextView android:id="@+id/writer_status" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" />
+                <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textSize="12sp" android:text="Auto also checks for a better model by itself every 2 hours." />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Start commands with" android:textStyle="bold" />
+                <RadioGroup android:id="@+id/writer_prefix" android:layout_width="match_parent" android:layout_height="wrap_content">
+                    <RadioButton android:id="@+id/prefix_slash" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Slash, after a space:  i has went /im" />
+                    <RadioButton android:id="@+id/prefix_dot" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Full stop, right after the text:  i has went.im" />
+                    <RadioButton android:id="@+id/prefix_both" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Either one" />
+                </RadioGroup>
                 <TextView android:id="@+id/writer_cmds" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textSize="12sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>

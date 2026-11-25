@@ -632,6 +632,23 @@ class App:
         self.wr_status = ttk.Label(row, text="", foreground="#666", wraplength=ui.px(560), justify="left")
         self.wr_status.pack(side="left", padx=10)
 
+        prow = ttk.Frame(f)
+        prow.pack(anchor="w", fill="x", pady=(8, 0))
+        ttk.Button(prow, text="Check the best model now", command=lambda: self._writer_probe(manual=True)).pack(side="left")
+        self.wr_probe = ttk.Label(prow, text="", foreground="#666", wraplength=ui.px(560), justify="left")
+        self.wr_probe.pack(side="left", padx=10)
+        self._p(f, "In Auto, this checks from the most powerful model down and moves back up to the best one that "
+                   "works right now. It also runs by itself every 2 hours.", foreground="#666")
+        self.root.after(60000, self._writer_probe_loop)
+
+        self._h(f, "How to start a command")
+        self.wr_prefix = tk.StringVar(value=self.settings.get("writer_prefix") or "/")
+        for val, text in (("/", "Slash — type a space, then /im   (example:  i has went /im)"),
+                          (".", "Full stop — right after your text, .im   (example:  i has went.im)"),
+                          ("both", "Either one")):
+            ttk.Radiobutton(f, text=text, value=val, variable=self.wr_prefix,
+                            command=lambda: self.settings.set("writer_prefix", self.wr_prefix.get())).pack(anchor="w")
+
         self._h(f, "What gets rewritten")
         self.wr_sel = tk.StringVar(value=self.settings.get("writer_select") or "smart")
         for val, text in (("smart", "Smart: the whole message box in chats and browsers; just the paragraph in Word, "
@@ -664,6 +681,43 @@ class App:
             self.settings.set("writer_custom", out)
         self.wr_custom.bind("<FocusOut>", save_custom)
         self.wr_custom.bind("<KeyRelease>", save_custom)
+
+    def _writer_probe_loop(self):
+        """Every 2 hours: check whether a more powerful model is available again."""
+        try:
+            import writer
+            last = self.settings.get("writer_probe_at") or 0
+            if (self.settings.get("writer_on") and writer.config(self.settings)[3] == writer.AUTO
+                    and writer.config(self.settings)[4] and time.time() - last > 2 * 3600):
+                self._writer_probe()
+        except Exception:
+            pass
+        self.root.after(10 * 60 * 1000, self._writer_probe_loop)
+
+    def _writer_probe(self, manual=False):
+        import writer
+        if writer.config(self.settings)[3] != writer.AUTO:
+            if manual:
+                self.wr_probe.config(text="This only applies when the model is set to Auto.")
+            return
+        if manual:
+            self.wr_probe.config(text="Checking from the most powerful model down…")
+
+        def work():
+            try:
+                res = writer.probe(self.settings, log=lambda m: self.events.put(lambda: self.log(m)))
+                if not res:
+                    txt = "Add an API key first."
+                else:
+                    best = res[-1][0] if res[-1][1] == "ok" else None
+                    lines = [f"{'✓' if st == 'ok' else '✗'} {m}: {'available — in use now' if st == 'ok' else st}"
+                             for m, st in res]
+                    txt = ("\n".join(lines) + (f"\nUsing {best}." if best else "\nNone answered right now.") +
+                           f"\n(Checked {time.strftime('%I:%M %p').lstrip('0')})")
+            except Exception as e:
+                txt = f"Couldn't check: {e}"
+            self.events.put(lambda: self.wr_probe.config(text=txt))
+        threading.Thread(target=work, daemon=True).start()
 
     def _writer_models(self):
         import writer

@@ -62,15 +62,49 @@ object AiWriter {
         return out
     }
 
-    /** The command at the end of the text (with a space or nothing before it), or null. */
-    fun findTrigger(p: Prefs, text: String): String? {
-        for (t in commands(p).keys.sortedByDescending { it.length }) {
-            if (text.endsWith(t)) {
-                val before = text.dropLast(t.length)
-                if (before.isEmpty() || before.last().isWhitespace()) return t
-            }
+    /** (what you typed, the command it means) if the text ends with a command, else null.
+     *  You choose how commands start: / (needs a space before it), . (right after a word) or both. */
+    fun findTrigger(p: Prefs, text: String): Pair<String, String>? {
+        val starts = when (p.writerPrefix) { "both" -> listOf("/", "."); "." -> listOf("."); else -> listOf("/") }
+        val all = commands(p).keys.flatMap { c -> starts.map { (it + c.drop(1)) to c } }.sortedByDescending { it.first.length }
+        for ((typed, cmd) in all) {
+            if (!text.endsWith(typed)) continue
+            val before = text.dropLast(typed.length)
+            if (typed.startsWith("/") && before.isNotEmpty() && !before.last().isWhitespace()) continue
+            if (typed.startsWith(".") && before.endsWith(".")) continue
+            return typed to cmd
         }
         return null
+    }
+
+    /** Checks from the most powerful model down which one answers now; working ones are put back in line
+     *  (so Auto goes back up). Stops at the first that works. Returns lines to show. */
+    fun probe(p: Prefs): List<String> {
+        val prov = p.writerProvider
+        val key = key(p, prov)
+        if (model(p, prov) != AUTO || key.isBlank()) return emptyList()
+        val names = autoModels(p, prov, key)
+        val all = try { JSONObject(p.writerCool) } catch (e: Exception) { JSONObject() }
+        val cool = all.optJSONObject(prov) ?: JSONObject()
+        val fmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+        val out = ArrayList<String>()
+        for (m in names) {
+            val now = System.currentTimeMillis()
+            try {
+                rewriteOnce(p, "Reply with just: OK", "ping", m)
+                cool.remove(m); out.add("✓ $m: available — in use now"); p.writerLastModel = m
+                break
+            } catch (e: QuotaHit) { cool.put(m, e.until); out.add("✗ $m: resting until ${fmt.format(java.util.Date(e.until))}")
+            } catch (e: ModelGone) { cool.put(m, now + 7 * 86400_000L); out.add("✗ $m: not available with this key")
+            } catch (e: SlowModel) { cool.put(m, now + 15 * 60_000L); out.add("✗ $m: too slow right now")
+            } catch (e: IOException) {
+                if (e.message?.contains("API key was refused") == true) throw e
+                cool.put(m, now + 10 * 60_000L); out.add("✗ $m: ${e.message?.take(60)}")
+            }
+        }
+        all.put(prov, cool); p.writerCool = all.toString()
+        p.writerProbeAt = System.currentTimeMillis()
+        return out
     }
 
     fun key(p: Prefs, id: String = p.writerProvider): String = try { JSONObject(p.writerKeys).optString(id) } catch (e: Exception) { "" }

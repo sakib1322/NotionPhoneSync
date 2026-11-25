@@ -61,6 +61,76 @@ def commands(settings):
     return out
 
 
+def triggers(settings):
+    """[(what you type, the command it means)], e.g. ("/im", "/im") or (".im", "/im"), longest first.
+    You choose the starting character in the app: / (slash), . (full stop) or both."""
+    pre = settings.get("writer_prefix") or "/"
+    starts = ["/", "."] if pre == "both" else [pre]
+    out = []
+    for cmd in commands(settings):
+        for st in starts:
+            out.append((st + cmd[1:], cmd))
+    return sorted(out, key=lambda t: len(t[0]), reverse=True)
+
+
+def match_trigger(settings, text):
+    """(typed command, command) if the text ends with one, else None. A slash command needs a space (or
+    nothing) before it, so links like a/b aren't touched; a full-stop command can follow a word directly
+    ("I has went.im")."""
+    for typed, cmd in triggers(settings):
+        if text.endswith(typed):
+            before = text[: -len(typed)]
+            if typed.startswith("/") and before and not before[-1].isspace():
+                continue
+            if typed.startswith(".") and before.endswith("."):
+                continue                                    # "..." isn't a command
+            return typed, cmd
+    return None
+
+
+def probe(settings, log=None):
+    """Checks, from the most powerful model down, which ones answer right now. Models that work again are
+    put back in line at once (so Auto goes back up); it stops at the first one that works.
+    Returns [(model, 'ok' / 'resting until …' / reason)]."""
+    import time as _t
+    prov, kind, base, model, key = config(settings)
+    if model != AUTO or not key:
+        return []
+    names = auto_models(settings, prov, key, base)
+    allcool = dict(settings.get("writer_cool") or {})
+    cool = dict(allcool.get(prov) or {})
+    out = []
+    for m in names:
+        now = _t.time()
+        try:
+            _rewrite(settings, "Reply with just: OK", "ping", timeout=25, model=m)
+            cool.pop(m, None)
+            out.append((m, "ok"))
+            break
+        except QuotaHit as e:
+            cool[m] = e.until
+            out.append((m, "resting until " + _t.strftime("%I:%M %p", _t.localtime(e.until)).lstrip("0")))
+        except ModelGone:
+            cool[m] = now + 7 * 86400
+            out.append((m, "not available with this key"))
+        except SlowModel:
+            cool[m] = now + 15 * 60
+            out.append((m, "too slow right now"))
+        except RuntimeError as e:
+            if "API key was refused" in str(e):
+                raise
+            cool[m] = now + 10 * 60
+            out.append((m, str(e)[:60]))
+    allcool[prov] = cool
+    settings.set("writer_cool", allcool)
+    settings.set("writer_probe_at", _t.time())
+    if out and out[-1][1] == "ok":
+        settings.set("writer_last_model", out[-1][0])
+        if log:
+            log(f"Writing helper: best model available now is {out[-1][0]}.")
+    return out
+
+
 def config(settings):
     prov = settings.get("writer_provider") or "gemini"
     label, kind, base, model, _ = PROVIDERS.get(prov, PROVIDERS["custom"])
@@ -473,19 +543,15 @@ class Writer:
         if n <= 0:
             return
         self.buf = (self.buf + out.value[:n])[-40:]
-        for trig in sorted(commands(self.s), key=len, reverse=True):
-            if self.buf.endswith(trig):
-                before = self.buf[: -len(trig)]
-                if before and not before[-1].isspace():
-                    continue                                # "a/im" inside a word or link: ignore
-                self.buf = ""
-                self.busy = True
-                threading.Thread(target=self._run, args=(trig,), daemon=True).start()
-                return
+        hit = match_trigger(self.s, self.buf)
+        if hit:
+            self.buf = ""
+            self.busy = True
+            threading.Thread(target=self._run, args=hit, daemon=True).start()
 
     # doing the rewrite
 
-    def _run(self, trig):
+    def _run(self, trig, cmd):
         import clip_sync
         saved = None
         if not config(self.s)[4]:
@@ -526,7 +592,7 @@ class Writer:
             cmds = commands(self.s)
             self._notice("✨ Writing…")
             try:
-                result = rewrite(self.s, cmds[trig], text.rstrip(), log=self._log)
+                result = rewrite(self.s, cmds[cmd], text.rstrip(), log=self._log)
             except Exception as e:
                 press(VK_RIGHT)
                 self._notice(str(e), error=True)

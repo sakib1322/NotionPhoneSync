@@ -870,6 +870,20 @@ class MainActivity : AppCompatActivity() {
                 }
             }.start()
         }
+        findViewById<View>(R.id.writer_probe).setOnClickListener {
+            if (AiWriter.model(prefs) != AiWriter.AUTO) { status.text = "This only applies when the model is auto."; return@setOnClickListener }
+            status.text = "Checking from the most powerful model down…"
+            Thread {
+                val msg = try { AiWriter.probe(prefs).joinToString("\n").ifBlank { "Add an API key first." } }
+                    catch (t: Throwable) { "Couldn't check: ${t.message}" }
+                runOnUiThread { status.text = msg }
+            }.start()
+        }
+        val pg = findViewById<android.widget.RadioGroup>(R.id.writer_prefix)
+        pg.check(when (prefs.writerPrefix) { "." -> R.id.prefix_dot; "both" -> R.id.prefix_both; else -> R.id.prefix_slash })
+        pg.setOnCheckedChangeListener { _, id ->
+            prefs.writerPrefix = when (id) { R.id.prefix_dot -> "."; R.id.prefix_both -> "both"; else -> "/" }
+        }
         findViewById<TextView>(R.id.writer_cmds).text = "Type in any app, then end with a command:\n" +
             AiWriter.COMMANDS.entries.joinToString("\n") { "${it.key} — ${it.value.substringBefore('.').substringBefore(" (")}" } +
             "\nThe same commands work on your laptop."
