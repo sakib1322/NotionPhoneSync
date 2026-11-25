@@ -95,7 +95,7 @@ def pick_model(prov, names):
     return sorted(stable, key=lambda n: (ver(n), -len(n)), reverse=True)[0] if stable else None
 
 
-def rewrite(settings, instruction, text, timeout=45):
+def rewrite(settings, instruction, text, timeout=60):
     try:
         return _rewrite(settings, instruction, text, timeout)
     except ModelGone as e:
@@ -115,7 +115,7 @@ def rewrite(settings, instruction, text, timeout=45):
         return _rewrite(settings, instruction, text, timeout)
 
 
-def _rewrite(settings, instruction, text, timeout=45):
+def _rewrite(settings, instruction, text, timeout=60):
     prov, kind, base, model, key = config(settings)
     if not key:
         raise RuntimeError("No API key yet: add one in the app (Writing helper).")
@@ -133,9 +133,24 @@ def _rewrite(settings, instruction, text, timeout=45):
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         if prov == "openrouter":
             headers.update({"HTTP-Referer": "https://github.com/sakib1322/NotionPhoneSync", "X-Title": "Notion Sync"})
-        r = requests.post(f"{base}/chat/completions", timeout=timeout, headers=headers, json={
-            "model": model, "temperature": 0.3,
-            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]})
+        body = {"model": model, "temperature": 0.3,
+                "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]}
+        if prov == "gemini":
+            # Newer Gemini models "think" for a long time first; a rewrite doesn't need that.
+            body["reasoning_effort"] = "low"
+        r = None
+        for attempt in range(2):
+            try:
+                r = requests.post(f"{base}/chat/completions", timeout=(15, timeout), headers=headers, json=body)
+            except requests.Timeout:
+                if attempt:
+                    raise RuntimeError("The AI took too long to answer. Try again, or pick a faster model "
+                                       "(names with “flash”, “mini” or “haiku”).")
+                continue
+            if r.status_code == 400 and "reasoning" in r.text.lower() and "reasoning_effort" in body:
+                body.pop("reasoning_effort")          # this model doesn't take that setting
+                continue
+            break
         _check(r)
         out = r.json()["choices"][0]["message"]["content"] or ""
     out = out.strip()

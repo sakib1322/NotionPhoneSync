@@ -159,14 +159,26 @@ object AiWriter {
                 .put("messages", JSONArray()
                     .put(JSONObject().put("role", "system").put("content", SYSTEM))
                     .put(JSONObject().put("role", "user").put("content", user)))
-            val rb = Request.Builder().url("$base/chat/completions").post(body.toString().toRequestBody(JSON))
-                .header("Authorization", "Bearer $key")
-            if (prov.id == "openrouter") rb.header("HTTP-Referer", "https://github.com/sakib1322/NotionPhoneSync").header("X-Title", "Notion Sync")
-            out = http.newCall(rb.build()).execute().use { r ->
-                val s = r.body?.string() ?: ""
+            // Newer Gemini models "think" for a long time first; a rewrite doesn't need that.
+            if (prov.id == "gemini") body.put("reasoning_effort", "low")
+            var result: String? = null
+            for (attempt in 0..1) {
+                val rb = Request.Builder().url("$base/chat/completions").post(body.toString().toRequestBody(JSON))
+                    .header("Authorization", "Bearer $key")
+                if (prov.id == "openrouter") rb.header("HTTP-Referer", "https://github.com/sakib1322/NotionPhoneSync").header("X-Title", "Notion Sync")
+                val r = try { http.newCall(rb.build()).execute() } catch (e: java.net.SocketTimeoutException) {
+                    if (attempt == 1) throw IOException("The AI took too long to answer. Try again, or pick a faster model (with “flash”, “mini” or “haiku” in its name).")
+                    continue
+                }
+                val s = r.use { it.body?.string() ?: "" }
+                if (r.code == 400 && s.lowercase().contains("reasoning") && body.has("reasoning_effort")) {
+                    body.remove("reasoning_effort"); continue      // this model doesn't take that setting
+                }
                 if (!r.isSuccessful) throw IOException(errorText(r.code, s))
-                JSONObject(s).getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content")
+                result = JSONObject(s).getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content")
+                break
             }
+            out = result ?: throw IOException("The AI didn't answer.")
         }
         out = out.trim()
         if (out.length >= 2 && out.first() == out.last() && out.first() in "\"'“”") out = out.substring(1, out.length - 1).trim()
