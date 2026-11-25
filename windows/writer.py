@@ -238,7 +238,7 @@ def auto_status(settings):
     return out
 
 
-def rewrite(settings, instruction, text, timeout=60, log=None):
+def rewrite(settings, instruction, text, timeout=60, log=None, deadline=None):
     """Rewrites the text. With the model set to Auto, it uses the most powerful model that still has free
     use left, steps down when a limit runs out, and goes back up once the limit has reset."""
     import time as _t
@@ -274,8 +274,12 @@ def rewrite(settings, instruction, text, timeout=60, log=None):
         if cool.get(m, 0) > now:
             soonest = min(soonest or cool[m], cool[m])
             continue
+        left = (deadline - _t.time()) if deadline else 60
+        if left < 4:
+            break
         try:
-            out = _rewrite(settings, instruction, text, timeout=min(timeout, 30), model=m)
+            # Auto: give each model a short time, so a slow one is skipped quickly.
+            out = _rewrite(settings, instruction, text, timeout=max(4, min(14, left - 1)), model=m, tries=1)
             settings.set("writer_last_model", m)
             return out
         except QuotaHit as e:
@@ -302,7 +306,7 @@ def rewrite(settings, instruction, text, timeout=60, log=None):
                        + (f" Last error: {last_err}" if last_err and not soonest else ""))
 
 
-def _rewrite(settings, instruction, text, timeout=60, model=None):
+def _rewrite(settings, instruction, text, timeout=60, model=None, tries=2):
     prov, kind, base, model0, key = config(settings)
     model = model or model0
     if not key:
@@ -327,11 +331,11 @@ def _rewrite(settings, instruction, text, timeout=60, model=None):
             # Newer Gemini models "think" for a long time first; a rewrite doesn't need that.
             body["reasoning_effort"] = "low"
         r = None
-        for attempt in range(2):
+        for attempt in range(tries + 1):
             try:
-                r = requests.post(f"{base}/chat/completions", timeout=(15, timeout), headers=headers, json=body)
+                r = requests.post(f"{base}/chat/completions", timeout=(min(15, timeout), timeout), headers=headers, json=body)
             except requests.Timeout:
-                if attempt:
+                if attempt >= tries - 1:
                     raise SlowModel("The AI took too long to answer. Try again, or pick a faster model "
                                        "(names with “flash”, “mini” or “haiku”).")
                 continue
@@ -488,6 +492,8 @@ class Writer:
         self.buf = ""
         self.busy = False
         self.last_key = 0
+        self.waiting = False
+        self.cancel = threading.Event()
         self.hook = None
         self._proc = None
         self.thread = None
@@ -533,11 +539,17 @@ class Writer:
 
     def _hookproc(self, code, wp, lp):
         try:
-            if code == 0 and wp in (0x100, 0x104) and self.enabled() and not self.busy:   # key down
+            if code == 0 and wp in (0x100, 0x104) and self.enabled():   # key down
                 k = ctypes.cast(lp, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
                 if k.dwExtraInfo != MAGIC:          # not a key we pressed ourselves
                     self.last_key = time.time()
-                    self._typed(k.vkCode, k.scanCode)
+                    if self.busy:
+                        # You pressed Esc, or started editing, while the AI was working: cancel, and
+                        # leave your text exactly as it is.
+                        if self.waiting and k.vkCode not in (VK_SHIFT, VK_CONTROL, VK_MENU, 0xA0, 0xA1, 0xA2, 0xA3):
+                            self.cancel.set()
+                    else:
+                        self._typed(k.vkCode, k.scanCode)
         except Exception:
             pass
         return user32.CallNextHookEx(None, code, wp, lp)
@@ -609,22 +621,50 @@ class Writer:
                 press(VK_RIGHT)
                 self._notice("Nothing to rewrite here.", error=True)
                 return
+            # Put the cursor back at the end (nothing stays selected while the AI works, so a stray key
+            # can't wipe your text).
+            press(VK_RIGHT)
             cmds = commands(self.s)
-            self._notice("✨ Writing…")
-            try:
-                result = rewrite(self.s, cmds[cmd], text.rstrip(), log=self._log)
-            except Exception as e:
-                press(VK_RIGHT)
-                self._notice(str(e), error=True)
-                self._log(f"Writing helper: {e}")
+            self._notice("✨ Writing…  (press Esc to cancel)")
+            box = {}
+
+            def ask():
+                try:
+                    box["out"] = rewrite(self.s, cmds[cmd], text.rstrip(), log=self._log, deadline=time.time() + 35)
+                except Exception as e:
+                    box["err"] = e
+            worker = threading.Thread(target=ask, daemon=True)
+            self.cancel.clear()
+            self.waiting = True
+            worker.start()
+            t0 = time.time()
+            while worker.is_alive() and not self.cancel.is_set() and time.time() - t0 < 40:
+                time.sleep(0.05)
+            self.waiting = False
+            if self.cancel.is_set():
+                self._notice("Cancelled — your text is unchanged.", error=True)
                 return
+            if worker.is_alive():
+                self._notice("The AI took too long. Your text is unchanged — try again.", error=True)
+                return
+            if "err" in box:
+                self._notice(str(box["err"]), error=True)
+                self._log(f"Writing helper: {box['err']}")
+                return
+            result = box["out"]
             if text.endswith((" ", "\n")) and not result.endswith((" ", "\n")):
                 result += text[len(text.rstrip()):]
+            # Select the same text again and paste the new version over it.
+            if paragraph:
+                press(VK_CONTROL, VK_SHIFT, VK_UP)
+            else:
+                press(VK_CONTROL, ord("A"))
+            time.sleep(0.06)
             self._pause_clip(10)
             clip_sync.write_text(result)
             time.sleep(0.05)
             press(VK_CONTROL, ord("V"))
-            time.sleep(0.5)
+            time.sleep(0.4)
             self._notice(None)
         except Exception as e:
             self._log(f"Writing helper: {e}")

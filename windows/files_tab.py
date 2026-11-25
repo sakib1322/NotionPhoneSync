@@ -293,7 +293,7 @@ class FilesTab:
             return
         if not self.root_id and not self.recent:
             self.root_id = self.settings.get("root_page")
-        self.show()
+        self.show(keep_sel=True)       # unchanged folder: nothing is redrawn
         if time.time() - self.last_refresh > 120:
             self.refresh(full=False)
 

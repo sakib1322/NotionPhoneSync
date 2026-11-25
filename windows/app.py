@@ -148,6 +148,8 @@ class App:
                 self._battery_shown()
             if i == TAB_DEVICES:
                 self._fill_devices()
+            if i == TAB_ACTIVITY:
+                self._fill_activity()          # straight away, not on the next tick
             if i == TAB_FILES:
                 self.files.on_shown()
             elif i == TAB_SPACE:
@@ -1858,7 +1860,19 @@ class App:
             self.state_lbl.config(text="○ Idle")
             self.current_lbl.config(text="")
             self.bar.config(value=0)
-        c = self.db.counts()
+        # Counting thousands of files is slow (and waits while a backup writes), so it's done in the
+        # background and the last numbers are shown.
+        c = getattr(self, "_counts", None) or {}
+        if not getattr(self, "_counting", False) and time.time() - getattr(self, "_counts_at", 0) > 5:
+            self._counting = True
+
+            def count():
+                try:
+                    self._counts = self.db.counts()
+                    self._counts_at = time.time()
+                finally:
+                    self._counting = False
+            threading.Thread(target=count, daemon=True).start()
         waiting = getattr(self.syncer, "pending", 0) if self.running() else 0
         last = self.settings.get("last_run")
         last_txt = time.strftime("%d %b %Y, %H:%M", time.localtime(last)) if last else "never"
@@ -1873,11 +1887,21 @@ class App:
         else:
             self.next_lbl.config(text="Auto-sync is off.")
         if self.nb.index("current") == TAB_ACTIVITY:
-            text = self.log.tail(300)
-            self.log_box.configure(state="normal")
-            self.log_box.delete("1.0", "end")
-            self.log_box.insert("end", text)
-            self.log_box.configure(state="disabled")
+            self._fill_activity()
+
+    def _fill_activity(self):
+        """Shows the activity log — only redrawn when something new was logged, and it stays where you scrolled."""
+        text = self.log.tail(300)
+        if text == getattr(self, "_activity_text", None):
+            return
+        self._activity_text = text
+        at_end = self.log_box.yview()[1] > 0.98
+        y = self.log_box.yview()[0]
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", "end")
+        self.log_box.insert("end", text)
+        self.log_box.configure(state="disabled")
+        self.log_box.yview_moveto(1.0 if at_end else y)
 
     # ---- tray, window, single instance --------------------------------------------------
 
@@ -1901,10 +1925,25 @@ class App:
             self.log(f"Tray icon unavailable ({e}). Closing the window will exit the app.")
 
     def show_window(self):
-        self.root.deiconify()
-        self.root.state("normal")
-        self.root.lift()
-        self.root.focus_force()
+        """Opens the window fully drawn (no black flash): it's made invisible, drawn, then shown."""
+        r = self.root
+        try:
+            r.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+        r.deiconify()
+        r.state("normal")
+        r.update_idletasks()
+        r.lift()
+        r.focus_force()
+
+        def reveal():
+            try:
+                r.update_idletasks()
+                r.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
+        r.after(40, reveal)
 
     def hide_to_tray(self):
         if self.tray is None:
