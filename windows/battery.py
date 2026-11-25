@@ -392,22 +392,42 @@ def stop_awake_blockers():
 
 HIB_TASK, HIB_CLEAN = "NotionSync Hibernate", "NotionSync Hibernate Cleanup"
 
+HIB_VERSION = 2
+
+# What the "hibernate" task runs (as admin): make a FULL hibernate file, wait until Windows has really
+# finished creating it, give it a few more seconds, then hibernate.
+HIB_RUN = r"""
+powercfg /hibernate /type full | Out-Null
+powercfg /hibernate on | Out-Null
+$f = Join-Path $env:SystemDrive 'hiberfil.sys'
+for ($i = 0; $i -lt 60 -and -not (Test-Path -LiteralPath $f); $i++) { Start-Sleep -Seconds 1 }
+Start-Sleep -Seconds 8
+shutdown.exe /h
+"""
+
+# What the "cleanup" task runs, 3 minutes after the laptop is back (never during waking up): remove the
+# hibernate file again — unless you chose to keep it.
+HIB_CLEAN_RUN = r"""
+if (-not (Test-Path -LiteralPath '{flag}')) { powercfg /hibernate off }
+"""
+
 HIB_SETUP = r"""
 $ErrorActionPreference = 'Stop'
 try {
   $u = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
   $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest
   $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-  $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -Command "powercfg /hibernate on; Start-Sleep -Seconds 2; shutdown.exe /h"'
+  $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -EncodedCommand {run}'
   Register-ScheduledTask -TaskName 'NotionSync Hibernate' -Action $a1 -Principal $p -Settings $s -Force | Out-Null
   $cls = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
   $t = New-CimInstance -CimClass $cls -ClientOnly
   $t.Enabled = $true
+  $t.Delay = 'PT3M'
   $t.Subscription = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name=''Microsoft-Windows-Power-Troubleshooter''] and EventID=1]]</Select></Query></QueryList>'
-  $t2 = New-ScheduledTaskTrigger -AtLogOn
-  $a2 = New-ScheduledTaskAction -Execute 'powercfg.exe' -Argument '/hibernate off'
+  $t2 = New-ScheduledTaskTrigger -AtLogOn -User $u
+  $t2.Delay = 'PT3M'
+  $a2 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -EncodedCommand {clean}'
   Register-ScheduledTask -TaskName 'NotionSync Hibernate Cleanup' -Action $a2 -Trigger @($t, $t2) -Principal $p -Settings $s -Force | Out-Null
-  powercfg /hibernate off
   exit 0
 } catch {
   $out = Join-Path $env:ProgramData 'NotionLaptopSync\battery-result.txt'
@@ -416,6 +436,16 @@ try {
   exit 12
 }
 """
+
+
+def _enc(script):
+    import base64
+    return base64.b64encode(script.encode("utf-16-le")).decode()
+
+
+def keep_flag_path():
+    import core
+    return os.path.join(core.DATA_DIR, "keep-hiberfile")
 
 
 def _task_exists(name):
@@ -435,8 +465,9 @@ def hib_space_needed():
     return int(ram * 0.42), free
 
 
-def hibernate_now():
-    """Hibernates now, creating the hibernate file just for this time. Returns None or an error message."""
+def hibernate_now(settings=None):
+    """Hibernates now, creating the hibernate file just for this time (unless you chose to keep it).
+    Returns None or an error message."""
     need, free = hib_space_needed()
     hiber = os.path.join(os.environ.get("SystemDrive", "C:") + "\\", "hiberfil.sys")
     have_file = os.path.exists(hiber)
@@ -444,12 +475,28 @@ def hibernate_now():
         gb = lambda b: f"{b / 1024 ** 3:.1f} GB"
         return (f"Hibernating needs about {gb(need)} free on drive C: for a moment (it's deleted again when the "
                 f"laptop wakes), but only {gb(free)} is free.")
-    if not (_task_exists(HIB_TASK) and _task_exists(HIB_CLEAN)):
-        code, text = _elevated(HIB_SETUP, timeout=120)
+    keep = bool(settings and settings.get("hib_keep_file"))
+    try:
+        if keep:
+            open(keep_flag_path(), "w").close()
+        elif os.path.exists(keep_flag_path()):
+            os.remove(keep_flag_path())
+    except OSError:
+        pass
+    current = settings is not None and settings.get("hib_task_version") == HIB_VERSION
+    if not (current and _task_exists(HIB_TASK) and _task_exists(HIB_CLEAN)):
+        setup = (HIB_SETUP.replace("{run}", _enc(HIB_RUN))
+                 .replace("{clean}", _enc(HIB_CLEAN_RUN.replace("{flag}", keep_flag_path().replace("'", "''")))))
+        code, text = _elevated(setup, timeout=120)
         if code is None:
             return "You said No to Windows' permission prompt (it's only asked once)."
         if code != 0:
             return f"Couldn't set it up: {text or code}"
+        if settings is not None:
+            settings.set("hib_task_version", HIB_VERSION)
+    if settings is not None:
+        import time as _t
+        settings.set("last_hibernate", _t.time())
     r = subprocess.run(["schtasks", "/run", "/tn", HIB_TASK], capture_output=True, text=True, creationflags=NO_WINDOW)
     if r.returncode != 0:
         return f"Couldn't start hibernating: {(r.stderr or r.stdout).strip()}"
@@ -460,3 +507,20 @@ def hibernate_file_off():
     """Deletes a hibernate file left from before (frees its space). Asks permission."""
     code, text = _elevated("powercfg /hibernate off\nexit $LASTEXITCODE\n", timeout=60)
     return None if code == 0 else ("You said No to Windows' prompt." if code is None else f"Couldn't: {text or code}")
+
+
+def last_crash():
+    """(time as epoch seconds, stop code text) of Windows' most recent blue-screen, or None."""
+    script = (r"$e = Get-WinEvent -FilterHashtable @{LogName='System'; Id=1001; "
+              r"ProviderName='Microsoft-Windows-WER-SystemErrorReporting'} -MaxEvents 1 -ErrorAction SilentlyContinue; "
+              r"if ($e) { ConvertTo-Json -Compress @{ t = [DateTimeOffset]::new($e.TimeCreated).ToUnixTimeSeconds(); "
+              r"m = ($e.Message -split '\r?\n')[0] } }")
+    try:
+        d = json.loads(_ps(script, timeout=30) or "null")
+    except Exception:
+        return None
+    if not d:
+        return None
+    import re
+    m = re.search(r"0x[0-9a-fA-F]{8}", d.get("m") or "")
+    return int(d["t"]), (m.group(0) if m else (d.get("m") or "")[:120])

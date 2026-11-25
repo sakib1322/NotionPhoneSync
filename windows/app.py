@@ -691,6 +691,12 @@ class App:
                    "it's made just before hibernating and deleted as soon as the laptop wakes. Windows asks "
                    "permission the first time only.", foreground="#666")
 
+        self.hib_keep = tk.BooleanVar(value=bool(self.settings.get("hib_keep_file")))
+        ttk.Checkbutton(f, text="Keep the hibernate file after waking (Windows' normal way: uses the space all the "
+                                "time, but is the most stable)", variable=self.hib_keep,
+                        command=lambda: self.settings.set("hib_keep_file", self.hib_keep.get())).pack(anchor="w", pady=(2, 2))
+        self.root.after(45000, self._check_hib_crash)
+
         def free_hib():
             def work():
                 err = battery.hibernate_file_off()
@@ -760,6 +766,38 @@ class App:
         w.geometry(f"+{sw - w.winfo_reqwidth() - ui.px(16)}+{sh - w.winfo_reqheight() - ui.px(64)}")
         self._popup = w
         w.after(60000, lambda: w.winfo_exists() and w.destroy())
+
+    def _check_hib_crash(self):
+        """If Windows blue-screened soon after this app hibernated the laptop, switch to Windows'
+        normal way (keep the hibernate file) and say so."""
+        last = self.settings.get("last_hibernate") or 0
+
+        def work():
+            import battery
+            c = battery.last_crash()
+            if not c:
+                return
+            t, code = c
+            if time.time() - t < 24 * 3600 and self.settings.get("crash_logged") != t:
+                self.events.put(lambda: (self.settings.set("crash_logged", t), self.log(
+                    f"Windows had a blue screen at {time.strftime('%d %b %I:%M %p', time.localtime(t))} "
+                    f"(stop code {code}).")))
+            if not last:
+                return
+            if t > last and t - last < 6 * 3600 and self.settings.get("hib_crash_seen") != t:
+                def done():
+                    self.settings.set("hib_crash_seen", t)
+                    self.settings.set("hib_keep_file", True)
+                    try:
+                        self.hib_keep.set(True)
+                    except Exception:
+                        pass
+                    msg = (f"Windows crashed (blue screen, stop code {code}) after hibernating. To be safe, the app now "
+                           "keeps the hibernate file like Windows normally does (Battery page → Sleep).")
+                    self.log(msg)
+                    self.notify("Hibernate switched to the safe way", msg)
+                self.events.put(done)
+        threading.Thread(target=work, daemon=True).start()
 
     def _battery_mode_changed(self):
         import battery

@@ -154,7 +154,7 @@ def hard_sleep(hibernate=False, app=None):
         u.SendMessageTimeoutW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2, 0x0002, 2000, None)  # SMTO_ABORTIFHUNG
         return
     import battery
-    err = battery.hibernate_now()
+    err = battery.hibernate_now(app.settings if app is not None else None)
     if err:
         tell("Couldn't hibernate", err)
 
