@@ -19,6 +19,7 @@ CARD_W, CARD_GAP = 196, 14
 THUMB_W, THUMB_H = 172, 118
 PAGE = 60                   # tiles drawn at a time; more are added as you scroll
 THUMB_MAX_BYTES = 30 * 1024 * 1024
+PDF_LOCK = threading.Lock()
 TILE_BG = "#f0f4f9"
 
 
@@ -957,13 +958,16 @@ class FilesTab:
         try:
             if ui.type_of(r.name, r.kind) == "pdf":
                 import pypdfium2 as pdfium
-                doc = pdfium.PdfDocument(src)
-                try:
-                    page = doc[0]
-                    im = page.render(scale=560 / max(1, page.get_width())).to_pil().convert("RGB")
-                    page.close()
-                finally:
-                    doc.close()
+                # The PDF library can crash the whole app if two previews are drawn at the same time
+                # (Recent shows many PDFs at once): one at a time.
+                with PDF_LOCK:
+                    doc = pdfium.PdfDocument(src)
+                    try:
+                        page = doc[0]
+                        im = page.render(scale=560 / max(1, page.get_width())).to_pil().convert("RGB")
+                        page.close()
+                    finally:
+                        doc.close()
             else:
                 im = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
             im.thumbnail((560, 720))

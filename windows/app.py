@@ -1143,6 +1143,10 @@ class App:
                                 "time, but is the most stable)", variable=self.hib_keep,
                         command=lambda: self.settings.set("hib_keep_file", self.hib_keep.get())).pack(anchor="w", pady=(2, 2))
         self.root.after(45000, self._check_hib_crash)
+        if globals().get("_last_crash"):
+            txt = globals()["_last_crash"].strip().splitlines()
+            self.root.after(3000, lambda: self.log("The app closed unexpectedly last time. Details: "
+                                                   + " | ".join(l.strip() for l in txt[:12])))
 
         def free_hib():
             def work():
@@ -2368,7 +2372,25 @@ def selftest():
     print("SELFTEST OK")
 
 
+def _crash_log():
+    """If the app ever crashes outright, Windows-level details go to crash.log (shown in Activity next time)."""
+    try:
+        import faulthandler
+        path = os.path.join(core.DATA_DIR, "crash.log")
+        old = ""
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            old = open(path, encoding="utf-8", errors="replace").read()[-3000:]
+            os.replace(path, path + ".prev")
+        f = open(path, "w", encoding="utf-8")
+        faulthandler.enable(f, all_threads=True)
+        globals()["_crash_file"] = f
+        return old
+    except Exception:
+        return ""
+
+
 def main():
+    globals()["_last_crash"] = _crash_log()
     if "--selftest" in sys.argv:
         selftest()
         return
