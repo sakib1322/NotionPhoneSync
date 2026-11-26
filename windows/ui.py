@@ -358,6 +358,7 @@ class Sidebar:
         self._item(self.nav, "voice", "voice", "Voice changer", lambda: a.nb.select(8))
         self._item(self.nav, "battery", "battery", "Battery", lambda: a.nb.select(9))
         self._item(self.nav, "writer", "writer", "Writing helper (AI)", lambda: a.nb.select(10))
+        self._item(self.nav, "battusage", "battery", "Battery usage & health", lambda: a.nb.select(11))
         self._section("Account")
         self._item(self.nav, "devices", "devices", "Devices", lambda: a.nb.select(7))
         self._item(self.nav, "account", "account", "Account & clipboard", lambda: a.nb.select(4))

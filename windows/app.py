@@ -121,6 +121,7 @@ class App:
         self._build_voice(self._tab(nb, "Voice changer"))
         self._build_battery(self._tab(nb, "Battery"))
         self._build_writer(self._tab(nb, "Writing helper (AI)"))
+        self._build_battusage(self._tab(nb, "Battery usage & health"))
         self.sidebar = ui.Sidebar(self, side_holder)
         import taskbar
         self.taskbar = taskbar.TaskbarMeter(self)
@@ -131,7 +132,7 @@ class App:
             nb.select(TAB_FILES)
             self.sidebar.select("drive")
 
-    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery", 10: "writer"}
+    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery", 10: "writer", 11: "battusage"}
 
     def open_files(self, sid, recent=False):
         """Sidebar: show My Drive, Recent or another device's files."""
@@ -146,6 +147,8 @@ class App:
                 self.sidebar.select(key)
             if i == 9:
                 self._battery_shown()
+            if hasattr(self, "battmon"):
+                self.battmon.set_visible(i == 11)
             if i == TAB_DEVICES:
                 self._fill_devices()
             if i == TAB_ACTIVITY:
@@ -549,6 +552,105 @@ class App:
         self.log_box = scrolledtext.ScrolledText(f, font=("Consolas", 9), wrap="none", height=30)
         self.log_box.pack(fill="both", expand=True)
         self.log_box.configure(state="disabled")
+
+    # ---- battery usage per app & battery health -----------------------------------------------------
+
+    def _build_battusage(self, f):
+        import battmon
+        self.battmon = battmon.Monitor()
+        top = ttk.Frame(f)
+        top.pack(fill="x", pady=(0, 6))
+        self.bu_cards = {}
+        for key, title in (("now", "Battery"), ("draw", "Power use now"), ("left", "Time left"), ("health", "Battery health")):
+            c = tk.Frame(top, bg="#f0f4f9", padx=ui.px(14), pady=ui.px(10))
+            c.pack(side="left", padx=(0, 10), fill="y")
+            tk.Label(c, text=title, bg="#f0f4f9", fg=ui.MUTED, font=(ui.FONT, 9)).pack(anchor="w")
+            big = tk.Label(c, text="…", bg="#f0f4f9", fg=ui.TEXT, font=(ui.FONT, 16, "bold"))
+            big.pack(anchor="w")
+            small = tk.Label(c, text="", bg="#f0f4f9", fg=ui.MUTED, font=(ui.FONT, 9), justify="left")
+            small.pack(anchor="w")
+            self.bu_cards[key] = (big, small)
+        cols = ("power", "pmin", "phour", "used", "cpu", "gpu")
+        box = ttk.Frame(f)
+        box.pack(fill="both", expand=True, pady=(6, 4))
+        t = ttk.Treeview(box, columns=cols, show="tree headings", height=16)
+        t.heading("#0", text="App")
+        for c, txt, w in (("power", "Power now", 90), ("pmin", "% battery / min", 110), ("phour", "% / hour", 80),
+                          ("used", "Used since start", 120), ("cpu", "CPU", 70), ("gpu", "Graphics", 80)):
+            t.heading(c, text=txt)
+            t.column(c, width=ui.px(w), anchor="e", stretch=False)
+        t.column("#0", width=ui.px(280), stretch=True)
+        sc = ttk.Scrollbar(box, orient="vertical", command=t.yview)
+        t.configure(yscrollcommand=sc.set)
+        t.pack(side="left", fill="both", expand=True)
+        sc.pack(side="right", fill="y")
+        self.bu_tree = t
+        self.bu_note = self._p(f, "", foreground="#666")
+        self._p(f, "How it's worked out: Windows reports how fast the battery is draining. That's shared out between "
+                   "apps by how much processor and graphics work each does; a part is kept for the screen, Wi-Fi and "
+                   "Windows. While plugged in there's no drain to measure, so the numbers are estimates (marked ≈). "
+                   "Battery health = how much the battery holds now compared with when it was new.", foreground="#666")
+        self.root.after(1500, self._battusage_tick)
+
+    def _battusage_tick(self):
+        try:
+            if self.nb.index("current") == 11:
+                self._battusage_fill()
+        except Exception as e:
+            self.log(f"Battery usage: {e}")
+        self.root.after(3000, self._battusage_tick)
+
+    def _battusage_fill(self):
+        rows, sm, hl = self.battmon.snapshot()
+        est = "" if sm.get("measured") else "≈ "
+        b1, s1 = self.bu_cards["now"]
+        if sm.get("pct") is not None:
+            b1.config(text=f"{sm['pct']:.0f}%")
+            if sm.get("plugged"):
+                s1.config(text="Plugged in" + (f" · charging {sm['charge_w']:.1f} W" if sm.get("charge_w") else ""))
+            else:
+                s1.config(text="On battery")
+        b2, s2 = self.bu_cards["draw"]
+        if sm.get("watts") is not None:
+            b2.config(text=f"{est}{sm['watts']:.1f} W")
+            s2.config(text=f"{est}{sm['pct_min']:.2f}% a minute · {sm['pct_min'] * 60:.0f}% an hour\n"
+                           f"CPU {sm['cpu']:.0f}%  · graphics {sm['gpu']:.0f}%")
+        b3, s3 = self.bu_cards["left"]
+        sl = sm.get("secsleft")
+        if sm.get("plugged"):
+            b3.config(text="—")
+            s3.config(text="Charging" if sm.get("charge_w") else "Plugged in")
+        elif isinstance(sl, (int, float)) and sl > 0 and sl < 10 ** 6:
+            b3.config(text=f"{int(sl // 3600)}h {int(sl % 3600 // 60)}m")
+            s3.config(text="at the current use")
+        elif sm.get("watts") and sm.get("pct") is not None:
+            mins = sm["pct"] / max(sm["pct_min"], 0.001)
+            b3.config(text=f"≈ {int(mins // 60)}h {int(mins % 60)}m")
+            s3.config(text="at the current use")
+        b4, s4 = self.bu_cards["health"]
+        if hl.get("health_pct"):
+            b4.config(text=f"{hl['health_pct']:.0f}%")
+            s4.config(text=f"Holds {hl['full_wh']:.1f} Wh of {hl['design_wh']:.1f} Wh when new"
+                           + (f"\n{hl['cycles']} charge cycles" if hl.get("cycles") else ""))
+        else:
+            b4.config(text="…")
+            s4.config(text="Reading the battery report…")
+        t = self.bu_tree
+        sel = t.selection()
+        t.delete(*t.get_children())
+        for r in rows[:60]:
+            if r["w"] < 0.01 and r["used_pct"] < 0.005:
+                continue
+            t.insert("", "end", iid=r["app"], text="  " + r["app"] + (f"  ({r['procs']} processes)" if r["procs"] > 1 else ""),
+                     values=(f"{est}{r['w']:.2f} W", f"{est}{r['pct_min']:.3f}%", f"{est}{r['pct_hour']:.1f}%",
+                             f"{r['used_pct']:.2f}%", f"{r['cpu']:.1f}%", f"{r['gpu']:.0f}%" if r["gpu"] else ""))
+        for i in sel:
+            if t.exists(i):
+                t.selection_add(i)
+        mins = (time.time() - sm.get("since", time.time())) / 60
+        self.bu_note.config(text=f"Since this app started ({mins:.0f} min ago): {sm.get('used_pct', 0):.1f}% of the battery used. "
+                                 + ("Measured from the battery." if sm.get("measured") else
+                                    "Plugged in: estimated from what the apps are doing."))
 
     # ---- writing helper (AI) ---------------------------------------------------------------------
 
@@ -2049,6 +2151,10 @@ class App:
             self.voice.stop()
         except Exception:
             pass
+        try:
+            self.battmon.stop()
+        except Exception:
+            pass
         self._quit_rest()
 
     def _quit_rest(self):
@@ -2203,6 +2309,8 @@ def selftest():
         lambda: app.nb.select(10),
         lambda: print("WRITER keyboard watcher:", bool(app.writer.hook), "commands:", len(__import__("writer").commands(app.settings)))
         if clip_sync.WINDOWS else None,
+        lambda: app.nb.select(11),
+        lambda: print("BATTUSAGE rows:", len(app.battmon.snapshot()[0]), "health:", ascii(app.battmon.snapshot()[2])),
         # Taskbar read-out: desktop name and speed can be read, and the window appears.
         lambda: (print("TASKBAR OK desktop:", __import__("taskbar").desktop_name(),
                        "window:", bool(app.taskbar.hwnd), "in taskbar:", app.taskbar.embedded, "shown:", app.taskbar.visible, "size:", app.taskbar.size,
