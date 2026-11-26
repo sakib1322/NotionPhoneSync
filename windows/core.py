@@ -47,6 +47,8 @@ class Settings:
         "taskbar_desktop": True,   # name of the virtual desktop you're on, on the taskbar
         "taskbar_bt": True,        # charge of connected Bluetooth devices, on the taskbar
         "writer_on": True,         # AI writing helper: finish text with /im etc.
+        "writer_share": True,      # share AI keys (encrypted) with your other devices
+        "writer_autoimport": True, # take keys from your other devices for AIs this one has no key for
         "taskbar_offset": None,    # where you dragged it (pixels from the taskbar's right end)
         "google_refresh": "",
         "google_email": "",

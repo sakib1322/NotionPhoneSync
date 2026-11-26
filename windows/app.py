@@ -531,7 +531,8 @@ class App:
                 "uploaded": c.get("done", 0), "failed": c.get("failed", 0) + c.get("retry", 0),
                 "cloud_files": n if isinstance(n, int) else None, "cloud_bytes": b if isinstance(b, (int, float)) else None,
                 "last_sync": int((self.settings.get("last_run") or 0) * 1000), "auto": bool(self.settings.get("auto_sync")),
-                "clipboard": bool(self.settings.get("clipboard_sync")), "wifi": self.clip.lan.connected_names()}
+                "clipboard": bool(self.settings.get("clipboard_sync")), "wifi": self.clip.lan.connected_names(),
+                "ai": __import__("writer").share_payload(self.settings)}
 
     def refresh_devices(self):
         self.dev_note.config(text="Refreshing…")
@@ -634,6 +635,11 @@ class App:
         def save(*_):
             p = cur()
             ks = dict(self.settings.get("writer_keys") or {})
+            if ks.get(p, "") != self.wr_key.get().strip():
+                ats = dict(self.settings.get("writer_keys_at") or {})
+                ats[p] = int(time.time() * 1000)
+                self.settings.set("writer_keys_at", ats)
+                self._dev_push_now = True          # tell your other devices soon
             ks[p] = self.wr_key.get().strip()
             self.settings.set("writer_keys", ks)
             ms = dict(self.settings.get("writer_models") or {})
@@ -642,6 +648,7 @@ class App:
             if p == "custom":
                 self.settings.set("writer_base", self.wr_base.get().strip())
         cb.bind("<<ComboboxSelected>>", load)
+        self._wr_load = load
         for v in (self.wr_key, self.wr_model, self.wr_base):
             v.trace_add("write", save)
         self._wr_cur = cur
@@ -652,6 +659,24 @@ class App:
         ttk.Button(row, text="Test it", style="Accent.TButton", command=self._writer_test).pack(side="left")
         self.wr_status = ttk.Label(row, text="", foreground="#666", wraplength=ui.px(560), justify="left")
         self.wr_status.pack(side="left", padx=10)
+
+        self._h(f, "AI keys on your other devices")
+        self.wr_share = tk.BooleanVar(value=self.settings.get("writer_share") is not False)
+        ttk.Checkbutton(f, text="Share my AI keys with my other devices (stored encrypted; only your signed-in "
+                                "devices can read them)", variable=self.wr_share,
+                        command=lambda: (self.settings.set("writer_share", self.wr_share.get()),
+                                         setattr(self, "_dev_push_now", True))).pack(anchor="w")
+        self.wr_auto = tk.BooleanVar(value=self.settings.get("writer_autoimport") is not False)
+        ttk.Checkbutton(f, text="Add keys from my other devices by themselves (only for AIs this laptop has no key for)",
+                        variable=self.wr_auto,
+                        command=lambda: self.settings.set("writer_autoimport", self.wr_auto.get())).pack(anchor="w")
+        self.wr_others = ttk.Frame(f)
+        self.wr_others.pack(anchor="w", fill="x", pady=(4, 0))
+        ttk.Button(f, text="Refresh the list", command=lambda: setattr(self, "_dev_push_now", True) or
+                   self.wr_others_note.config(text="Refreshing… (takes a few seconds)")).pack(anchor="w", pady=(4, 0))
+        self.wr_others_note = ttk.Label(f, text="", foreground="#666")
+        self.wr_others_note.pack(anchor="w")
+        self._writer_keys_ui()
 
         prow = ttk.Frame(f)
         prow.pack(anchor="w", fill="x", pady=(8, 0))
@@ -702,6 +727,53 @@ class App:
             self.settings.set("writer_custom", out)
         self.wr_custom.bind("<FocusOut>", save_custom)
         self.wr_custom.bind("<KeyRelease>", save_custom)
+
+    def _writer_keys_ui(self):
+        """Lists which AI keys your other devices have, each with a “Use this key” button."""
+        import writer
+        box = getattr(self, "wr_others", None)
+        if box is None:
+            return
+        for w in box.winfo_children():
+            w.destroy()
+        mine = self.settings.get("writer_keys") or {}
+        rows = writer.others_keys(self.settings)
+        if not rows:
+            ttk.Label(box, text="None of your other devices has shared an AI key yet.", foreground="#666").pack(anchor="w")
+        for d, provs, ai in rows:
+            ttk.Label(box, text=f"{d.name}  ({d.type}{', online' if d.online() else ''})",
+                      font=(ui.FONT, 10, "bold")).pack(anchor="w", pady=(6, 0))
+            for prov, info in provs.items():
+                r = ttk.Frame(box)
+                r.pack(anchor="w", fill="x")
+                when = time.strftime("%d %b", time.localtime(info.get("at") / 1000)) if info.get("at") else ""
+                same = writer.mask(mine.get(prov)) == info.get("mask") if mine.get(prov) else False
+                label = writer.PROVIDERS.get(prov, (prov,))[0]
+                ttk.Label(r, text=f"   {label}:  {info.get('mask')}" + (f"  · model {info['model']}" if info.get("model") else "")
+                          + (f"  · added {when}" if when else "")).pack(side="left")
+                if same:
+                    ttk.Label(r, text="  ✓ same as this laptop", foreground="#188038").pack(side="left", padx=8)
+                else:
+                    ttk.Button(r, text="Use this key" if not mine.get(prov) else "Use this key instead",
+                               command=lambda ai=ai, prov=prov, name=d.name: self._writer_take(ai, prov, name)).pack(side="left", padx=8)
+        if getattr(self, "wr_others_note", None):
+            self.wr_others_note.config(text="")
+
+    def _writer_take(self, ai, prov, name):
+        import writer
+        if writer.take_key(self.settings, ai, prov):
+            self.settings.set("writer_provider", prov)
+            try:
+                labels = [v[0] for v in writer.PROVIDERS.values()]
+                self.wr_prov.set(writer.PROVIDERS[prov][0])
+                self._wr_load()
+            except Exception:
+                pass
+            self.log(f"Writing helper: now using the {writer.PROVIDERS.get(prov, ('AI',))[0]} key from {name}.")
+            self.wr_others_note.config(text=f"Done — using the key from {name}.")
+            self._writer_keys_ui()
+        else:
+            self.wr_others_note.config(text="Couldn't read that key (is that device signed in to the same Notion?).")
 
     def _writer_probe_loop(self):
         """Every 2 hours: check whether a more powerful model is available again."""
@@ -1417,12 +1489,19 @@ class App:
         and reads theirs (for the Devices tab)."""
         last = 0
         while not self.stop_event.is_set():
-            if self.settings.get("signed_in") and self.settings.get("token") and time.time() - last > 300:
+            if self.settings.get("signed_in") and self.settings.get("token") and (
+                    time.time() - last > 300 or getattr(self, "_dev_push_now", False)):
+                self._dev_push_now = False
                 try:
                     reg = devices.Registry(self.settings, self.db)
                     reg.register_me(self.device_status())
                     reg.all()
                     last = time.time()
+                    import writer
+                    added = writer.auto_import(self.settings)
+                    for prov, dev in added:
+                        self.log(f"Writing helper: added the {writer.PROVIDERS.get(prov, ('AI',))[0]} key from {dev}.")
+                    self.events.put(self._writer_keys_ui)
                     self.events.put(self._account_ui)
                     self.events.put(self._fill_devices)
                     owner = pagefix.conflict(self.settings)
@@ -1432,7 +1511,7 @@ class App:
                 except Exception as e:
                     self.log(f"Couldn't update your devices list ({e}).")
                     last = time.time() - 240
-            self.stop_event.wait(20)
+            self.stop_event.wait(5 if getattr(self, "_dev_push_now", False) else 20)
 
     def _show_conflict(self, owner):
         """This laptop has been backing up into another device's page: give it its own."""

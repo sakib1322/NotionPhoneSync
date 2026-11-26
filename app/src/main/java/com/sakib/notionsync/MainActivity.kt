@@ -833,6 +833,10 @@ class MainActivity : AppCompatActivity() {
             override fun afterTextChanged(s: android.text.Editable?) {
                 if (loading) return
                 val id = prefs.writerProvider
+                if (AiWriter.key(prefs, id) != keyEt.text.toString().trim()) {
+                    AiWriter.noteKeyChanged(prefs, id)
+                    pushDevicesSoon()
+                }
                 AiWriter.setKey(prefs, id, keyEt.text.toString().trim())
                 AiWriter.setModel(prefs, id, modelEt.text.toString().trim())
                 if (id == "custom") prefs.writerBase = baseEt.text.toString().trim()
@@ -879,6 +883,14 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { status.text = msg }
             }.start()
         }
+        val swShare = findViewById<MaterialSwitch>(R.id.sw_writer_share)
+        swShare.isChecked = prefs.writerShare
+        swShare.setOnCheckedChangeListener { _, on -> prefs.writerShare = on; pushDevicesSoon() }
+        val swAuto = findViewById<MaterialSwitch>(R.id.sw_writer_auto)
+        swAuto.isChecked = prefs.writerAutoImport
+        swAuto.setOnCheckedChangeListener { _, on -> prefs.writerAutoImport = on }
+        findViewById<View>(R.id.writer_refresh).setOnClickListener { pushDevicesSoon(refreshUi = true) }
+        writerOthersUi()
         val pg = findViewById<android.widget.RadioGroup>(R.id.writer_prefix)
         pg.check(when (prefs.writerPrefix) { "." -> R.id.prefix_dot; "/" -> R.id.prefix_slash; else -> R.id.prefix_both })
         pg.setOnCheckedChangeListener { _, id ->
@@ -888,6 +900,89 @@ class MainActivity : AppCompatActivity() {
             AiWriter.COMMANDS.entries.joinToString("\n") { "${it.key} — ${it.value.substringBefore('.').substringBefore(" (")}" } +
             "\nThe same commands work on your laptop."
         showWriter()
+    }
+
+    private var pushPending = false
+
+    /** Tells your other devices about this phone (incl. its AI keys) and reads theirs, in a few seconds. */
+    private fun pushDevicesSoon(refreshUi: Boolean = false) {
+        if (pushPending) return
+        pushPending = true
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            pushPending = false
+            Thread {
+                try {
+                    Registry(this).apply { registerMe(Devices.myStatus(this@MainActivity)); all() }
+                    val added = AiWriter.autoImport(this)
+                    runOnUiThread {
+                        writerOthersUi()
+                        if (added.isNotEmpty()) {
+                            Toast.makeText(this, "Added the ${added.joinToString()}", Toast.LENGTH_LONG).show()
+                            recreateWriterFields()
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (refreshUi) runOnUiThread { Toast.makeText(this, "Couldn't refresh: ${e.message}", Toast.LENGTH_SHORT).show() }
+                }
+            }.start()
+        }, if (refreshUi) 100 else 4000)
+    }
+
+    private fun recreateWriterFields() {
+        val pr = AiWriter.provider(prefs.writerProvider)
+        findViewById<com.google.android.material.textfield.MaterialAutoCompleteTextView>(R.id.writer_provider)?.setText(pr.label, false)
+        findViewById<android.widget.EditText>(R.id.writer_key)?.setText(AiWriter.key(prefs, pr.id))
+        findViewById<android.widget.EditText>(R.id.writer_model)?.setText(AiWriter.model(prefs, pr.id))
+        showWriter()
+    }
+
+    /** Which AI keys your other devices have, with a “Use this key” button for each. */
+    private fun writerOthersUi() {
+        val box = findViewById<android.widget.LinearLayout>(R.id.writer_others) ?: return
+        box.removeAllViews()
+        val list = AiWriter.others(this)
+        val dp = resources.displayMetrics.density
+        if (list.isEmpty()) {
+            box.addView(TextView(this).apply { text = "None of your other devices has shared an AI key yet."; textSize = 12f })
+            return
+        }
+        val fmt = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault())
+        for (sh in list) {
+            box.addView(TextView(this).apply {
+                text = sh.device.name + "  (" + sh.device.type + (if (sh.device.online()) ", online" else "") + ")"
+                setTypeface(typeface, android.graphics.Typeface.BOLD); setPadding(0, (8 * dp).toInt(), 0, 0)
+            })
+            sh.providers.keys().forEach { id ->
+                val info = sh.providers.getJSONObject(id)
+                val row = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+                val at = info.optLong("at")
+                row.addView(TextView(this).apply {
+                    text = "${AiWriter.provider(id).label}: ${info.optString("mask")}" +
+                        (if (info.optString("model").isNotBlank()) " · ${info.optString("model")}" else "") +
+                        (if (at > 0) " · added ${fmt.format(java.util.Date(at))}" else "")
+                    textSize = 12f
+                    layoutParams = android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                val mine = AiWriter.key(prefs, id)
+                if (mine.isNotBlank() && AiWriter.mask(mine) == info.optString("mask")) {
+                    row.addView(TextView(this).apply { text = "✓ same"; textSize = 12f })
+                } else {
+                    row.addView(com.google.android.material.button.MaterialButton(this, null,
+                        com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                        text = if (mine.isBlank()) "Use" else "Use instead"
+                        setOnClickListener {
+                            if (AiWriter.takeKey(prefs, sh.ai, id)) {
+                                prefs.writerProvider = id
+                                recreateWriterFields(); writerOthersUi()
+                                Toast.makeText(this@MainActivity, "Using the key from ${sh.device.name}", Toast.LENGTH_SHORT).show()
+                                pushDevicesSoon()
+                            } else Toast.makeText(this@MainActivity, "Couldn't read that key (same Notion account?)", Toast.LENGTH_LONG).show()
+                        }
+                    })
+                }
+                box.addView(row)
+            }
+        }
     }
 
     private fun showWriter() {

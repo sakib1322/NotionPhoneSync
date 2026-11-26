@@ -33,7 +33,10 @@ def my_name(settings):
 
 
 def _rt(v):
-    return {"rich_text": [{"text": {"content": (v or "")[:1900]}}]}
+    """A text value for Notion; long ones are split into pieces (Notion takes 2,000 characters a piece)."""
+    v = (v or "")[:1900 * 20]
+    parts = [v[i:i + 1900] for i in range(0, len(v), 1900)] or [""]
+    return {"rich_text": [{"text": {"content": p}} for p in parts]}
 
 
 def _plain(props, name):

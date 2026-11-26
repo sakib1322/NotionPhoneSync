@@ -195,6 +195,11 @@
                     <RadioButton android:id="@+id/prefix_dot" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Full stop, right after the text:  i has went.im" />
                     <RadioButton android:id="@+id/prefix_both" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Either one" />
                 </RadioGroup>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="AI keys on your other devices" android:textStyle="bold" />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_writer_share" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Share my AI keys with my other devices (encrypted)" />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_writer_auto" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Add keys from my other devices by themselves (only for AIs this phone has no key for)" />
+                <LinearLayout android:id="@+id/writer_others" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/writer_refresh" style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Refresh the list" />
                 <TextView android:id="@+id/writer_cmds" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textSize="12sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>

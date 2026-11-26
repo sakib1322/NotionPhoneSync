@@ -93,6 +93,7 @@ object Devices {
             .put("cloud_files", n).put("cloud_bytes", b).put("last_sync", p.lastRun)
             .put("auto", p.autoSync).put("clipboard", p.clipboardSync)
             .put("wifi", JSONArray(ClipService.lan?.connectedNames() ?: emptyList<String>()))
+            .put("ai", AiWriter.sharePayload(p) ?: JSONObject.NULL)
     }
 
     /** The device that owns this phone's backup page, if that isn't this phone (the device that
@@ -121,7 +122,12 @@ class Registry(private val ctx: Context) {
     private val prefs = Prefs(ctx)
     private val client = NotionClient(prefs.token)
 
-    private fun rt(v: String) = JSONObject().put("rich_text", JSONArray().put(JSONObject().put("text", JSONObject().put("content", v.take(1900)))))
+    /** A text value for Notion; long ones are split into pieces (Notion takes 2,000 characters a piece). */
+    private fun rt(v: String): JSONObject {
+        val arr = JSONArray()
+        v.take(1900 * 20).chunked(1900).ifEmpty { listOf("") }.forEach { arr.put(JSONObject().put("text", JSONObject().put("content", it))) }
+        return JSONObject().put("rich_text", arr)
+    }
 
     private fun plain(pr: JSONObject, name: String): String {
         val p = pr.optJSONObject(name) ?: return ""

@@ -139,6 +139,15 @@ class Prefs(ctx: Context) {
     var writerProbeAt: Long
         get() = sp.getLong("writer_probe_at", 0)
         set(v) { sp.edit().putLong("writer_probe_at", v).apply() }
+    var writerShare: Boolean
+        get() = sp.getBoolean("writer_share", true)
+        set(v) { sp.edit().putBoolean("writer_share", v).apply() }
+    var writerAutoImport: Boolean
+        get() = sp.getBoolean("writer_autoimport", true)
+        set(v) { sp.edit().putBoolean("writer_autoimport", v).apply() }
+    var writerKeysAt: String
+        get() = sp.getString("writer_keys_at", "{}") ?: "{}"
+        set(v) { sp.edit().putString("writer_keys_at", v).apply() }
     var writerAutoMigrated: Boolean
         get() = sp.getBoolean("writer_auto_migrated", false)
         set(v) { sp.edit().putBoolean("writer_auto_migrated", v).apply() }

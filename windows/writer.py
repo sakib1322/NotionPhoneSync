@@ -700,3 +700,99 @@ class Writer:
 
     def _notice(self, text, error=False):
         self.app.events.put(lambda: self.app.writer_notice(text, error))
+
+
+# ---- sharing AI keys between your devices ---------------------------------------------------------------
+# Each device lists which AI keys it has (shown masked, like AIza…x9Q) in the devices list your devices share
+# in Notion. The keys themselves are stored there encrypted with a key made from your Notion sign-in, so
+# only your own signed-in devices can read them.
+
+def _cipher(token):
+    import hashlib
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    return AESGCM(hashlib.sha256(("notion-sync-ai-v1|" + (token or "")).encode()).digest())
+
+
+def mask(key):
+    key = key or ""
+    return (key[:4] + "…" + key[-3:]) if len(key) > 10 else "…"
+
+
+def share_payload(settings):
+    """What this device tells your other devices about its AI keys (or None if it doesn't share)."""
+    import base64
+    import json
+    if settings.get("writer_share") is False:
+        return None
+    keys = {k: v for k, v in (settings.get("writer_keys") or {}).items() if v}
+    if not keys or not settings.get("token"):
+        return None
+    models = settings.get("writer_models") or {}
+    ats = settings.get("writer_keys_at") or {}
+    secret = {p: {"key": k, "model": models.get(p) or "", "base": settings.get("writer_base") if p == "custom" else ""}
+              for p, k in keys.items()}
+    nonce = os.urandom(12)
+    enc = base64.b64encode(nonce + _cipher(settings.get("token")).encrypt(nonce, json.dumps(secret).encode(), None)).decode()
+    return {"providers": {p: {"mask": mask(k), "model": models.get(p) or "", "at": int(ats.get(p) or 0)}
+                          for p, k in keys.items()}, "enc": enc}
+
+
+def read_shared(settings, ai):
+    """The keys another device shared: {provider: {"key", "model", "base"}} (empty if they can't be read)."""
+    import base64
+    import json
+    try:
+        raw = base64.b64decode(ai["enc"])
+        return json.loads(_cipher(settings.get("token")).decrypt(raw[:12], raw[12:], None))
+    except Exception:
+        return {}
+
+
+def others_keys(settings):
+    """[(device, {provider: {"mask", "model", "at"}}, the device's ai block)] for your other devices that share keys."""
+    import devices as _dev
+    me = _dev.my_id(settings)
+    out = []
+    for d in _dev.cached(settings):
+        if d.id == me or d.id.startswith("owner:") or d.type not in ("laptop", "phone"):
+            continue
+        ai = (d.info() or {}).get("ai") or {}
+        if ai.get("providers"):
+            out.append((d, ai["providers"], ai))
+    return out
+
+
+def take_key(settings, ai, prov):
+    """Copies one AI key (and its model) from another device's shared block. Returns True if done."""
+    import time as _t
+    got = read_shared(settings, ai).get(prov)
+    if not got or not got.get("key"):
+        return False
+    ks = dict(settings.get("writer_keys") or {})
+    ks[prov] = got["key"]
+    settings.set("writer_keys", ks)
+    if got.get("model"):
+        ms = dict(settings.get("writer_models") or {})
+        ms[prov] = got["model"]
+        settings.set("writer_models", ms)
+    if prov == "custom" and got.get("base"):
+        settings.set("writer_base", got["base"])
+    ats = dict(settings.get("writer_keys_at") or {})
+    ats[prov] = int(_t.time() * 1000)
+    settings.set("writer_keys_at", ats)
+    return True
+
+
+def auto_import(settings):
+    """Adds keys from your other devices for AIs this device has no key for yet (if that's switched on).
+    Returns the list of (provider, device name) added."""
+    if settings.get("writer_autoimport") is False:
+        return []
+    have = {p for p, k in (settings.get("writer_keys") or {}).items() if k}
+    added = []
+    for d, provs, ai in sorted(others_keys(settings), key=lambda t: -max((v.get("at") or 0) for v in t[1].values())):
+        for p in provs:
+            if p not in have and take_key(settings, ai, p):
+                have.add(p)
+                added.append((p, d.name))
+    return added

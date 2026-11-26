@@ -330,4 +330,86 @@ object AiWriter {
             else -> "The AI said: ${msg.ifBlank { code.toString() }}"
         }
     }
+
+    // ---- sharing AI keys between your devices ----
+    // Each device lists its AI keys (masked, like AIza…x9Q) in your shared devices list in Notion; the keys
+    // themselves are stored there encrypted with a key made from your Notion sign-in.
+
+    private fun cipherKey(token: String) = javax.crypto.spec.SecretKeySpec(
+        java.security.MessageDigest.getInstance("SHA-256").digest("notion-sync-ai-v1|$token".toByteArray()), "AES")
+
+    fun mask(k: String?): String = if (k != null && k.length > 10) k.take(4) + "…" + k.takeLast(3) else "…"
+
+    private fun keysAt(p: Prefs) = try { JSONObject(p.writerKeysAt) } catch (e: Exception) { JSONObject() }
+
+    fun noteKeyChanged(p: Prefs, id: String) { val o = keysAt(p); o.put(id, System.currentTimeMillis()); p.writerKeysAt = o.toString() }
+
+    /** What this phone tells your other devices about its AI keys, or null if it doesn't share. */
+    fun sharePayload(p: Prefs): JSONObject? {
+        if (!p.writerShare || p.token.isEmpty()) return null
+        val keys = try { JSONObject(p.writerKeys) } catch (e: Exception) { JSONObject() }
+        val models = try { JSONObject(p.writerModels) } catch (e: Exception) { JSONObject() }
+        val at = keysAt(p)
+        val secret = JSONObject()
+        val provs = JSONObject()
+        keys.keys().forEach { id ->
+            val k = keys.optString(id)
+            if (k.isNotBlank()) {
+                secret.put(id, JSONObject().put("key", k).put("model", models.optString(id))
+                    .put("base", if (id == "custom") p.writerBase else ""))
+                provs.put(id, JSONObject().put("mask", mask(k)).put("model", models.optString(id)).put("at", at.optLong(id)))
+            }
+        }
+        if (provs.length() == 0) return null
+        val nonce = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
+        val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(javax.crypto.Cipher.ENCRYPT_MODE, cipherKey(p.token), javax.crypto.spec.GCMParameterSpec(128, nonce))
+        val enc = android.util.Base64.encodeToString(nonce + c.doFinal(secret.toString().toByteArray()), android.util.Base64.NO_WRAP)
+        return JSONObject().put("providers", provs).put("enc", enc)
+    }
+
+    private fun readShared(p: Prefs, ai: JSONObject): JSONObject = try {
+        val raw = android.util.Base64.decode(ai.getString("enc"), android.util.Base64.DEFAULT)
+        val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(javax.crypto.Cipher.DECRYPT_MODE, cipherKey(p.token), javax.crypto.spec.GCMParameterSpec(128, raw.copyOfRange(0, 12)))
+        JSONObject(String(c.doFinal(raw.copyOfRange(12, raw.size))))
+    } catch (e: Exception) { JSONObject() }
+
+    data class Shared(val device: Devices.Device, val providers: JSONObject, val ai: JSONObject)
+
+    /** Your other devices that share AI keys. */
+    fun others(ctx: android.content.Context): List<Shared> {
+        val me = Prefs(ctx).deviceId
+        return Devices.cached(ctx).mapNotNull { d ->
+            if (d.id == me || d.id.startsWith("owner:") || (d.type != "laptop" && d.type != "phone")) return@mapNotNull null
+            val ai = try { JSONObject(d.status).optJSONObject("ai") } catch (e: Exception) { null } ?: return@mapNotNull null
+            val pr = ai.optJSONObject("providers") ?: return@mapNotNull null
+            if (pr.length() == 0) null else Shared(d, pr, ai)
+        }
+    }
+
+    /** Copies one AI key (and its model) from another device. */
+    fun takeKey(p: Prefs, ai: JSONObject, id: String): Boolean {
+        val got = readShared(p, ai).optJSONObject(id) ?: return false
+        val k = got.optString("key")
+        if (k.isBlank()) return false
+        setKey(p, id, k)
+        got.optString("model").takeIf { it.isNotBlank() }?.let { setModel(p, id, it) }
+        if (id == "custom" && got.optString("base").isNotBlank()) p.writerBase = got.optString("base")
+        noteKeyChanged(p, id)
+        return true
+    }
+
+    /** Adds keys from your other devices for AIs this phone has no key for yet (if switched on). */
+    fun autoImport(ctx: android.content.Context): List<String> {
+        val p = Prefs(ctx)
+        if (!p.writerAutoImport) return emptyList()
+        val added = ArrayList<String>()
+        for (sh in others(ctx)) {
+            sh.providers.keys().forEach { id ->
+                if (key(p, id).isBlank() && takeKey(p, sh.ai, id)) added.add("${provider(id).label} from ${sh.device.name}")
+            }
+        }
+        return added
+    }
 }

@@ -186,7 +186,10 @@ class ClipService : Service() {
                 checkHealth()
                 // Every few minutes: tell your other devices this phone is on and what it's doing.
                 if (System.currentTimeMillis() - prefs.devicesSeenAt > 5 * 60_000L) {
-                    try { Registry(this).apply { registerMe(Devices.myStatus(this@ClipService)); all() } } catch (e: Exception) {
+                    try {
+                        Registry(this).apply { registerMe(Devices.myStatus(this@ClipService)); all() }
+                        AiWriter.autoImport(this).forEach { Logger.log(this, "Writing helper: added the $it.") }
+                    } catch (e: Exception) {
                         prefs.devicesSeenAt = System.currentTimeMillis() - 4 * 60_000L
                     }
                 }
