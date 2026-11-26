@@ -495,6 +495,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         setupWriter()
+        setupExtras()
         findViewById<MaterialSwitch>(R.id.sw_calls).setOnClickListener { v ->
             val sw = v as MaterialSwitch
             if (!sw.isChecked) {
@@ -798,6 +799,73 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---- speed meter, duplicate notifications, Samsung screen recorder for calls ----
+
+    private fun setupExtras() {
+        val sp = findViewById<MaterialSwitch>(R.id.sw_speed) ?: return
+        sp.isChecked = prefs.speedMeter
+        sp.setOnCheckedChangeListener { _, on ->
+            prefs.speedMeter = on
+            if (on) { askNotifications(); SpeedService.start(this) } else SpeedService.stop(this)
+        }
+        SpeedService.start(this)
+        val dd = findViewById<MaterialSwitch>(R.id.sw_dedup)
+        dd.setOnClickListener {
+            prefs.dedupOn = dd.isChecked
+            if (dd.isChecked && !DedupService.granted(this)) {
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Hide duplicate notifications")
+                    .setMessage("To remove repeated notifications, Android needs you to allow “Notion Sync: hide duplicate " +
+                        "notifications” to read notifications. It only compares a new notification with the ones from the " +
+                        "last few minutes on this phone; nothing is sent anywhere.")
+                    .setPositiveButton("Open settings") { _, _ ->
+                        startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                    }
+                    .setNegativeButton("Not now", null)
+                    .show()
+            }
+            showExtras()
+        }
+        findViewById<View>(R.id.dedup_log).setOnClickListener {
+            val arr = try { org.json.JSONArray(prefs.dedupLog) } catch (e: Exception) { org.json.JSONArray() }
+            val fmt = java.text.SimpleDateFormat("d MMM, h:mm a", java.util.Locale.getDefault())
+            val txt = if (arr.length() == 0) "Nothing hidden yet." else (0 until arr.length()).joinToString("\n\n") { i ->
+                val o = arr.getJSONObject(i)
+                "${fmt.format(java.util.Date(o.optLong("t")))} · ${o.optString("app")}\n${o.optString("title")}: ${o.optString("text")}"
+            }
+            MaterialAlertDialogBuilder(this).setTitle("Duplicates hidden (${prefs.dedupCount} in total)")
+                .setMessage(txt).setPositiveButton("OK", null).show()
+        }
+        val sr = findViewById<MaterialSwitch>(R.id.sw_screenrec)
+        sr.isChecked = prefs.callScreenRec
+        sr.setOnClickListener {
+            prefs.callScreenRec = sr.isChecked
+            if (sr.isChecked && !ClipAutoService.enabled(this)) {
+                sr.isChecked = false; prefs.callScreenRec = false
+                askHelper("Screen recorder for calls", "This uses the app's helper to tap Samsung's Screen recorder for you. " +
+                    "Tap Open settings, find “Notion Sync helper”, switch it on and allow, then turn this on again.")
+            }
+        }
+        showExtras()
+    }
+
+    private fun showExtras() {
+        val dd = findViewById<MaterialSwitch>(R.id.sw_dedup) ?: return
+        val on = prefs.dedupOn && DedupService.granted(this)
+        if (dd.isChecked != on) dd.isChecked = on
+        findViewById<TextView>(R.id.dedup_note)?.text = when {
+            !prefs.dedupOn -> "Off."
+            !DedupService.granted(this) -> "Needs notification access (tap the switch)."
+            else -> "On: the same message arriving again within ${prefs.dedupMinutes} minutes (from any app) is removed. " +
+                "${prefs.dedupCount} hidden so far."
+        }
+    }
+
+    private fun askNotifications() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 77)
+    }
+
     // ---- AI writing helper ----
 
     private fun setupWriter() {
@@ -1010,6 +1078,7 @@ class MainActivity : AppCompatActivity() {
     private fun showClipAuto() {
         showCalls()
         showWriter()
+        showExtras()
         // The helper was on before but Android switched it off: say so plainly.
         if (prefs.clipAuto && prefs.helperEverOn && !ClipAutoService.enabled(this) && !helperWarned) {
             helperWarned = true

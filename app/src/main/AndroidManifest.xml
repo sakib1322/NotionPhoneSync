@@ -115,6 +115,25 @@
         </service>
 
         <service
+            android:name=".SpeedService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Internet speed meter: shows the phone's current download/upload speed in the status bar, which the user switched on." />
+        </service>
+
+        <service
+            android:name=".DedupService"
+            android:exported="true"
+            android:label="Notion Sync: hide duplicate notifications"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <service
             android:name=".ClipAutoService"
             android:exported="true"
             android:label="@string/clip_auto_label"

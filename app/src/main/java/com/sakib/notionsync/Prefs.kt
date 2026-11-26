@@ -139,6 +139,32 @@ class Prefs(ctx: Context) {
     var writerProbeAt: Long
         get() = sp.getLong("writer_probe_at", 0)
         set(v) { sp.edit().putLong("writer_probe_at", v).apply() }
+    // Internet speed in the status bar
+    var speedMeter: Boolean
+        get() = sp.getBoolean("speed_meter", true)
+        set(v) { sp.edit().putBoolean("speed_meter", v).apply() }
+    var speedDay: String
+        get() = sp.getString("speed_day", "") ?: ""
+        set(v) { sp.edit().putString("speed_day", v).apply() }
+    var speedToday: Long
+        get() = sp.getLong("speed_today", 0)
+        set(v) { sp.edit().putLong("speed_today", v).apply() }
+    var speedTodayMobile: Long
+        get() = sp.getLong("speed_today_mobile", 0)
+        set(v) { sp.edit().putLong("speed_today_mobile", v).apply() }
+    // Hide duplicate notifications
+    var dedupOn: Boolean
+        get() = sp.getBoolean("dedup_on", true)
+        set(v) { sp.edit().putBoolean("dedup_on", v).apply() }
+    var dedupMinutes: Int
+        get() = sp.getInt("dedup_minutes", 10)
+        set(v) { sp.edit().putInt("dedup_minutes", v).apply() }
+    var dedupCount: Int
+        get() = sp.getInt("dedup_count", 0)
+        set(v) { sp.edit().putInt("dedup_count", v).apply() }
+    var dedupLog: String
+        get() = sp.getString("dedup_log", "[]") ?: "[]"
+        set(v) { sp.edit().putString("dedup_log", v).apply() }
     var writerShare: Boolean
         get() = sp.getBoolean("writer_share", true)
         set(v) { sp.edit().putBoolean("writer_share", v).apply() }
@@ -155,6 +181,9 @@ class Prefs(ctx: Context) {
         get() = sp.getString("writer_custom", "{}") ?: "{}"
         set(v) { sp.edit().putString("writer_custom", v).apply() }
 
+    var callScreenRec: Boolean
+        get() = sp.getBoolean("call_screen_rec", false)
+        set(v) { sp.edit().putBoolean("call_screen_rec", v).apply() }
     var callRecord: Boolean
         get() = sp.getBoolean("call_record", false)
         set(v) { sp.edit().putBoolean("call_record", v).apply() }

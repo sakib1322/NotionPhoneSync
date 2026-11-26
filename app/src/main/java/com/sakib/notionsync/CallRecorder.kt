@@ -91,9 +91,18 @@ class CallRecorder(private val svc: AccessibilityService) {
         finish()
     }
 
+    private val screenRec = ScreenRecAuto(svc)
+    private var screenRecCall = false
+
     private fun onMode(mode: Int) {
         val inCall = mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION
         val p = Prefs(ctx)
+        // Samsung's Screen recorder instead of the app's own recording (it can capture both voices).
+        if (p.callScreenRec) {
+            if (inCall && !screenRecCall && !ignoreUntilNormal) { screenRecCall = true; screenRec.startRecording() }
+            else if (!inCall && screenRecCall) { screenRecCall = false; screenRec.stopRecording() }
+            return
+        } else if (screenRecCall && !inCall) { screenRecCall = false; screenRec.stopRecording() }
         if (!inCall || (ignoreUntilNormal && callAlive())) ignoreUntilNormal = false
         // `file` is set for the whole call, even between pieces.
         if (inCall && file == null && !ignoreUntilNormal && p.callRecord && p.signedIn.isNotEmpty() && allowed(ctx)) {

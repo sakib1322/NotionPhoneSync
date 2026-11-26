@@ -138,6 +138,21 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Phone extras -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+            <LinearLayout style="@style/CardBody" android:layout_width="match_parent" android:layout_height="wrap_content">
+                <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Status bar &amp; notifications" />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_speed" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Internet speed in the status bar" />
+                <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:text="Pull down to see download/upload speed and today's data (mobile and Wi-Fi)." />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_dedup" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Hide duplicate notifications" />
+                <TextView android:id="@+id/dedup_note" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/dedup_log" style="@style/Widget.Material3.Button.TextButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="See what was hidden" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Writing helper (AI) -->
         <com.google.android.material.card.MaterialCardView
             style="@style/Card"
@@ -216,6 +231,8 @@
 
                 <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Call recording" />
                 <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_calls" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Record calls automatically" />
+                <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/sw_screenrec" style="@style/SettingSwitch" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Use Samsung's Screen recorder for calls (starts and stops by itself; records both voices)" />
+                <TextView android:id="@+id/screenrec_note" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:text="Needs the helper on and the Screen recorder button in Quick settings. In the recorder's settings choose Sound: Media sounds and mic (once)." />
                 <TextView android:id="@+id/calls_note" style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" />
                 <TextView style="@style/Muted" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textSize="12sp"
                     android:text="Records WhatsApp, Meet, Messenger and phone calls into Recordings › Calls (backed up to Notion). Your voice is always recorded; the other person clearly when you use speakerphone — Android doesn't let apps capture the call sound directly. A small ● REC badge shows while recording. Let people know you record calls where that's required." />
