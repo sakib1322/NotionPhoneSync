@@ -31,7 +31,7 @@ from version import BUILD
 REPO = "sakib1322/NotionPhoneSync"
 INSTANCE_PORT = 47391
 TITLE = "Notion Laptop Sync"
-TAB_FILES, TAB_SPACE, TAB_NOTION, TAB_ACTIVITY, TAB_DEVICES = 1, 2, 4, 5, 7
+TAB_FILES, TAB_SPACE, TAB_NOTION, TAB_ACTIVITY, TAB_DEVICES, TAB_FLASH = 1, 2, 4, 5, 7, 12
 
 
 class App:
@@ -145,6 +145,8 @@ class App:
         self._build_battery(self._tab(nb, "Battery"))
         self._build_writer(self._tab(nb, "Writing helper (AI)"))
         self._build_battusage(self._tab(nb, "Battery usage & health"))
+        self.flash = None
+        self._flash_frame = self._tab(nb, "Flashcards", title=False)      # filled in when first opened
         self.sidebar = ui.Sidebar(self, side_holder)
         import taskbar
         self.taskbar = taskbar.TaskbarMeter(self)
@@ -155,7 +157,14 @@ class App:
             nb.select(TAB_FILES)
             self.sidebar.select("drive")
 
-    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery", 10: "writer", 11: "battusage"}
+    SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery", 10: "writer", 11: "battusage", 12: "flash"}
+    TAB_FLASH = TAB_FLASH
+
+    def _ensure_flash(self):
+        if self.flash is None:
+            from flash_tab import FlashTab
+            self.flash = FlashTab(self, self._flash_frame)
+        return self.flash
 
     def open_files(self, sid, recent=False):
         """Sidebar: show My Drive, Recent or another device's files."""
@@ -174,6 +183,8 @@ class App:
                 self._battery_shown()
             if i == 11:
                 self._ensure_battmon()
+            if i == TAB_FLASH:
+                self._ensure_flash().on_shown()
             if getattr(self, "battmon", None) is not None:
                 self.battmon.set_visible(i == 11)
             if i == TAB_DEVICES:
@@ -2452,6 +2463,24 @@ def selftest():
         lambda: None if not clip_sync.WINDOWS or (app.files.can_drop and ttk.Style().theme_use().startswith("sun-valley")) else
         errors.append((RuntimeError, RuntimeError(f"look not loaded: theme={ttk.Style().theme_use()} drop={app.files.can_drop}"), None)),
         lambda: print("LOOK OK", ttk.Style().theme_use(), "icons:", ui.ICON_FONT, "drop:", app.files.can_drop),
+        # Flashcards: make a deck, add cards, study, undo, export and import again, browse.
+        lambda: app.nb.select(TAB_FLASH),
+        app._ensure_flash,
+        lambda: (app.flash.col.add_note(app.flash.col.deck_by_name("Selftest deck"), "Front [img:none.png]", "Back", "t1", True),
+                 app.flash.refresh()),
+        lambda: app.flash.start_study(app.flash.col.deck_by_name("Selftest deck")),
+        lambda: app.flash.reveal(),
+        lambda: app.flash.grade(3),
+        lambda: app.flash.undo(),
+        lambda: (app.flash.reveal(), app.flash.grade(4)),
+        lambda: app.flash.show_home(),
+        lambda: print("FLASH export:", app.flash.col.export_apkg(os.path.join(tempfile.gettempdir(), "selftest.apkg"))),
+        lambda: print("FLASH import:", app.flash.col.import_apkg(os.path.join(tempfile.gettempdir(), "selftest.apkg"))),
+        lambda: app.flash.browse().destroy(),
+        lambda: app.flash.edit_dialog().destroy(),
+        lambda: app.flash.export_dialog().destroy(),
+        lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Selftest deck")),
+        lambda: app.flash.refresh(),
         lambda: app.nb.select(TAB_ACTIVITY),
         app._refresh_status,
         lambda: app.set_interval(30),
