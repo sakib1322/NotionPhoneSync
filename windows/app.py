@@ -2420,7 +2420,7 @@ def selftest():
             return
         try:
             from PIL import ImageGrab
-            app.root.update()
+            app.root.update_idletasks()
             r = app.root
             x, y, w, h = r.winfo_rootx(), r.winfo_rooty(), r.winfo_width(), r.winfo_height()
             os.makedirs(shots, exist_ok=True)
@@ -2432,7 +2432,7 @@ def selftest():
             return
         try:
             from PIL import ImageGrab
-            w.update()
+            w.update_idletasks()
             x, y = w.winfo_rootx(), w.winfo_rooty()
             ImageGrab.grab(bbox=(x, y, x + w.winfo_width(), y + w.winfo_height())).save(os.path.join(shots, name + ".png"))
         except Exception as e:

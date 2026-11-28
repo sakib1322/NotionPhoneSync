@@ -65,10 +65,23 @@ class FlashTab:
         self.heat = tk.Canvas(f, height=ui.px(7 * 13 + 4), bg=ui.CARD, highlightthickness=0)
         self.heat.pack(fill="x", pady=(6, 4))
 
+        self.note = ttk.Label(f, text="Tip: while studying press Space to show the answer, then 1 Again · 2 Hard · "
+                                      "3 Good · 4 Easy. Ctrl+Z undoes, E edits the card.", foreground=ui.MUTED)
+        self.note.pack(side="bottom", anchor="w", pady=(8, 0))
+        btns = ttk.Frame(f)
+        btns.pack(side="bottom", fill="x", pady=(6, 0))
+        ttk.Button(btns, text="Study", style="Accent.TButton", command=self.start_study).pack(side="left")
+        for text, cmd in (("Add cards", lambda: self.edit_dialog(deck_id=self._sel())),
+                          ("Browse", lambda: self.browse(self._sel())), ("Options", self.options_dialog),
+                          ("Rename", self.rename_deck), ("Delete", self.delete_deck)):
+            ttk.Button(btns, text=text, command=cmd).pack(side="left", padx=(6, 0))
+        self.empty = ttk.Label(f, text="No decks yet. Press “+ Add cards” to make your first card, or Import… an "
+                                       "Anki deck (.apkg) or a text file.", foreground=ui.MUTED)
         box = ttk.Frame(f)
         box.pack(fill="both", expand=True, pady=(8, 4))
+        self.deck_box = box
         cols = ("new", "learn", "due", "total")
-        t = ttk.Treeview(box, columns=cols, show="tree headings", height=10, selectmode="browse")
+        t = ttk.Treeview(box, columns=cols, show="tree headings", height=4, selectmode="browse")
         t.heading("#0", text="Deck")
         t.column("#0", width=ui.px(340), stretch=True)
         for c, txt, w in (("new", "New", 80), ("learn", "Learning", 90), ("due", "Due", 80), ("total", "Cards", 80)):
@@ -83,19 +96,6 @@ class FlashTab:
         t.bind("<Return>", lambda e: self.start_study())
         t.bind("<Button-3>", self._deck_menu)
         self.tree = t
-        self.empty = ttk.Label(f, text="No decks yet. Press “+ Add cards” to make your first card, or Import… an "
-                                       "Anki deck (.apkg) or a text file.", foreground=ui.MUTED)
-
-        btns = ttk.Frame(f)
-        btns.pack(fill="x", pady=(6, 0))
-        ttk.Button(btns, text="Study", style="Accent.TButton", command=self.start_study).pack(side="left")
-        for text, cmd in (("Add cards", lambda: self.edit_dialog(deck_id=self._sel())),
-                          ("Browse", lambda: self.browse(self._sel())), ("Options", self.options_dialog),
-                          ("Rename", self.rename_deck), ("Delete", self.delete_deck)):
-            ttk.Button(btns, text=text, command=cmd).pack(side="left", padx=(6, 0))
-        self.note = ttk.Label(f, text="Tip: while studying press Space to show the answer, then 1 Again · 2 Hard · "
-                                      "3 Good · 4 Easy. Ctrl+Z undoes, E edits the card.", foreground=ui.MUTED)
-        self.note.pack(anchor="w", pady=(8, 0))
 
     def _sel(self):
         s = self.tree.selection()
@@ -133,7 +133,7 @@ class FlashTab:
             self.tree.selection_set(pick)
             self.tree.focus(pick)
         elif not self.empty.winfo_ismapped():
-            self.empty.pack(anchor="w", pady=6, before=self.note)
+            self.empty.pack(anchor="w", pady=6, before=self.deck_box)
         t = self.col.today()
         b, s = self.stat["today"]
         b.config(text=f"{t['reviews']}")
@@ -277,9 +277,11 @@ class FlashTab:
         more["menu"] = mm
         more.pack(side="right", padx=10)
 
+        self.bar = ttk.Frame(f)
+        self.bar.pack(side="bottom", fill="x")          # first, so a small screen never hides the buttons
         card = tk.Frame(f, bg=ui.CARD, highlightthickness=1, highlightbackground="#dadce0")
         card.pack(fill="both", expand=True, pady=(14, 10))
-        self.txt = tk.Text(card, wrap="word", bd=0, highlightthickness=0, bg=ui.CARD, fg=ui.TEXT,
+        self.txt = tk.Text(card, wrap="word", bd=0, highlightthickness=0, bg=ui.CARD, fg=ui.TEXT, height=4,
                            font=(ui.FONT, 20), padx=ui.px(30), pady=ui.px(30), cursor="arrow", spacing3=4)
         self.txt.pack(fill="both", expand=True)
         self.txt.tag_configure("c", justify="center")
@@ -288,8 +290,6 @@ class FlashTab:
         self.txt.tag_configure("rule", justify="center", foreground="#dadce0", font=(ui.FONT, 10))
         self.txt.configure(state="disabled")
 
-        self.bar = ttk.Frame(f)
-        self.bar.pack(fill="x")
         self.show_btn = tk.Button(self.bar, text="Show answer      (Space)", font=(ui.FONT, 12), bd=0, relief="flat",
                                   bg=ui.ACCENT, fg="white", activebackground="#0842a0", activeforeground="white",
                                   cursor="hand2", padx=20, pady=12, command=self.reveal)
