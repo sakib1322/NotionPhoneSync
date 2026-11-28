@@ -51,6 +51,16 @@ for mode in light dark; do
   tap_label "Activity"; shoot "$mode-3-activity"
 done
 
+# Battery screen
+adb shell am start -W -n $PKG/.BatteryActivity
+sleep 4
+shoot "battery-1"
+adb shell input swipe 500 1800 500 400 400
+sleep 1
+shoot "battery-2"
+for f in shots/battery-*.png; do echo "SHOT $(basename "$f") $(base64 -w0 "$f")"; done
+adb shell input keyevent 4
+
 # Flashcards screen: opens, add-cards dialog opens, a card can be added and studied.
 adb shell cmd uimode night no
 adb shell am start -W -n $PKG/.FlashcardsActivity

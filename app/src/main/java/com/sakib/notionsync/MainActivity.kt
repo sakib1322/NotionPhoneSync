@@ -152,6 +152,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.btn_transfer_in).setOnClickListener { account.receiveTransfer() }
         findViewById<MaterialButton>(R.id.acct_manage).setOnClickListener { account.signInOrOut() }
         findViewById<MaterialButton>(R.id.btn_rename).setOnClickListener { renameDevice() }
+        findViewById<View>(R.id.btn_battery).setOnClickListener { startActivity(android.content.Intent(this, BatteryActivity::class.java)) }
+        Battery.attach(this)
         refreshDevices()
         ClipService.start(this)
         reloadSettingsUi()
@@ -191,6 +193,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        try {
+            val b = Battery.read(this)
+            findViewById<TextView>(R.id.battery_status).text = "${b.level}% · " + (if (b.full) "full" else if (b.charging) "charging" else "on battery") +
+                (b.healthPct?.let { " · health about $it%" } ?: "") + (b.tempC?.let { " · %.0f °C".format(it) } ?: "")
+        } catch (_: Exception) {}
         handler.post(ticker)
     }
 

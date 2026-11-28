@@ -138,6 +138,22 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <!-- Battery -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout style="@style/CardBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <TextView style="@style/CardTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Battery" />
+                <TextView android:id="@+id/battery_status" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:textAppearance="?attr/textAppearanceBodyMedium" android:text="" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/btn_battery" style="@style/Widget.Material3.Button.TonalButton" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Battery health &amp; reminders" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Phone extras -->
         <com.google.android.material.card.MaterialCardView
             style="@style/Card"

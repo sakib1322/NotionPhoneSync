@@ -157,6 +157,7 @@ class ClipService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Battery.attach(this)
     }
 
     override fun onDestroy() {
@@ -520,6 +521,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_LOCKED_BOOT_COMPLETED) {
             ClipService.start(ctx)
             SpeedService.start(ctx)
+            Battery.check(ctx)
         }
     }
 }

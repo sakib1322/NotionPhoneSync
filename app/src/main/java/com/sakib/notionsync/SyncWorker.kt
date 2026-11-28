@@ -80,6 +80,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     }
 
     override suspend fun doWork(): Result {
+        try { Battery.attach(applicationContext); Battery.check(applicationContext) } catch (_: Exception) {}
         if (!oneAtATime.tryLock()) return Result.success()
         prefs = Prefs(ctx)
         prefs.running = true

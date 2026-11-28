@@ -39,6 +39,11 @@
         </activity>
 
         <activity
+            android:name=".BatteryActivity"
+            android:exported="true"
+            android:label="Battery" />
+
+        <activity
             android:name=".FlashcardsActivity"
             android:exported="true"
             android:label="Flashcards"
