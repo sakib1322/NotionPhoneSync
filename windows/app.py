@@ -17,7 +17,7 @@ import account
 import clip_sync
 import device_setup
 import pagefix
-import voice
+voice = None          # the voice changer (numpy, audio library) loads when its page is first opened
 import devices
 import core
 import ui
@@ -77,25 +77,41 @@ class App:
         except tk.TclError:
             pass
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.hidden = bool(minimized)
+        if minimized:
+            self.root.withdraw()
         self._build()
-        self._start_tray()
         threading.Thread(target=self._listen_for_second_launch, daemon=True).start()
-        threading.Thread(target=self._scheduler, daemon=True).start()
         self.clip = clip_sync.ClipSync(self)
-        self.clip.start()
         import writer
         self.writer = writer.Writer(self)
-        self.writer.start()
+        self.writer.start()                   # the keyboard watcher: cheap, and wanted straight away
         self.signin = None
         if not self.settings.get("signed_in"):
             self.signin = device_setup.SignInScreen(self, self._signed_in)
             minimized = False
-        threading.Thread(target=self._devices_loop, daemon=True).start()
-        if minimized:
-            self.root.withdraw()
+            self.hidden = False
+            self.root.deiconify()
         self.root.after(300, self._tick)
         self.root.after(50, self._pump)
-        self.root.after(1500, lambda: self.check_update(install=False))
+        # Speed: the window is drawn first; background work starts a moment later, one piece at a
+        # time, so opening the app isn't held up (this matters a lot on a slow laptop).
+        self.root.after(400, self._start_tray)
+        self.root.after(1200, self.clip.start)
+        self.root.after(2500, lambda: threading.Thread(target=self._scheduler, daemon=True).start())
+        self.root.after(4000, lambda: threading.Thread(target=self._devices_loop, daemon=True).start())
+        self.root.after(30000, lambda: self.check_update(install=False))
+        self.root.after(8000, self._settle_memory)
+
+    def _settle_memory(self):
+        """After opening: tidy up once, then keep Python's garbage collector off the startup objects
+        (fewer pauses while you click around)."""
+        import gc
+        try:
+            gc.collect()
+            gc.freeze()
+        except Exception:
+            pass
 
     # ---- layout --------------------------------------------------------------
 
@@ -118,7 +134,8 @@ class App:
         self._build_activity(self._tab(nb, "Activity"))
         self._build_about(self._tab(nb, "Settings & updates"))
         self._build_devices(self._tab(nb, "Devices"))
-        self._build_voice(self._tab(nb, "Voice changer"))
+        self.voice = None
+        self._voice_frame = self._tab(nb, "Voice changer")   # filled in when first opened (it's slow to load)
         self._build_battery(self._tab(nb, "Battery"))
         self._build_writer(self._tab(nb, "Writing helper (AI)"))
         self._build_battusage(self._tab(nb, "Battery usage & health"))
@@ -145,9 +162,13 @@ class App:
             key = self.SIDE_KEYS.get(i)
             if key and getattr(self, "sidebar", None) and self.sidebar.current != key:
                 self.sidebar.select(key)
+            if i == 8:
+                self._ensure_voice()
             if i == 9:
                 self._battery_shown()
-            if hasattr(self, "battmon"):
+            if i == 11:
+                self._ensure_battmon()
+            if getattr(self, "battmon", None) is not None:
                 self.battmon.set_visible(i == 11)
             if i == TAB_DEVICES:
                 self._fill_devices()
@@ -301,6 +322,16 @@ class App:
 
     # ---- voice changer --------------------------------------------------------------
 
+    def _ensure_voice(self):
+        """Loads the voice changer the first time it's needed (its page, or the tray menu)."""
+        if self.voice is not None:
+            return
+        global voice
+        if voice is None:
+            import voice as _voice
+            voice = _voice
+        self._build_voice(self._voice_frame)
+
     def _build_voice(self, f):
         self.voice = voice.VoiceChanger(self.settings, self.log)
         self._h(f, "Voice changer for calls")
@@ -361,7 +392,9 @@ class App:
         self.v_mic.pack(side="left", padx=8)
         self.v_mic.bind("<<ComboboxSelected>>", lambda e: self.settings.set(
             "voice_mic", "" if self.v_mic.current() == 0 else self.v_mic.get()))
-        ttk.Button(row, text="Refresh", command=lambda: (self.voice.rescan(), self._voice_devices())).pack(side="left")
+        self.v_mic.config(values=["Windows default microphone"])
+        self.v_mic.set(self.settings.get("voice_mic") or "Windows default microphone")
+        ttk.Button(row, text="Refresh", command=lambda: self._voice_devices(rescan=True)).pack(side="left")
 
         mon = tk.BooleanVar(value=bool(self.settings.get("voice_monitor")))
         self.v_mon_var = mon
@@ -383,18 +416,37 @@ class App:
                    "call app back to your real microphone.", foreground="#555")
         self._voice_devices()
 
-    def _voice_devices(self):
-        try:
-            mics = [n for _, n in self.voice.mics()]
-        except Exception:
-            mics = []
+    def _voice_devices(self, rescan=False):
+        """Reads the microphones in the background: the audio library can take seconds to list them."""
+        if self.voice is None or getattr(self, "_vscan", False):
+            return
+        self._vscan = True
+        self.v_cable.config(text="Checking your microphones…")
+
+        def work():
+            mics, has = [], False
+            try:
+                if rescan:
+                    self.voice.rescan()
+                try:
+                    mics = [n for _, n in self.voice.mics()]
+                except Exception:
+                    mics = []
+                has = self.voice.cable() is not None
+                if not has and not rescan:
+                    self.voice.rescan()
+                    has = self.voice.cable() is not None
+            except Exception:
+                pass
+            finally:
+                self._vscan = False
+            self.events.put(lambda: self._voice_devices_show(mics, has))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _voice_devices_show(self, mics, has):
         self.v_mic.config(values=["Windows default microphone"] + mics)
         cur = self.settings.get("voice_mic")
         self.v_mic.set(cur if cur in mics else "Windows default microphone")
-        has = self.voice.cable() is not None
-        if not has:
-            self.voice.rescan()
-            has = self.voice.cable() is not None
         self.v_cable.config(text="✓ Virtual microphone (VB-CABLE) found." if has else
                             "Step 1 (once): install VB-CABLE, the free virtual microphone. Download it, unzip, right-click "
                             "VBCABLE_Setup_x64.exe → Run as administrator → Install, then restart the laptop.")
@@ -404,6 +456,7 @@ class App:
             self.v_cable_btn.pack(anchor="w", after=self.v_cable)
 
     def voice_toggle(self):
+        self._ensure_voice()
         if self.voice.running:
             self.voice.stop()
         else:
@@ -555,9 +608,20 @@ class App:
 
     # ---- battery usage per app & battery health -----------------------------------------------------
 
+    def _ensure_battmon(self):
+        """The per-app battery monitor starts a minute after the app opens (or when its page is opened),
+        so it doesn't slow down opening the app."""
+        if getattr(self, "battmon", None) is None:
+            import battmon
+            self.battmon = battmon.Monitor()
+        try:
+            self.battmon.set_visible(self.nb.index("current") == 11)
+        except Exception:
+            pass
+
     def _build_battusage(self, f):
-        import battmon
-        self.battmon = battmon.Monitor()
+        self.battmon = None
+        self.root.after(60000, self._ensure_battmon)
         top = ttk.Frame(f)
         top.pack(fill="x", pady=(0, 6))
         self.bu_cards = {}
@@ -601,6 +665,8 @@ class App:
         self.root.after(3000, self._battusage_tick)
 
     def _battusage_fill(self):
+        if self.battmon is None:
+            return
         rows, sm, hl = self.battmon.snapshot()
         est = "" if sm.get("measured") else "≈ "
         b1, s1 = self.bu_cards["now"]
@@ -1970,16 +2036,29 @@ class App:
     def _pump(self):
         """Runs results from background work (file lists, previews, progress) right away, not once a second."""
         t0 = time.time()
+        busy = False
         while time.time() - t0 < 0.04:
             try:
                 self.events.get_nowait()()
+                busy = True
             except queue.Empty:
                 break
             except Exception:
-                pass
-        self.root.after(30, self._pump)
+                busy = True
+        # Quick while there's work; when there's none, check less often so the laptop can rest
+        # (it used to wake up 33 times a second even while hidden in the tray).
+        if busy:
+            self._idle_pumps = 0
+            delay = 15
+        else:
+            self._idle_pumps = getattr(self, "_idle_pumps", 0) + 1
+            delay = 30 if self._idle_pumps < 20 else (250 if self.hidden else 80)
+        self.root.after(delay, self._pump)
 
     def _tick(self):
+        if self.hidden:
+            self._tick_hidden()
+            return
         if getattr(self, "voice", None) is not None:
             self._voice_ui()
         try:
@@ -2031,6 +2110,32 @@ class App:
             except Exception:
                 pass
         self.root.after(1000, self._tick)
+
+    def _tick_hidden(self):
+        """While the window is hidden: no redrawing, just the results of background work and the tray text."""
+        while True:
+            try:
+                self.events.get_nowait()()
+            except queue.Empty:
+                break
+            except Exception:
+                pass
+        up, down, t0 = self.last_traffic
+        now = time.monotonic()
+        cu, cd = TRAFFIC.up, TRAFFIC.down
+        dt = max(now - t0, 0.001)
+        su, sd = self.speed
+        su = su * 0.4 + (cu - up) / dt * 0.6
+        sd = sd * 0.4 + (cd - down) / dt * 0.6
+        self.speed = (su, sd)
+        self.last_traffic = (cu, cd, now)
+        if self.tray is not None:
+            state = "Syncing" if self.running() else "Idle"
+            try:
+                self.tray.title = f"{TITLE}: {state}  ↑ {core.human_rate(su)}"[:127]
+            except Exception:
+                pass
+        self.root.after(2000, self._tick)
 
     def _refresh_status(self):
         st = self.status
@@ -2112,6 +2217,9 @@ class App:
     def show_window(self):
         """Opens the window fully drawn (no black flash): it's made invisible, drawn, then shown."""
         r = self.root
+        was_hidden = self.hidden
+        self.hidden = False
+        self._idle_pumps = 0
         try:
             r.attributes("-alpha", 0.0)
         except tk.TclError:
@@ -2129,6 +2237,16 @@ class App:
             except tk.TclError:
                 pass
         r.after(40, reveal)
+        if was_hidden:
+            r.after(60, self._catch_up)
+
+    def _catch_up(self):
+        """Brings the page up to date straight away after being hidden (it isn't redrawn while hidden)."""
+        try:
+            self._refresh_status()
+            self._tab_changed()
+        except Exception:
+            pass
 
     def hide_to_tray(self):
         if self.tray is None:
@@ -2139,6 +2257,7 @@ class App:
             messagebox.showinfo(TITLE, "Notion Laptop Sync keeps running in the system tray (near the clock) "
                                        "so auto-sync keeps working.\n\nTo exit fully, right-click the tray icon → Quit.")
         self.root.withdraw()
+        self.hidden = True
 
     def _listen_for_second_launch(self):
         while not self.quitting:
@@ -2276,6 +2395,8 @@ def selftest():
     app.root.report_callback_exception = lambda *a: errors.append(a)
     steps = [
         lambda: [app.nb.select(i) for i in range(9)],
+        app._ensure_voice,
+        app._ensure_battmon,
         lambda: print(voice.selftest()),
         lambda: print("AUDIO LIB OK", voice.VoiceChanger.sd().__version__),
         app._voice_devices,

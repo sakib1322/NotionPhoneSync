@@ -94,7 +94,14 @@ class FilesTab:
         self._targets, self._photos = {}, {}
         self._file_idx, self._files_drawn, self._files_row0, self._more_btn = [], 0, 0, None
         threading.Thread(target=self._ready_worker, daemon=True).start()
-        for _ in range(3):
+        # Previews are made a few at a time — but only one at a time on a laptop with little memory,
+        # so the rest of the app stays quick.
+        try:
+            import psutil
+            low = psutil.virtual_memory().total < 6 * 1024 ** 3
+        except Exception:
+            low = False
+        for _ in range(1 if low else 3):
             threading.Thread(target=self._thumb_worker, daemon=True).start()
 
     # ---- layout ---------------------------------------------------------------------

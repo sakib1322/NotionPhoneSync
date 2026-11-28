@@ -148,7 +148,7 @@ class Monitor:
                 self._sample(psutil, ncpu)
             except Exception:
                 pass
-            time.sleep(3 if self.visible else 15)
+            time.sleep(3 if self.visible else 30)    # less often while its page is closed
 
     def _sample(self, psutil, ncpu):
         now = time.time()

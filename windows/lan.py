@@ -21,7 +21,6 @@ import struct
 import threading
 import time
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 TCP_PORT = 47392
 UDP_PORT = 47393
@@ -55,6 +54,7 @@ class Link:
 
     def __init__(self, sock, key, initiator):
         self.sock = sock
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM   # loaded when first needed (faster opening)
         self.aes = AESGCM(key)
         self.wlock = threading.Lock()
         mine = os.urandom(16)

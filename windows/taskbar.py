@@ -167,8 +167,10 @@ def sys_build():
         return 0
 
 
-def switch_desktop(step):
-    """Goes to the next (step=1) or previous (step=-1) virtual desktop, like Ctrl+Win+→ / ←."""
+def switch_desktop(step, count=1):
+    """Goes to the next (step=1) or previous (step=-1) virtual desktop, like Ctrl+Win+→ / ←.
+    count > 1 taps the arrow several times while Ctrl+Win stay held (used to wrap round from the
+    last desktop to the first, or the first to the last)."""
     if os.name != "nt":
         return
     u = ctypes.windll.user32
@@ -176,8 +178,11 @@ def switch_desktop(step):
     arrow = 0x27 if step > 0 else 0x25
     u.keybd_event(VK_CONTROL, 0, 0, 0)
     u.keybd_event(VK_LWIN, 0, EXT, 0)
-    u.keybd_event(arrow, 0, EXT, 0)
-    u.keybd_event(arrow, 0, EXT | KEYUP, 0)
+    for i in range(max(1, count)):
+        u.keybd_event(arrow, 0, EXT, 0)
+        u.keybd_event(arrow, 0, EXT | KEYUP, 0)
+        if i + 1 < count:
+            time.sleep(0.03)
     u.keybd_event(VK_LWIN, 0, EXT | KEYUP, 0)
     u.keybd_event(VK_CONTROL, 0, KEYUP, 0)
 
@@ -760,11 +765,14 @@ class TaskbarMeter:
                 names, idx = [""], 0
             old = getattr(self, "desk_idx", None)
             tgt = getattr(self, "_target", None)
-            if tgt is not None and idx != tgt and time.monotonic() - getattr(self, "_anim_t0", 0) < 0.8:
+            if tgt is not None and idx != tgt and time.monotonic() - getattr(self, "_anim_t0", 0) < getattr(self, "_hold", 0.8):
                 idx = tgt                       # Windows hasn't caught up with the switch yet
             self.desk_names = names
             if old is not None and idx != old and not self._animating_to(idx):
-                self._slide(old - idx)          # moved by keyboard / Task View: slide too
+                d, n = old - idx, len(names)
+                if n > 2 and abs(d) > n / 2:    # the short way round the circle
+                    d -= n if d > 0 else -n
+                self._slide(d)                  # moved by keyboard / Task View: slide too
             self.desk_idx = idx
             self.desk_text = names[idx] if names else ""
         self._place()
@@ -774,10 +782,17 @@ class TaskbarMeter:
     def _go(self, step):
         names = getattr(self, "desk_names", None) or [self.desk_text]
         idx = getattr(self, "desk_idx", 0)
-        new = idx + step
-        if not 0 <= new < len(names):
-            return                               # already the first / last desktop
-        switch_desktop(step)
+        n = len(names)
+        if n < 2:
+            return
+        new = (idx + step) % n                   # a full circle: after the last comes the first
+        if new == idx + step:
+            switch_desktop(step)
+            self._hold = 0.8
+        else:
+            # Windows can't wrap round by itself: go the other way, all the way.
+            switch_desktop(-step, count=n - 1)
+            self._hold = 0.8 + 0.25 * (n - 1)
         self.desk_idx = new
         self.desk_text = names[new]
         self._target = new
@@ -785,7 +800,8 @@ class TaskbarMeter:
         user32.SetTimer(self.hwnd, 3, 400, None)   # then check what Windows says
 
     def _animating_to(self, idx):
-        return getattr(self, "_target", None) == idx and time.monotonic() - getattr(self, "_anim_t0", 0) < 1.0
+        return getattr(self, "_target", None) == idx and \
+            time.monotonic() - getattr(self, "_anim_t0", 0) < max(1.0, getattr(self, "_hold", 0.8) + 0.2)
 
     def _slide(self, start):
         """Starts a smooth slide: the names start `start` rows away and glide into place."""
@@ -987,7 +1003,10 @@ class TaskbarMeter:
         big_px, small_px = max(11, round(13 * ui.S)), max(8, round(9.5 * ui.S))
         tx = x + px0 + padx
         for i, name in enumerate(names):
-            dpos = (i - idx) + off
+            d = i - idx
+            if n > 2:                            # a circle: the last desktop sits above the first
+                d = (d + n // 2) % n - n // 2
+            dpos = d + off
             a = abs(dpos)
             if a > 1.4:
                 continue

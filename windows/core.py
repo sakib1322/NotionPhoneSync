@@ -115,6 +115,14 @@ class Db:
         self.lock = threading.Lock()
         self.conn = sqlite3.connect(os.path.join(DATA_DIR, "sync.db"), check_same_thread=False)
         with self.lock:
+            # Speed: WAL lets the window read while a backup writes, and NORMAL doesn't wait for the
+            # disk on every single file (still safe: at worst the last moment is redone after a crash).
+            for pragma in ("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL",
+                           "PRAGMA temp_store=MEMORY", "PRAGMA cache_size=-8000"):
+                try:
+                    self.conn.execute(pragma)
+                except sqlite3.Error:
+                    pass
             self.conn.execute(
                 "CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, shown TEXT, size INTEGER, mtime INTEGER, "
                 "status TEXT, block_id TEXT, error TEXT, attempts INTEGER DEFAULT 0, updated REAL)")
@@ -131,6 +139,9 @@ class Db:
                 "CREATE TABLE IF NOT EXISTS idx(row_id TEXT PRIMARY KEY, root TEXT, name TEXT, path TEXT, size INTEGER, "
                 "mtime INTEGER, kind TEXT, block TEXT, page TEXT, device TEXT, source TEXT)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_root_path ON idx(root, path)")
+            # Speed: the counts shown every few seconds, and Recent / search (newest first).
+            self.conn.execute("CREATE INDEX IF NOT EXISTS files_status ON files(status)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_root_mtime ON idx(root, mtime)")
             self.conn.commit()
 
     def load_all(self):
@@ -358,12 +369,19 @@ class Log:
                 pass
 
     def tail(self, lines=200):
+        # Reads only the end of the file (it can be 500 KB), not all of it, every time.
         with self.lock:
             try:
-                with open(self.path, "r", encoding="utf-8") as f:
-                    all_lines = f.read().splitlines()
+                with open(self.path, "rb") as f:
+                    f.seek(0, 2)
+                    size = f.tell()
+                    f.seek(max(0, size - 200 * lines))
+                    data = f.read().decode("utf-8", "replace")
             except OSError:
                 return "Nothing yet."
+        all_lines = data.splitlines()
+        if size > 200 * lines and all_lines:
+            all_lines = all_lines[1:]          # the first line may be cut in half
         return "\n".join(reversed(all_lines[-lines:])) or "Nothing yet."
 
 
