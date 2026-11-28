@@ -135,8 +135,8 @@ class FlashcardsActivity : AppCompatActivity() {
         // today
         val stats = hbox()
         val today = db.todayCount(); val streak = db.streak(); val correct = db.todayCorrect(); val fc = db.forecast(7)
-        for ((big, small) in listOf("$today" to "studied today", "$streak" to (if (streak == 1) "day streak" else "day streak"),
-            (correct?.let { "$it%" } ?: "–") to "remembered", "${fc.sum()}" to "due this week")) {
+        for ((big, small) in listOf("$today" to "today", "$streak" to "day streak",
+            (correct?.let { "$it%" } ?: "–") to "correct", "${fc.sum()}" to "this week")) {
             val box = vbox(dp(12))
             box.background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); setColor(c(com.google.android.material.R.attr.colorSurfaceContainerLow)) }
             box.addView(text(big, 20f, true))

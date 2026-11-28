@@ -61,6 +61,8 @@ adb shell input text "What%sdoes%sTRIPS%sstand%sfor?"
 tap_label "Back (the answer)"
 adb shell input text "Trade-Related%sAspects%sof%sIP%sRights"
 shoot "flash-2-add"
+adb shell input keyevent 4      # hide the keyboard
+sleep 1
 tap_label "Add"
 tap_label "Close"
 sleep 1
