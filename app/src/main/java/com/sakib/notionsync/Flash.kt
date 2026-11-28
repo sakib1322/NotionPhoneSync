@@ -651,9 +651,9 @@ class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "fla
                 if (existing == null) {
                     val deck = long1("SELECT deck_id FROM notes WHERE id=?", nid)
                     db.execSQL("INSERT INTO cards(note_id, ord, deck_id, state, step, due, ivl, stability, difficulty, reps, lapses, last_review, suspended, mod, position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        arrayOf<Any?>(nid, ord, deck) + vals + arrayOf<Any?>(k.optLong("position")))
+                        (listOf<Any?>(nid, ord, deck) + vals.toList() + listOf<Any?>(k.optLong("position"))).toTypedArray())
                 } else if (k.d("mod") > existing.second) {
-                    db.execSQL("UPDATE cards SET state=?, step=?, due=?, ivl=?, stability=?, difficulty=?, reps=?, lapses=?, last_review=?, suspended=?, mod=? WHERE id=?", vals + arrayOf<Any?>(existing.first))
+                    db.execSQL("UPDATE cards SET state=?, step=?, due=?, ivl=?, stability=?, difficulty=?, reps=?, lapses=?, last_review=?, suspended=?, mod=? WHERE id=?", (vals.toList() + listOf<Any?>(existing.first)).toTypedArray())
                 }
             }
             val have = HashSet<String>()
