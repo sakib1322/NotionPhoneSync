@@ -251,6 +251,7 @@ class FlashTab:
         row.grid(row=4, column=0, columnspan=3, sticky="e")
         ttk.Button(row, text="Cancel", command=w.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(row, text="Save", style="Accent.TButton", command=save).pack(side="right")
+        return w
 
     # ---- studying -------------------------------------------------------------------------------
 
