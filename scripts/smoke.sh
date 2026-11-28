@@ -51,6 +51,27 @@ for mode in light dark; do
   tap_label "Activity"; shoot "$mode-3-activity"
 done
 
+# Flashcards screen: opens, add-cards dialog opens, a card can be added and studied.
+adb shell cmd uimode night no
+adb shell am start -W -n $PKG/.FlashcardsActivity
+sleep 4
+shoot "flash-1-home"
+tap_label "+  Add cards"
+adb shell input text "What%sdoes%sTRIPS%sstand%sfor?"
+tap_label "Back (the answer)"
+adb shell input text "Trade-Related%sAspects%sof%sIP%sRights"
+shoot "flash-2-add"
+tap_label "Add"
+tap_label "Close"
+sleep 1
+shoot "flash-3-home-with-deck"
+tap_label "My first deck"
+sleep 2
+shoot "flash-4-question"
+tap_label "Show answer"
+shoot "flash-5-answer"
+for f in shots/flash-*.png; do echo "SHOT $(basename "$f") $(base64 -w0 "$f")"; done
+
 if adb logcat -d -b crash | grep -q "Process: $PKG"; then
   echo "::error::The app crashed on the test phone"
   adb logcat -d -b crash | head -80

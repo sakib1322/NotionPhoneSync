@@ -86,7 +86,7 @@ jobs:
           script: bash scripts/smoke.sh
 
       - name: Share the test screenshots
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -98,6 +98,7 @@ jobs:
           fi
 
       - name: Publish a download
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

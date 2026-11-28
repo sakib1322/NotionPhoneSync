@@ -164,6 +164,10 @@ class MainActivity : AppCompatActivity() {
 
         val nav = findViewById<BottomNavigationView>(R.id.nav)
         nav.setOnItemSelectedListener { item ->
+            if (item.itemId == R.id.nav_cards) {          // Flashcards open in their own screen
+                FlashcardsActivity.open(this)
+                return@setOnItemSelectedListener false
+            }
             showTab(
                 when (item.itemId) {
                     R.id.nav_files -> TAB_FILES
