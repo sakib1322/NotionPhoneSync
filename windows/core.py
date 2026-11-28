@@ -206,17 +206,20 @@ class Db:
     def upsert_idx(self, rows):
         with self.lock:
             self.conn.executemany(f"INSERT OR REPLACE INTO idx({self.IDX_COLS}) VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows)
+            self._idx_changed()
             self.conn.commit()
 
     def delete_idx(self, row_id):
         with self.lock:
             self.conn.execute("DELETE FROM idx WHERE row_id=?", (row_id,))
+            self._idx_changed()
             self.conn.commit()
 
     def prune_idx(self, root, keep):
         with self.lock:
             ids = [r[0] for r in self.conn.execute("SELECT row_id FROM idx WHERE root=?", (root,)).fetchall()]
             self.conn.executemany("DELETE FROM idx WHERE row_id=?", [(i,) for i in ids if i not in keep])
+            self._idx_changed()
             self.conn.commit()
 
     def idx_row(self, row_id):
@@ -227,7 +230,21 @@ class Db:
         with self.lock:
             return self.conn.execute("SELECT COUNT(*) FROM idx WHERE root=? AND kind!='Folder'", (root,)).fetchone()[0]
 
+    def _idx_changed(self):
+        self._folder_cache = {}
+
+    def cached(self, *key):
+        return key in getattr(self, "_folder_cache", {})
+
     def sub_folders(self, root, path):
+        """Sub-folders directly inside path (remembered until the file list changes)."""
+        cache = self.__dict__.setdefault("_folder_cache", {})
+        key = ("sub", root, path)
+        if key not in cache:
+            cache[key] = self._sub_folders(root, path)
+        return list(cache[key])
+
+    def _sub_folders(self, root, path):
         """Sub-folders directly inside path: list of (name, files, bytes), including everything below."""
         prefix = path + "/" if path else ""
         agg = {}
@@ -292,6 +309,13 @@ class Db:
                 f"ORDER BY mtime DESC LIMIT {limit}", (*roots,)).fetchall()
 
     def storage(self, root):
+        cache = self.__dict__.setdefault("_folder_cache", {})
+        key = ("storage", root)
+        if key not in cache:
+            cache[key] = self._storage(root)
+        return cache[key]
+
+    def _storage(self, root):
         with self.lock:
             total = self.conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(size),0) FROM idx WHERE root=? AND kind!='Folder'", (root,)).fetchone()

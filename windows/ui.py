@@ -383,3 +383,54 @@ class Sidebar:
     def set_footer(self, text):
         if self.foot.cget("text") != text:
             self.foot.configure(text=text)
+
+
+# Characters the app shows that Segoe UI doesn't have (Windows then searches every installed font for them).
+_SPECIAL = "●○•…›✓✔✕⚠↑↓←→⋯─🎉🔋🪫🖼📄📁 বাংলা ভাষা अ"
+
+
+def warm_fonts(root, log=None):
+    """Drawing text with a character the font lacks (Bangla, ●, emoji…) makes the window toolkit search
+    every font on the laptop for one that has it. With many fonts installed that takes up to a second,
+    and it happens again whenever a font is created afresh — that's when the window freezes and shows
+    black boxes. So: keep every font the app uses alive for good, and do each search once, now, in
+    small steps (one font every 40 ms) while nothing else is happening."""
+    import time
+    holder = tk.Frame(root)                     # never shown: its labels just keep the fonts alive
+    descs = []
+    for size in range(8, 25):
+        descs += [(FONT, size), (FONT, size, "bold"), ("Segoe UI", size), ("Segoe UI", size, "bold")]
+    descs += [("Consolas", 9), ("Consolas", 20, "bold")]
+    if ICON_FONT:
+        descs += [(ICON_FONT, s) for s in range(8, 25)]
+    labels = []
+    for d in descs:
+        try:
+            labels.append(tk.Label(holder, font=d))
+        except tk.TclError:
+            pass
+    root._kept_fonts = (holder, labels)
+    t0 = time.perf_counter()
+    try:
+        n_fonts = len(root.tk.splitlist(root.tk.call("font", "families")))
+    except tk.TclError:
+        n_fonts = 0
+    if log:
+        log(f"Checking fonts: {n_fonts} installed (listing them took {(time.perf_counter() - t0) * 1000:.0f} ms).")
+    worst = [0.0]
+    todo = list(labels)
+
+    def step():
+        if not todo:
+            if log:
+                log(f"Fonts ready: the slowest look-up took {worst[0]:.0f} ms.")
+            return
+        lbl = todo.pop(0)
+        t = time.perf_counter()
+        try:
+            root.tk.call("font", "measure", lbl.cget("font"), _SPECIAL)
+        except tk.TclError:
+            pass
+        worst[0] = max(worst[0], (time.perf_counter() - t) * 1000)
+        root.after(40, step)
+    root.after(40, step)

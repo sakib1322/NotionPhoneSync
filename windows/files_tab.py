@@ -495,6 +495,29 @@ class FilesTab:
                       for e in self.entries))
 
     def show(self, keep_sel=False):
+        # The first look at a big folder can take a second or two (34,000+ files): do it in the
+        # background and draw when it's ready, instead of freezing the window.
+        if not (self.query or self.recent) and self.root_id and not (
+                self.db.cached("sub", self.root_id, self.path) and self.db.cached("storage", self.root_id)):
+            if getattr(self, "_warming", None) != (self.root_id, self.path):
+                self._warming = (self.root_id, self.path)
+                root, path = self.root_id, self.path
+                self._set_status("Loading…")
+
+                def warm():
+                    try:
+                        self.db.sub_folders(root, path)
+                        self.db.storage(root)
+                    except Exception:
+                        pass
+                    finally:
+                        def done():
+                            self._warming = None
+                            if (self.root_id, self.path) == (root, path):
+                                self.show(keep_sel)
+                        self.app.events.put(done)
+                threading.Thread(target=warm, daemon=True).start()
+            return
         before = {self._key(self.entries[i]) for i in self.sel if i < len(self.entries)} if keep_sel else set()
         old_sig = getattr(self, "_sig", None)
         note = self._load()

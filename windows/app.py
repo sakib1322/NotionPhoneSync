@@ -80,16 +80,15 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         # Coming back from minimised: redraw everything at once, before anything else runs.
         self.root.bind("<Map>", self._on_map, add="+")
-        self.root.bind("<Unmap>", self._on_unmap, add="+")
         self.root.after(200, lambda: None if getattr(self, "_faded", False) else winutil.not_see_through(self.root))
         self.hidden = bool(minimized)
         if minimized:
             self.root.withdraw()
-        self._build()
-        threading.Thread(target=self._listen_for_second_launch, daemon=True).start()
-        self.clip = clip_sync.ClipSync(self)
+        self.clip = clip_sync.ClipSync(self)          # before the pages: the Devices page uses it
         import writer
         self.writer = writer.Writer(self)
+        self._build()
+        threading.Thread(target=self._listen_for_second_launch, daemon=True).start()
         self.writer.start()                   # the keyboard watcher: cheap, and wanted straight away
         self.signin = None
         if not self.settings.get("signed_in"):
@@ -108,6 +107,7 @@ class App:
         self.root.after(30000, lambda: self.check_update(install=False))
         self.root.after(15000, lambda: threading.Thread(target=self._flash_sync_loop, daemon=True).start())
         self.root.after(8000, self._settle_memory)
+        self.root.after(1500, lambda: ui.warm_fonts(self.root, self.log))
 
     def _settle_memory(self):
         """After opening: tidy up once, then keep Python's garbage collector off the startup objects
@@ -158,9 +158,6 @@ class App:
             return
         t0, pf0 = time.perf_counter(), winutil.page_faults()
         self.root.update_idletasks()
-        if getattr(self, "_faded", False):
-            self.root.after_idle(lambda: self.root.after(20, self._unfade))
-            self.root.after(1500, self._unfade)          # never leave it invisible
 
         def done():
             ms = (time.perf_counter() - t0) * 1000
@@ -2648,7 +2645,6 @@ def selftest():
         lambda: app.flash.export_dialog().destroy(),
         lambda: app.flash.show_home(),
         lambda: app.root.iconify(),
-        lambda: print("MINIMISED alpha:", app.root.attributes("-alpha")),
         lambda: app.root.deiconify(),
         lambda: None, lambda: None, lambda: None, lambda: None, lambda: None, lambda: None,
         lambda: print("RESTORED alpha:", app.root.attributes("-alpha")),
