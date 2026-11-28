@@ -80,7 +80,8 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         # Coming back from minimised: redraw everything at once, before anything else runs.
         self.root.bind("<Map>", self._on_map, add="+")
-        self.root.after(200, lambda: winutil.not_see_through(self.root))
+        self.root.bind("<Unmap>", self._on_unmap, add="+")
+        self.root.after(200, lambda: None if getattr(self, "_faded", False) else winutil.not_see_through(self.root))
         self.hidden = bool(minimized)
         if minimized:
             self.root.withdraw()
@@ -129,12 +130,37 @@ class App:
                      "Keeping the app in memory isn't needed here.")
         self.root.after(180000, self._keep_memory)
 
+    def _on_unmap(self, e):
+        """Minimised: make the window invisible, so that when it comes back it can draw itself fully
+        before it's shown. (Windows otherwise shows the parts not drawn yet as black boxes.)"""
+        if e.widget is not self.root or os.name != "nt":
+            return
+        try:
+            if self.root.state() == "iconic":
+                self.root.attributes("-alpha", 0.0)
+                self._faded = True
+        except tk.TclError:
+            pass
+
+    def _unfade(self):
+        if getattr(self, "_faded", False):
+            self._faded = False
+            try:
+                self.root.update_idletasks()
+                self.root.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
+
     def _on_map(self, e):
-        """Coming back from minimised: redraw at once, and note how long that took (Activity)."""
+        """Coming back from minimised: draw everything while still invisible, then show it, and note
+        how long that took (Activity)."""
         if e.widget is not self.root:
             return
         t0, pf0 = time.perf_counter(), winutil.page_faults()
         self.root.update_idletasks()
+        if getattr(self, "_faded", False):
+            self.root.after_idle(lambda: self.root.after(20, self._unfade))
+            self.root.after(1500, self._unfade)          # never leave it invisible
 
         def done():
             ms = (time.perf_counter() - t0) * 1000
@@ -2310,6 +2336,7 @@ class App:
         if r.state() in ("withdrawn", "iconic"):
             r.deiconify()
         r.update_idletasks()
+        self._unfade()
         r.lift()
         r.focus_force()
         winutil.not_see_through(r)
@@ -2620,6 +2647,13 @@ def selftest():
         lambda: app._ed.destroy(),
         lambda: app.flash.export_dialog().destroy(),
         lambda: app.flash.show_home(),
+        lambda: app.root.iconify(),
+        lambda: print("MINIMISED alpha:", app.root.attributes("-alpha")),
+        lambda: app.root.deiconify(),
+        lambda: None, lambda: None, lambda: None, lambda: None, lambda: None, lambda: None,
+        lambda: print("RESTORED alpha:", app.root.attributes("-alpha")),
+        lambda: (_ for _ in ()).throw(RuntimeError("window left invisible after restore"))
+        if float(app.root.attributes("-alpha")) < 1.0 else None,
         lambda: print("STALLS:", app.stalls),
         lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Selftest deck")),
         lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Law::Intellectual Property")),
