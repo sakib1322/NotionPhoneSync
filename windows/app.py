@@ -2410,6 +2410,32 @@ def selftest():
     listener.listen(1)
     app = App(False, listener)
     app.root.report_callback_exception = lambda *a: errors.append(a)
+    shots = os.environ.get("SELFTEST_SHOTS")
+
+    def shot(name):
+        """Saves a picture of the window (only when the build asks for it, to check the look)."""
+        if not shots:
+            return
+        try:
+            from PIL import ImageGrab
+            app.root.update()
+            r = app.root
+            x, y, w, h = r.winfo_rootx(), r.winfo_rooty(), r.winfo_width(), r.winfo_height()
+            os.makedirs(shots, exist_ok=True)
+            ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(os.path.join(shots, name + ".png"))
+        except Exception as e:
+            print("shot failed", name, e)
+    def shot_win(w, name):
+        if not shots:
+            return
+        try:
+            from PIL import ImageGrab
+            w.update()
+            x, y = w.winfo_rootx(), w.winfo_rooty()
+            ImageGrab.grab(bbox=(x, y, x + w.winfo_width(), y + w.winfo_height())).save(os.path.join(shots, name + ".png"))
+        except Exception as e:
+            print("shot failed", name, e)
+
     steps = [
         lambda: [app.nb.select(i) for i in range(9)],
         app._ensure_voice,
@@ -2467,7 +2493,17 @@ def selftest():
         lambda: app.nb.select(TAB_FLASH),
         app._ensure_flash,
         lambda: (app.flash.col.add_note(app.flash.col.deck_by_name("Selftest deck"), "Front [img:none.png]", "Back", "t1", True),
+                 [app.flash.col.add_note(app.flash.col.deck_by_name("Law::Intellectual Property"), q, a, "ip")
+                  for q, a in (("What does copyright protect?", "The expression of ideas, not the ideas themselves."),
+                               ("How long does a patent last in Bangladesh?", "20 years from the filing date."),
+                               ("TRIPS stands for…", "Trade-Related Aspects of Intellectual Property Rights"))],
                  app.flash.refresh()),
+        lambda: shot("flash_home"),
+        lambda: app.flash.start_study(app.flash.col.deck_by_name("Law::Intellectual Property")),
+        lambda: shot("flash_question"),
+        lambda: app.flash.reveal(),
+        lambda: shot("flash_answer"),
+        lambda: app.flash.show_home(),
         lambda: app.flash.start_study(app.flash.col.deck_by_name("Selftest deck")),
         lambda: app.flash.reveal(),
         lambda: app.flash.grade(3),
@@ -2476,10 +2512,15 @@ def selftest():
         lambda: app.flash.show_home(),
         lambda: print("FLASH export:", app.flash.col.export_apkg(os.path.join(tempfile.gettempdir(), "selftest.apkg"))),
         lambda: print("FLASH import:", app.flash.col.import_apkg(os.path.join(tempfile.gettempdir(), "selftest.apkg"))),
-        lambda: app.flash.browse().destroy(),
-        lambda: app.flash.edit_dialog().destroy(),
+        lambda: setattr(app, "_bw", app.flash.browse()),
+        lambda: shot_win(app._bw, "flash_browse"),
+        lambda: app._bw.destroy(),
+        lambda: setattr(app, "_ed", app.flash.edit_dialog()),
+        lambda: shot_win(app._ed, "flash_add"),
+        lambda: app._ed.destroy(),
         lambda: app.flash.export_dialog().destroy(),
         lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Selftest deck")),
+        lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Law::Intellectual Property")),
         lambda: app.flash.refresh(),
         lambda: app.nb.select(TAB_ACTIVITY),
         app._refresh_status,

@@ -51,10 +51,18 @@ jobs:
           APPDATA: ${{ runner.temp }}\selftest
         run: |
           New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+          $env:SELFTEST_SHOTS = "$PWD\shots"
           python app.py --selftest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:SELFTEST_SHOTS = ""
           python voice.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selftest-screenshots
+          path: windows/shots
+          if-no-files-found: ignore
 
       - name: Build the app
         run: |
