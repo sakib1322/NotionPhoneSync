@@ -22,7 +22,11 @@ data class BatteryNow(
     val designMah: Int?, val cycles: Int?, val minutesToFull: Long?, val technology: String
 ) {
     /** Estimated battery health: what it holds now vs. when new. */
-    val healthPct: Int? get() = if (estFullMah != null && designMah != null && designMah > 0) (estFullMah * 100 / designMah).coerceIn(1, 120) else null
+    val healthPct: Int? get() {
+        if (estFullMah == null || designMah == null || designMah <= 0) return null
+        val pct = estFullMah * 100 / designMah
+        return if (pct in 40..115) pct.coerceAtMost(100) else null     // outside that, the phone's numbers can't be trusted
+    }
 }
 
 object Battery {
