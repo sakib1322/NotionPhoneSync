@@ -606,7 +606,9 @@ class FlashcardsActivity : AppCompatActivity() {
                 if (res is Throwable) {
                     MaterialAlertDialogBuilder(this).setTitle("Couldn't import").setMessage(res.message ?: res.toString()).setPositiveButton("OK", null).show()
                 } else {
-                    @Suppress("UNCHECKED_CAST") val (n, decks) = res as Pair<Int, List<String>>
+                    val pair = res as Pair<*, *>
+                    val n = pair.first as Int
+                    val decks = (pair.second as List<*>).map { it.toString() }
                     Logger.log(this, "Flashcards: imported $n card(s) from $name.")
                     MaterialAlertDialogBuilder(this).setTitle("Imported").setMessage(
                         "Added $n card(s)" + (if (decks.isNotEmpty()) " to: ${decks.take(6).joinToString(", ")}" else "") +
