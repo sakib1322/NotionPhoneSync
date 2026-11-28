@@ -55,6 +55,7 @@ jobs:
           python app.py --selftest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:SELFTEST_SHOTS = ""
+          python -c "import glob,base64,io,os;from PIL import Image;[print('SHOT', os.path.basename(f), base64.b64encode((lambda b:(Image.open(f).convert('RGB').resize((min(1100,Image.open(f).width), int(Image.open(f).height*min(1100,Image.open(f).width)/Image.open(f).width))).save(b,'JPEG',quality=70),b.getvalue())[1])(io.BytesIO())).decode()) for f in sorted(glob.glob('shots/*.png'))]"
           python voice.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
