@@ -93,3 +93,28 @@ def set_startup(enabled):
 def resource(name):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
+
+
+def keep_in_memory():
+    """Windows moves a program out of memory (to the disk) when its window is minimised. Coming back,
+    it has to read itself back from the disk before it can draw — that's the black boxes you see for a
+    moment on a slow laptop. This asks Windows to keep the app's working part in memory (up to a
+    sensible amount, smaller on laptops with little memory). Returns the amount kept, in MB, or 0."""
+    if not IS_WINDOWS:
+        return 0
+    try:
+        import psutil
+        rss = psutil.Process().memory_info().rss
+        total = psutil.virtual_memory().total
+        floor = int(min(rss, 160 * 2 ** 20, total * 0.06))
+        if floor < 32 * 2 ** 20:
+            return 0
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetProcessWorkingSetSizeEx.argtypes = [wintypes.HANDLE, ctypes.c_size_t, ctypes.c_size_t, wintypes.DWORD]
+        QUOTA_LIMITS_HARDWS_MIN_ENABLE, QUOTA_LIMITS_HARDWS_MAX_DISABLE = 0x1, 0x8
+        ok = k32.SetProcessWorkingSetSizeEx(k32.GetCurrentProcess(), floor, max(floor * 4, 512 * 2 ** 20),
+                                            QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE)
+        return floor // 2 ** 20 if ok else 0
+    except Exception:
+        return 0

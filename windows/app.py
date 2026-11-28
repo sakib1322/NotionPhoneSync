@@ -77,6 +77,8 @@ class App:
         except tk.TclError:
             pass
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        # Coming back from minimised: redraw everything at once, before anything else runs.
+        self.root.bind("<Map>", lambda e: self.root.update_idletasks() if e.widget is self.root else None, add="+")
         self.hidden = bool(minimized)
         if minimized:
             self.root.withdraw()
@@ -112,6 +114,10 @@ class App:
             gc.freeze()
         except Exception:
             pass
+        # No black boxes when the window comes back after being minimised (see winutil).
+        mb = winutil.keep_in_memory()
+        if mb:
+            self.log(f"Keeping {mb} MB of the app in memory so its window redraws instantly.")
 
     # ---- layout --------------------------------------------------------------
 

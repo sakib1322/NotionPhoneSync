@@ -917,7 +917,7 @@ class TaskbarMeter:
         if self.s.get("taskbar_desktop") and self.desk_text:
             names = getattr(self, "desk_names", None) or [self.desk_text]
             idx = min(getattr(self, "desk_idx", 0), len(names) - 1)
-            near = [names[i] for i in range(max(0, idx - 1), min(len(names), idx + 2))]
+            near = [names[(idx + k) % len(names)] for k in (-1, 0, 1)]    # a circle: wraps round
             name_font = _font(max(11, round(13 * ui.S)), bold=True)
             dw = (ui.px(4) + ui.px(8) + ui.px(10) * 2 +
                   max(int(tmp.textlength(n, font=name_font)) + 1 for n in near))
