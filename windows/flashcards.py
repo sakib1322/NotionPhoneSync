@@ -299,7 +299,14 @@ class Collection:
             CREATE TABLE IF NOT EXISTS revlog(id INTEGER PRIMARY KEY, card_id INTEGER, grade INTEGER,
                 state INTEGER, ivl INTEGER, took REAL, time REAL);
             CREATE INDEX IF NOT EXISTS revlog_time ON revlog(time);
+            CREATE TABLE IF NOT EXISTS graves(kind TEXT, guid TEXT, time REAL, PRIMARY KEY(kind, guid));
+            CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
             """)
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(decks)")]
+            if "guid" not in cols:
+                self.conn.execute("ALTER TABLE decks ADD COLUMN guid TEXT")
+            for (did,) in self.conn.execute("SELECT id FROM decks WHERE guid IS NULL OR guid=''").fetchall():
+                self.conn.execute("UPDATE decks SET guid=? WHERE id=?", (_guid() + _guid(), did))
             self.conn.commit()
 
     def close(self):
@@ -325,8 +332,8 @@ class Collection:
                 return r[0]
             if not create:
                 return None
-            cur = self.conn.execute("INSERT INTO decks(name, created, mod) VALUES(?,?,?)",
-                                    (name, time.time(), time.time()))
+            cur = self.conn.execute("INSERT INTO decks(name, created, mod, guid) VALUES(?,?,?,?)",
+                                    (name, time.time(), time.time(), _guid() + _guid()))
             self.conn.commit()
             return cur.lastrowid
 
@@ -342,8 +349,17 @@ class Collection:
                                time.time(), deck_id))
             self.conn.commit()
 
+    def _grave(self, kind, guid):
+        if guid:
+            self.conn.execute("INSERT OR REPLACE INTO graves VALUES(?,?,?)", (kind, guid, time.time()))
+
     def delete_deck(self, deck_id):
         with self.lock:
+            g = self.conn.execute("SELECT guid FROM decks WHERE id=?", (deck_id,)).fetchone()
+            if g:
+                self._grave("deck", g[0])
+            for (ng,) in self.conn.execute("SELECT guid FROM notes WHERE deck_id=?", (deck_id,)).fetchall():
+                self._grave("note", ng)
             self.conn.execute("DELETE FROM cards WHERE deck_id=?", (deck_id,))
             self.conn.execute("DELETE FROM notes WHERE deck_id=?", (deck_id,))
             self.conn.execute("DELETE FROM decks WHERE id=?", (deck_id,))
@@ -371,7 +387,8 @@ class Collection:
         with self.lock:
             self.conn.execute("UPDATE notes SET deck_id=?, front=?, back=?, tags=?, reverse=?, mod=? WHERE id=?",
                               (deck_id, front, back, tags.strip(), 1 if reverse else 0, now, note_id))
-            self.conn.execute("UPDATE cards SET deck_id=?, mod=? WHERE note_id=?", (deck_id, now, note_id))
+            # (the cards' study progress isn't changed, so their sync time stays as it is)
+            self.conn.execute("UPDATE cards SET deck_id=? WHERE note_id=?", (deck_id, note_id))
             has_rev = self.conn.execute("SELECT 1 FROM cards WHERE note_id=? AND ord=1", (note_id,)).fetchone()
             if reverse and not has_rev:
                 self.conn.execute("INSERT INTO cards(note_id, ord, deck_id, position, mod) VALUES(?,?,?,?,?)",
@@ -387,6 +404,9 @@ class Collection:
 
     def delete_note(self, note_id):
         with self.lock:
+            g = self.conn.execute("SELECT guid FROM notes WHERE id=?", (note_id,)).fetchone()
+            if g:
+                self._grave("note", g[0])
             self.conn.execute("DELETE FROM cards WHERE note_id=?", (note_id,))
             self.conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
             self.conn.commit()
@@ -1075,3 +1095,155 @@ def _media_entries(b):
                     name = v2.decode("utf-8", "replace")
             out.append(name)
     return out
+
+
+# ---- sync between devices (the same format on the phone) ------------------------------------------
+
+SYNC_VERSION = 1
+
+
+def _sync_methods():
+    def signature(self):
+        """Changes whenever anything that syncs changes."""
+        with self.lock:
+            parts = [self.conn.execute(q).fetchone() for q in (
+                "SELECT COUNT(*), COALESCE(MAX(mod),0) FROM decks", "SELECT COUNT(*), COALESCE(MAX(mod),0) FROM notes",
+                "SELECT COUNT(*), COALESCE(MAX(mod),0) FROM cards", "SELECT COUNT(*), COALESCE(MAX(time),0) FROM revlog",
+                "SELECT COUNT(*), COALESCE(MAX(time),0) FROM graves")]
+        return "|".join(f"{a}:{round(b or 0, 3)}" for a, b in parts)
+
+    def get_meta(self, k, default=None):
+        with self.lock:
+            r = self.conn.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+        return r[0] if r else default
+
+    def set_meta(self, k, v):
+        with self.lock:
+            self.conn.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, str(v)))
+            self.conn.commit()
+
+    def export_sync(self, device=""):
+        """Everything, in the shared sync format."""
+        with self.lock:
+            q = lambda sql: [dict(r) for r in self.conn.execute(sql)]
+            decks = q("SELECT guid, name, new_per_day, reviews_per_day, retention, mod FROM decks")
+            notes = q("SELECT n.guid, d.guid AS deck, n.front, n.back, n.tags, n.reverse, n.created, n.mod "
+                      "FROM notes n JOIN decks d ON d.id=n.deck_id")
+            cards = q("SELECT n.guid AS note, c.ord, c.state, c.step, c.due, c.ivl, c.stability, c.difficulty, c.reps, "
+                      "c.lapses, c.last_review, c.suspended, c.position, c.mod FROM cards c JOIN notes n ON n.id=c.note_id")
+            revlog = q("SELECT n.guid AS note, c.ord, r.grade, r.state, r.ivl, r.took, r.time FROM revlog r "
+                       "JOIN cards c ON c.id=r.card_id JOIN notes n ON n.id=c.note_id")
+            graves = q("SELECT kind, guid, time FROM graves")
+        media = sorted({m for n in notes for m in images_in(n["front"]) + images_in(n["back"])})
+        return {"v": SYNC_VERSION, "device": device, "time": time.time(), "decks": decks, "notes": notes,
+                "cards": cards, "revlog": revlog, "graves": graves, "media": media}
+
+    def merge_sync(self, data):
+        """Merges another device's collection into this one (newest change wins; nothing is lost twice).
+        Returns a short summary."""
+        if not data or data.get("v", 0) > SYNC_VERSION:
+            return "skipped (made by a newer app version — update this app)"
+        added = updated = removed = 0
+        with self.lock:
+            c = self.conn
+            # 1. deletions
+            for g in data.get("graves", []):
+                old = c.execute("SELECT time FROM graves WHERE kind=? AND guid=?", (g["kind"], g["guid"])).fetchone()
+                if not old or old[0] < g["time"]:
+                    c.execute("INSERT OR REPLACE INTO graves VALUES(?,?,?)", (g["kind"], g["guid"], g["time"]))
+                if g["kind"] == "note":
+                    r = c.execute("SELECT id, mod FROM notes WHERE guid=?", (g["guid"],)).fetchone()
+                    if r and (r[1] or 0) <= g["time"]:
+                        c.execute("DELETE FROM cards WHERE note_id=?", (r[0],))
+                        c.execute("DELETE FROM notes WHERE id=?", (r[0],))
+                        removed += 1
+                elif g["kind"] == "deck":
+                    r = c.execute("SELECT id, mod FROM decks WHERE guid=?", (g["guid"],)).fetchone()
+                    if r and (r[1] or 0) <= g["time"] and not c.execute(
+                            "SELECT 1 FROM notes WHERE deck_id=? AND mod>?", (r[0], g["time"])).fetchone():
+                        c.execute("DELETE FROM cards WHERE deck_id=?", (r[0],))
+                        c.execute("DELETE FROM notes WHERE deck_id=?", (r[0],))
+                        c.execute("DELETE FROM decks WHERE id=?", (r[0],))
+            graves = {(k, g) for k, g in c.execute("SELECT kind, guid FROM graves")}
+            # 2. decks (matched by id, or by name for decks made separately on each device)
+            deck_id = {}
+            for d in data.get("decks", []):
+                if ("deck", d["guid"]) in graves and not any(n.get("deck") == d["guid"] for n in data.get("notes", [])):
+                    continue
+                r = c.execute("SELECT id, guid, mod, name FROM decks WHERE guid=?", (d["guid"],)).fetchone() or \
+                    c.execute("SELECT id, guid, mod, name FROM decks WHERE name=? COLLATE NOCASE", (d["name"],)).fetchone()
+                if r:
+                    did = r[0]
+                    if r[1] != d["guid"] and d["guid"] < (r[1] or "~"):
+                        c.execute("UPDATE decks SET guid=? WHERE id=?", (d["guid"], did))    # both settle on one id
+                    if (d.get("mod") or 0) > (r[2] or 0):
+                        clash = c.execute("SELECT id FROM decks WHERE name=? COLLATE NOCASE AND id!=?",
+                                          (d["name"], did)).fetchone()
+                        c.execute("UPDATE decks SET name=?, new_per_day=?, reviews_per_day=?, retention=?, mod=? WHERE id=?",
+                                  (r[3] if clash else d["name"], d["new_per_day"], d["reviews_per_day"], d["retention"],
+                                   d["mod"], did))
+                else:
+                    did = c.execute("INSERT INTO decks(guid, name, new_per_day, reviews_per_day, retention, created, mod) "
+                                    "VALUES(?,?,?,?,?,?,?)", (d["guid"], d["name"], d["new_per_day"], d["reviews_per_day"],
+                                                              d["retention"], time.time(), d.get("mod") or 0)).lastrowid
+                deck_id[d["guid"]] = did
+            # 3. notes
+            note_id = {}
+            for n in data.get("notes", []):
+                if ("note", n["guid"]) in graves:
+                    continue
+                did = deck_id.get(n["deck"])
+                if did is None:
+                    continue
+                r = c.execute("SELECT id, mod FROM notes WHERE guid=?", (n["guid"],)).fetchone()
+                if not r:
+                    nid = c.execute("INSERT INTO notes(guid, deck_id, front, back, tags, reverse, created, mod) "
+                                    "VALUES(?,?,?,?,?,?,?,?)", (n["guid"], did, n["front"], n["back"], n["tags"] or "",
+                                                                n["reverse"], n.get("created") or 0, n.get("mod") or 0)).lastrowid
+                    added += 1
+                else:
+                    nid = r[0]
+                    if (n.get("mod") or 0) > (r[1] or 0):
+                        c.execute("UPDATE notes SET deck_id=?, front=?, back=?, tags=?, reverse=?, mod=? WHERE id=?",
+                                  (did, n["front"], n["back"], n["tags"] or "", n["reverse"], n["mod"], nid))
+                        c.execute("UPDATE cards SET deck_id=? WHERE note_id=?", (did, nid))
+                        if not n["reverse"]:
+                            c.execute("DELETE FROM cards WHERE note_id=? AND ord=1", (nid,))
+                        updated += 1
+                note_id[n["guid"]] = nid
+            # 4. cards (scheduling: the most recent change wins)
+            for k in data.get("cards", []):
+                nid = note_id.get(k["note"])
+                if nid is None:
+                    continue
+                r = c.execute("SELECT id, mod FROM cards WHERE note_id=? AND ord=?", (nid, k["ord"])).fetchone()
+                vals = (k["state"], k["step"], k["due"], k["ivl"], k["stability"], k["difficulty"], k["reps"], k["lapses"],
+                        k["last_review"], k["suspended"], k.get("mod") or 0)
+                deck = c.execute("SELECT deck_id FROM notes WHERE id=?", (nid,)).fetchone()[0]
+                if not r:
+                    c.execute("INSERT INTO cards(note_id, ord, deck_id, state, step, due, ivl, stability, difficulty, reps, "
+                              "lapses, last_review, suspended, mod, position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              (nid, k["ord"], deck) + vals + (k.get("position") or 0,))
+                elif (k.get("mod") or 0) > (r[1] or 0):
+                    c.execute("UPDATE cards SET state=?, step=?, due=?, ivl=?, stability=?, difficulty=?, reps=?, lapses=?, "
+                              "last_review=?, suspended=?, mod=? WHERE id=?", vals + (r[0],))
+            # 5. review history (every answer on every device counts)
+            have = {(a, b, round(t, 3)) for a, b, t in c.execute(
+                "SELECT n.guid, c.ord, r.time FROM revlog r JOIN cards c ON c.id=r.card_id JOIN notes n ON n.id=c.note_id")}
+            for rv in data.get("revlog", []):
+                key = (rv["note"], rv["ord"], round(rv["time"], 3))
+                if key in have or rv["note"] not in note_id:
+                    continue
+                cid = c.execute("SELECT id FROM cards WHERE note_id=? AND ord=?", (note_id[rv["note"]], rv["ord"])).fetchone()
+                if cid:
+                    c.execute("INSERT INTO revlog(card_id, grade, state, ivl, took, time) VALUES(?,?,?,?,?,?)",
+                              (cid[0], rv["grade"], rv["state"], rv["ivl"], rv["took"], rv["time"]))
+                    have.add(key)
+            c.commit()
+        return f"{added} new, {updated} changed, {removed} deleted"
+
+    for f in (signature, get_meta, set_meta, export_sync, merge_sync):
+        setattr(Collection, f.__name__, f)
+
+
+_sync_methods()

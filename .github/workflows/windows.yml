@@ -44,7 +44,7 @@ jobs:
           else { Write-Host "::notice::Google sign-in included (client $($env:GID.Substring(0,12))...)" }
 
       - name: Check the code
-        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py clip_relay.py clip_sync.py lan.py devices.py device_setup.py pagefix.py voice.py ui.py taskbar.py battery.py writer.py battmon.py flashcards.py flash_tab.py
+        run: python -m py_compile app.py core.py notion.py sync.py winutil.py version.py account.py cloud.py files_tab.py space.py space_tab.py gconfig.py clip_relay.py clip_sync.py lan.py devices.py device_setup.py pagefix.py voice.py ui.py taskbar.py battery.py writer.py battmon.py flashcards.py flash_tab.py fc_sync.py
 
       - name: Open the window as a test
         env:
@@ -71,7 +71,7 @@ jobs:
             --icon icon.ico --add-data "icon.ico;." `
             --hidden-import pystray._win32 --hidden-import gconfig `
             --hidden-import sounddevice --collect-all _sounddevice_data `
-            --collect-all sv_ttk --collect-all tkinterdnd2 --collect-all pypdfium2 --collect-all pypdfium2_raw --hidden-import voice --hidden-import flashcards --hidden-import flash_tab --hidden-import zstandard --hidden-import ui --hidden-import taskbar --hidden-import battery --hidden-import writer --hidden-import battmon --hidden-import psutil app.py
+            --collect-all sv_ttk --collect-all tkinterdnd2 --collect-all pypdfium2 --collect-all pypdfium2_raw --hidden-import voice --hidden-import flashcards --hidden-import flash_tab --hidden-import fc_sync --hidden-import zstandard --hidden-import ui --hidden-import taskbar --hidden-import battery --hidden-import writer --hidden-import battmon --hidden-import psutil app.py
 
       - name: Test the built app
         env:

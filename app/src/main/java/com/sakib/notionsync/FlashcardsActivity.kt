@@ -84,6 +84,30 @@ class FlashcardsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (mode == "home") showHome()
+        if (FlashSync.needed(db, 120)) syncNow(quiet = true)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (db.signature() != db.getMeta("sync_sig")) syncNow(quiet = true)     // send what you just studied
+    }
+
+    private var syncStatus: TextView? = null
+
+    private fun syncNow(quiet: Boolean = false) {
+        if (Prefs(this).token.isBlank()) { if (!quiet) toast("Connect Notion first (Settings) to sync with your laptop."); return }
+        if (FlashSync.busy) return
+        syncStatus?.text = "Syncing with your other devices…"
+        val app = applicationContext
+        Thread {
+            val res = try { FlashSync.run(app) } catch (e: Exception) { null }
+            main.post {
+                if (isFinishing || isDestroyed) return@post
+                syncStatus?.text = FlashSync.status(db)
+                if (res != null && res != "nothing new") { if (mode == "home") showHome() else if (mode == "study" && !revealed) updateCounts() }
+                if (!quiet && res == null) toast("Couldn't sync: ${FlashSync.lastError}")
+            }
+        }.start()
     }
 
     override fun onDestroy() {
@@ -131,6 +155,11 @@ class FlashcardsActivity : AppCompatActivity() {
         top.addView(button("Import") { importMenu() })
         top.addView(button("Export") { exportDialog(null) }, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) })
         col.addView(top)
+        val srow = hbox()
+        syncStatus = text(FlashSync.status(db), 12f, color = c(com.google.android.material.R.attr.colorOnSurfaceVariant))
+        srow.addView(syncStatus, lp(0, weight = 1f))
+        srow.addView(button("Sync now") { syncNow() })
+        col.addView(srow, lp(top = 6))
 
         // today
         val stats = hbox()

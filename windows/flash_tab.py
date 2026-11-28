@@ -18,7 +18,7 @@ class FlashTab:
     def __init__(self, app, frame):
         self.app = app
         self.frame = frame
-        self.col = F.Collection()
+        self.col = app.flash_col
         self.mode = "home"
         self.deck_id = None
         self.card_id = None
@@ -48,8 +48,13 @@ class FlashTab:
         ttk.Button(top, text="+  Add cards", style="Accent.TButton", command=lambda: self.edit_dialog()).pack(
             side="right", padx=(6, 0))
 
+        srow = ttk.Frame(f)
+        srow.pack(fill="x", pady=(8, 0))
+        self.sync_lbl = ttk.Label(srow, text="", foreground=ui.MUTED)
+        self.sync_lbl.pack(side="left")
+        ttk.Button(srow, text="Sync now", command=self.sync_now).pack(side="left", padx=10)
         stats = ttk.Frame(f)
-        stats.pack(fill="x", pady=(14, 6))
+        stats.pack(fill="x", pady=(10, 6))
         self.stat = {}
         for key, title in (("today", "Studied today"), ("streak", "Streak"), ("correct", "Remembered"),
                            ("week", "Due in the next 7 days")):
@@ -158,6 +163,7 @@ class FlashTab:
         b.config(text=f"{sum(fc)}")
         s.config(text="tomorrow: " + str(fc[1] if len(fc) > 1 else 0))
         self._draw_heat()
+        self._sync_label()
 
     def _draw_heat(self):
         c = self.heat
@@ -188,6 +194,29 @@ class FlashTab:
     def on_shown(self):
         if self.mode == "home":
             self.refresh()
+        self._sync_label()
+        if self.app.flash_sync.needed(120) and self.app.settings.get("token"):
+            self.sync_now()
+
+    def sync_now(self):
+        if not self.app.settings.get("token"):
+            messagebox.showinfo("Flashcards", "Connect Notion first (Account & clipboard) to sync with your phone.")
+            return
+        self.app.flash_sync_now()
+        self._sync_label()
+
+    def _sync_label(self):
+        try:
+            self.sync_lbl.config(text=self.app.flash_sync.status())
+        except Exception:
+            pass
+
+    def after_sync(self):
+        self._sync_label()
+        if self.mode == "home":
+            self.refresh()
+        elif self.mode == "study" and not self.revealed:
+            self._counts()
 
     # ---- decks --------------------------------------------------------------------------------
 

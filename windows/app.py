@@ -63,6 +63,7 @@ class App:
             except OSError:
                 pass
 
+        winutil.full_speed()
         ui.make_dpi_aware()
         self.root = tk.Tk()
         self.root.title(TITLE)
@@ -104,6 +105,7 @@ class App:
         self.root.after(2500, lambda: threading.Thread(target=self._scheduler, daemon=True).start())
         self.root.after(4000, lambda: threading.Thread(target=self._devices_loop, daemon=True).start())
         self.root.after(30000, lambda: self.check_update(install=False))
+        self.root.after(15000, lambda: threading.Thread(target=self._flash_sync_loop, daemon=True).start())
         self.root.after(8000, self._settle_memory)
 
     def _settle_memory(self):
@@ -160,6 +162,48 @@ class App:
 
     SIDE_KEYS = {0: "backup", 2: "space", 3: "folders", 4: "account", 5: "activity", 6: "settings", 7: "devices", 8: "voice", 9: "battery", 10: "writer", 11: "battusage", 12: "flash"}
     TAB_FLASH = TAB_FLASH
+
+    @property
+    def flash_col(self):
+        """The flashcards collection (shared by the Flashcards page and the sync)."""
+        if getattr(self, "_flash_col", None) is None:
+            import flashcards
+            import fc_sync
+            self._flash_col = flashcards.Collection()
+            self.flash_sync = fc_sync.FlashSync(self, self._flash_col)
+        return self._flash_col
+
+    def _flash_sync_loop(self):
+        """Flashcards stay the same on all your devices: syncs a minute after a change here, and every
+        10 minutes to get changes made on your phone."""
+        last_sig, changed_at = None, 0
+        while not self.stop_event.is_set():
+            try:
+                if self.settings.get("token") and self.settings.get("signed_in"):
+                    col = self.flash_col
+                    sig = col.signature()
+                    if sig != last_sig:
+                        last_sig, changed_at = sig, time.time()
+                    quiet = time.time() - changed_at > 45            # not in the middle of studying a card
+                    if self.flash_sync.needed(600) and (quiet or sig == col.get_meta("sync_sig")):
+                        self.flash_sync_now(wait=True)
+            except Exception:
+                pass
+            self.stop_event.wait(30)
+
+    def flash_sync_now(self, wait=False):
+        def work():
+            try:
+                res = self.flash_sync.run()
+                if res not in ("nothing new", "already syncing"):
+                    self.log(f"Flashcards synced with your other devices: {res}.")
+            except Exception as e:
+                self.log(f"Flashcards couldn't sync ({e}).")
+            self.events.put(lambda: self.flash and self.flash.after_sync())
+        if wait:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()
 
     def _ensure_flash(self):
         if self.flash is None:
@@ -2464,23 +2508,6 @@ def selftest():
         except Exception as e:
             print("shot failed", name, e)
 
-    def film_restore():
-        """Restores the minimised window and takes a picture every 40 ms for a second."""
-        r = app.root
-        x, y, w, h = r.winfo_rootx(), r.winfo_rooty(), r.winfo_width(), r.winfo_height()
-
-        def grab():
-            if not shots:
-                return
-            from PIL import ImageGrab
-            t0 = time.monotonic()
-            for i in range(25):
-                im = ImageGrab.grab(bbox=(x, y, x + w, y + h))
-                im.save(os.path.join(shots, f"restore_{i:02d}_{int((time.monotonic() - t0) * 1000)}ms.png"))
-                time.sleep(0.04)
-        threading.Thread(target=grab, daemon=True).start()
-        r.deiconify()
-
     steps = [
         lambda: [app.nb.select(i) for i in range(9)],
         app._ensure_voice,
@@ -2570,11 +2597,6 @@ def selftest():
         lambda: app._ed.destroy(),
         lambda: app.flash.export_dialog().destroy(),
         lambda: app.flash.show_home(),
-        lambda: app.root.iconify(),
-        lambda: None,
-        lambda: None,
-        lambda: film_restore(),
-        lambda: None, lambda: None, lambda: None, lambda: None, lambda: None,
         lambda: print("STALLS:", app.stalls),
         lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Selftest deck")),
         lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Law::Intellectual Property")),

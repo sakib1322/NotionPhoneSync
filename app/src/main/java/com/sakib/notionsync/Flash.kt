@@ -218,7 +218,7 @@ object FlashText {
     }
 }
 
-class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "flashcards.db", null, 1) {
+class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "flashcards.db", null, 2) {
     companion object {
         @Volatile private var inst: FlashDb? = null
         fun get(ctx: Context) = inst ?: synchronized(this) { inst ?: FlashDb(ctx.applicationContext).also { inst = it } }
@@ -246,9 +246,19 @@ class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "fla
         db.execSQL("CREATE INDEX cards_note ON cards(note_id)")
         db.execSQL("CREATE TABLE revlog(id INTEGER PRIMARY KEY, card_id INTEGER, grade INTEGER, state INTEGER, ivl INTEGER, took REAL, time REAL)")
         db.execSQL("CREATE INDEX revlog_time ON revlog(time)")
+        onUpgrade(db, 1, 2)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {        // sync between devices
+            db.execSQL("ALTER TABLE decks ADD COLUMN guid TEXT")
+            db.execSQL("CREATE TABLE IF NOT EXISTS graves(kind TEXT, guid TEXT, time REAL, PRIMARY KEY(kind, guid))")
+            db.execSQL("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
+            db.rawQuery("SELECT id FROM decks", null).use { c ->
+                while (c.moveToNext()) db.execSQL("UPDATE decks SET guid=? WHERE id=?", arrayOf(FlashText.guid() + FlashText.guid(), c.getLong(0)))
+            }
+        }
+    }
 
     private fun long1(sql: String, vararg a: Any?): Long =
         readableDatabase.rawQuery(sql, a.map { it?.toString() }.toTypedArray()).use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else 0L }
@@ -268,7 +278,7 @@ class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "fla
         val n = (name ?: "").trim().ifEmpty { "Default" }
         val found = long1("SELECT id FROM decks WHERE name=? COLLATE NOCASE", n)
         if (found != 0L || !create) return found
-        val v = ContentValues().apply { put("name", n); put("created", Fsrs.now()); put("mod", Fsrs.now()) }
+        val v = ContentValues().apply { put("name", n); put("created", Fsrs.now()); put("mod", Fsrs.now()); put("guid", FlashText.guid() + FlashText.guid()) }
         return writableDatabase.insert("decks", null, v)
     }
 
@@ -281,10 +291,19 @@ class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "fla
             arrayOf(newPerDay, reviewsPerDay, retention.coerceIn(0.7, 0.99), Fsrs.now(), id))
     }
 
+    private fun grave(kind: String, guid: String?) {
+        if (!guid.isNullOrEmpty()) writableDatabase.execSQL("INSERT OR REPLACE INTO graves VALUES(?,?,?)", arrayOf(kind, guid, Fsrs.now()))
+    }
+
+    private fun str1(sql: String, vararg a: Any?): String? =
+        readableDatabase.rawQuery(sql, a.map { it?.toString() }.toTypedArray()).use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null }
+
     fun deleteDeck(id: Long) {
         val db = writableDatabase
         db.beginTransaction()
         try {
+            grave("deck", str1("SELECT guid FROM decks WHERE id=?", id))
+            db.rawQuery("SELECT guid FROM notes WHERE deck_id=?", arrayOf(id.toString())).use { c -> while (c.moveToNext()) grave("note", c.getString(0)) }
             db.execSQL("DELETE FROM cards WHERE deck_id=?", arrayOf(id))
             db.execSQL("DELETE FROM notes WHERE deck_id=?", arrayOf(id))
             db.execSQL("DELETE FROM decks WHERE id=?", arrayOf(id))
@@ -315,7 +334,7 @@ class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "fla
         val now = Fsrs.now()
         db.execSQL("UPDATE notes SET deck_id=?, front=?, back=?, tags=?, reverse=?, mod=? WHERE id=?",
             arrayOf(deckId, front, back, tags.trim(), if (reverse) 1 else 0, now, id))
-        db.execSQL("UPDATE cards SET deck_id=?, mod=? WHERE note_id=?", arrayOf(deckId, now, id))
+        db.execSQL("UPDATE cards SET deck_id=? WHERE note_id=?", arrayOf(deckId, id))   // study progress unchanged
         val hasRev = long1("SELECT COUNT(*) FROM cards WHERE note_id=? AND ord=1", id) > 0
         if (reverse && !hasRev) db.insert("cards", null, ContentValues().apply {
             put("note_id", id); put("ord", 1); put("deck_id", deckId); put("position", now.toLong()); put("mod", now)
@@ -328,6 +347,7 @@ class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "fla
     }
 
     fun deleteNote(id: Long) {
+        grave("note", str1("SELECT guid FROM notes WHERE id=?", id))
         writableDatabase.execSQL("DELETE FROM cards WHERE note_id=?", arrayOf(id))
         writableDatabase.execSQL("DELETE FROM notes WHERE id=?", arrayOf(id))
     }
@@ -494,6 +514,169 @@ class FlashDb private constructor(val ctx: Context) : SQLiteOpenHelper(ctx, "fla
     }
 
     private fun sha1(b: ByteArray) = MessageDigest.getInstance("SHA-1").digest(b).joinToString("") { "%02x".format(it) }
+
+    // ---- sync between devices (same format as the laptop) ----
+
+    fun signature(): String = listOf(
+        "SELECT COUNT(*), COALESCE(MAX(mod),0) FROM decks", "SELECT COUNT(*), COALESCE(MAX(mod),0) FROM notes",
+        "SELECT COUNT(*), COALESCE(MAX(mod),0) FROM cards", "SELECT COUNT(*), COALESCE(MAX(time),0) FROM revlog",
+        "SELECT COUNT(*), COALESCE(MAX(time),0) FROM graves"
+    ).joinToString("|") { q -> readableDatabase.rawQuery(q, null).use { it.moveToFirst(); "${it.getLong(0)}:${String.format(java.util.Locale.US, "%.3f", it.getDouble(1))}" } }
+
+    fun getMeta(k: String): String? = str1("SELECT v FROM meta WHERE k=?", k)
+    fun setMeta(k: String, v: String) = writableDatabase.execSQL("INSERT OR REPLACE INTO meta VALUES(?,?)", arrayOf(k, v))
+
+    private fun rows(sql: String): JSONArray {
+        val out = JSONArray()
+        readableDatabase.rawQuery(sql, null).use { c ->
+            while (c.moveToNext()) {
+                val o = JSONObject()
+                for (i in 0 until c.columnCount) {
+                    when (c.getType(i)) {
+                        Cursor.FIELD_TYPE_INTEGER -> o.put(c.getColumnName(i), c.getLong(i))
+                        Cursor.FIELD_TYPE_FLOAT -> o.put(c.getColumnName(i), c.getDouble(i))
+                        Cursor.FIELD_TYPE_NULL -> o.put(c.getColumnName(i), JSONObject.NULL)
+                        else -> o.put(c.getColumnName(i), c.getString(i))
+                    }
+                }
+                out.put(o)
+            }
+        }
+        return out
+    }
+
+    fun exportSync(device: String): JSONObject {
+        val notes = rows("SELECT n.guid, d.guid AS deck, n.front, n.back, n.tags, n.reverse, n.created, n.mod FROM notes n JOIN decks d ON d.id=n.deck_id")
+        val media = sortedSetOf<String>()
+        for (i in 0 until notes.length()) { val n = notes.getJSONObject(i); media.addAll(FlashText.images(n.optString("front"))); media.addAll(FlashText.images(n.optString("back"))) }
+        return JSONObject().put("v", 1).put("device", device).put("time", Fsrs.now())
+            .put("decks", rows("SELECT guid, name, new_per_day, reviews_per_day, retention, mod FROM decks"))
+            .put("notes", notes)
+            .put("cards", rows("SELECT n.guid AS note, c.ord, c.state, c.step, c.due, c.ivl, c.stability, c.difficulty, c.reps, c.lapses, c.last_review, c.suspended, c.position, c.mod FROM cards c JOIN notes n ON n.id=c.note_id"))
+            .put("revlog", rows("SELECT n.guid AS note, c.ord, r.grade, r.state, r.ivl, r.took, r.time FROM revlog r JOIN cards c ON c.id=r.card_id JOIN notes n ON n.id=c.note_id"))
+            .put("graves", rows("SELECT kind, guid, time FROM graves"))
+            .put("media", JSONArray(media.toList()))
+    }
+
+    /** Merges another device's collection in (newest change wins). Returns a short summary. */
+    fun mergeSync(data: JSONObject): String {
+        if (data.optInt("v", 0) > 1) return "skipped (made by a newer app version — update this app)"
+        var added = 0; var updated = 0; var removed = 0
+        val db = writableDatabase
+        fun arr(k: String) = data.optJSONArray(k) ?: JSONArray()
+        fun JSONObject.d(k: String) = optDouble(k, 0.0).let { if (it.isNaN()) 0.0 else it }
+        db.beginTransaction()
+        try {
+            val gr = arr("graves")
+            for (i in 0 until gr.length()) {
+                val g = gr.getJSONObject(i); val kind = g.getString("kind"); val guid = g.getString("guid"); val t = g.d("time")
+                val old = double1("SELECT time FROM graves WHERE kind=? AND guid=?", kind, guid)
+                if (old == null || old < t) db.execSQL("INSERT OR REPLACE INTO graves VALUES(?,?,?)", arrayOf(kind, guid, t))
+                if (kind == "note") {
+                    db.rawQuery("SELECT id, mod FROM notes WHERE guid=?", arrayOf(guid)).use { c ->
+                        if (c.moveToFirst() && c.getDouble(1) <= t) {
+                            db.execSQL("DELETE FROM cards WHERE note_id=?", arrayOf(c.getLong(0))); db.execSQL("DELETE FROM notes WHERE id=?", arrayOf(c.getLong(0))); removed++
+                        }
+                    }
+                } else if (kind == "deck") {
+                    db.rawQuery("SELECT id, mod FROM decks WHERE guid=?", arrayOf(guid)).use { c ->
+                        if (c.moveToFirst() && c.getDouble(1) <= t && long1("SELECT COUNT(*) FROM notes WHERE deck_id=? AND mod>?", c.getLong(0), t) == 0L) {
+                            val id = c.getLong(0)
+                            db.execSQL("DELETE FROM cards WHERE deck_id=?", arrayOf(id)); db.execSQL("DELETE FROM notes WHERE deck_id=?", arrayOf(id)); db.execSQL("DELETE FROM decks WHERE id=?", arrayOf(id))
+                        }
+                    }
+                }
+            }
+            val graves = HashSet<String>()
+            db.rawQuery("SELECT kind, guid FROM graves", null).use { c -> while (c.moveToNext()) graves.add(c.getString(0) + "|" + c.getString(1)) }
+            val notesArr = arr("notes")
+            val deckWithNotes = HashSet<String>()
+            for (i in 0 until notesArr.length()) deckWithNotes.add(notesArr.getJSONObject(i).optString("deck"))
+            val deckId = HashMap<String, Long>()
+            val ds = arr("decks")
+            for (i in 0 until ds.length()) {
+                val d = ds.getJSONObject(i); val guid = d.getString("guid"); val name = d.getString("name")
+                if ("deck|$guid" in graves && guid !in deckWithNotes) continue
+                var row = db.rawQuery("SELECT id, guid, mod, name FROM decks WHERE guid=?", arrayOf(guid)).use { c -> if (c.moveToFirst()) arrayOf<Any?>(c.getLong(0), c.getString(1), c.getDouble(2), c.getString(3)) else null }
+                if (row == null) row = db.rawQuery("SELECT id, guid, mod, name FROM decks WHERE name=? COLLATE NOCASE", arrayOf(name)).use { c -> if (c.moveToFirst()) arrayOf<Any?>(c.getLong(0), c.getString(1), c.getDouble(2), c.getString(3)) else null }
+                val id: Long
+                if (row != null) {
+                    id = row[0] as Long
+                    val lg = row[1] as String? ?: "~"
+                    if (lg != guid && guid < lg) db.execSQL("UPDATE decks SET guid=? WHERE id=?", arrayOf(guid, id))
+                    if (d.d("mod") > (row[2] as Double)) {
+                        val clash = long1("SELECT COUNT(*) FROM decks WHERE name=? COLLATE NOCASE AND id!=?", name, id) > 0
+                        db.execSQL("UPDATE decks SET name=?, new_per_day=?, reviews_per_day=?, retention=?, mod=? WHERE id=?",
+                            arrayOf(if (clash) row[3] else name, d.optInt("new_per_day", 20), d.optInt("reviews_per_day", 200), d.optDouble("retention", 0.9), d.d("mod"), id))
+                    }
+                } else {
+                    id = db.insert("decks", null, ContentValues().apply {
+                        put("guid", guid); put("name", name); put("new_per_day", d.optInt("new_per_day", 20)); put("reviews_per_day", d.optInt("reviews_per_day", 200))
+                        put("retention", d.optDouble("retention", 0.9)); put("created", Fsrs.now()); put("mod", d.d("mod"))
+                    })
+                }
+                deckId[guid] = id
+            }
+            val noteId = HashMap<String, Long>()
+            for (i in 0 until notesArr.length()) {
+                val n = notesArr.getJSONObject(i); val guid = n.getString("guid")
+                if ("note|$guid" in graves) continue
+                val did = deckId[n.optString("deck")] ?: continue
+                val tags = if (n.isNull("tags")) "" else n.optString("tags")
+                val existing = db.rawQuery("SELECT id, mod FROM notes WHERE guid=?", arrayOf(guid)).use { c -> if (c.moveToFirst()) c.getLong(0) to c.getDouble(1) else null }
+                val nid: Long
+                if (existing == null) {
+                    nid = db.insert("notes", null, ContentValues().apply {
+                        put("guid", guid); put("deck_id", did); put("front", n.optString("front")); put("back", n.optString("back")); put("tags", tags)
+                        put("reverse", n.optInt("reverse")); put("created", n.d("created")); put("mod", n.d("mod"))
+                    }); added++
+                } else {
+                    nid = existing.first
+                    if (n.d("mod") > existing.second) {
+                        db.execSQL("UPDATE notes SET deck_id=?, front=?, back=?, tags=?, reverse=?, mod=? WHERE id=?", arrayOf(did, n.optString("front"), n.optString("back"), tags, n.optInt("reverse"), n.d("mod"), nid))
+                        db.execSQL("UPDATE cards SET deck_id=? WHERE note_id=?", arrayOf(did, nid))
+                        if (n.optInt("reverse") == 0) db.execSQL("DELETE FROM cards WHERE note_id=? AND ord=1", arrayOf(nid))
+                        updated++
+                    }
+                }
+                noteId[guid] = nid
+            }
+            val cs = arr("cards")
+            for (i in 0 until cs.length()) {
+                val k = cs.getJSONObject(i)
+                val nid = noteId[k.optString("note")] ?: continue
+                val ord = k.optInt("ord")
+                val existing = db.rawQuery("SELECT id, mod FROM cards WHERE note_id=? AND ord=?", arrayOf(nid.toString(), ord.toString())).use { c -> if (c.moveToFirst()) c.getLong(0) to c.getDouble(1) else null }
+                val vals = arrayOf<Any?>(k.optInt("state"), k.optInt("step"), k.d("due"), k.optInt("ivl"), k.d("stability"), k.d("difficulty"), k.optInt("reps"), k.optInt("lapses"), k.d("last_review"), k.optInt("suspended"), k.d("mod"))
+                if (existing == null) {
+                    val deck = long1("SELECT deck_id FROM notes WHERE id=?", nid)
+                    db.execSQL("INSERT INTO cards(note_id, ord, deck_id, state, step, due, ivl, stability, difficulty, reps, lapses, last_review, suspended, mod, position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        arrayOf<Any?>(nid, ord, deck) + vals + arrayOf<Any?>(k.optLong("position")))
+                } else if (k.d("mod") > existing.second) {
+                    db.execSQL("UPDATE cards SET state=?, step=?, due=?, ivl=?, stability=?, difficulty=?, reps=?, lapses=?, last_review=?, suspended=?, mod=? WHERE id=?", vals + arrayOf<Any?>(existing.first))
+                }
+            }
+            val have = HashSet<String>()
+            db.rawQuery("SELECT n.guid, c.ord, r.time FROM revlog r JOIN cards c ON c.id=r.card_id JOIN notes n ON n.id=c.note_id", null).use { c ->
+                while (c.moveToNext()) have.add(c.getString(0) + "|" + c.getInt(1) + "|" + String.format(java.util.Locale.US, "%.3f", c.getDouble(2)))
+            }
+            val rl = arr("revlog")
+            for (i in 0 until rl.length()) {
+                val r = rl.getJSONObject(i)
+                val ng = r.optString("note"); val ord = r.optInt("ord")
+                val key = ng + "|" + ord + "|" + String.format(java.util.Locale.US, "%.3f", r.d("time"))
+                val nid = noteId[ng] ?: continue
+                if (key in have) continue
+                val cid = long1("SELECT id FROM cards WHERE note_id=? AND ord=?", nid, ord)
+                if (cid != 0L) {
+                    db.execSQL("INSERT INTO revlog(card_id, grade, state, ivl, took, time) VALUES(?,?,?,?,?,?)", arrayOf(cid, r.optInt("grade"), r.optInt("state"), r.optInt("ivl"), r.d("took"), r.d("time")))
+                    have.add(key)
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return "$added new, $updated changed, $removed deleted"
+    }
 
     // ---- import ----
 

@@ -138,3 +138,22 @@ def not_see_through(root):
             u.RedrawWindow(hwnd, None, None, 0x1 | 0x4 | 0x80 | 0x100)   # invalidate, erase, allchildren, updatenow
     except Exception:
         pass
+
+
+def full_speed():
+    """Windows 11 slows down programs it thinks are in the background ("efficiency mode"), so they wake
+    up slowly when you switch back to them. This app is used in short bursts, so opt out."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        class PPT(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        st = PPT(1, 0x1 | 0x4, 0)          # execution speed + ignore timer resolution: never throttled
+        ProcessPowerThrottling = 4
+        ok = k32.SetProcessInformation(k32.GetCurrentProcess(), ProcessPowerThrottling, ctypes.byref(st),
+                                       ctypes.sizeof(st))
+        return bool(ok)
+    except Exception:
+        return False
