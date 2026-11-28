@@ -555,6 +555,9 @@ class FilesTab:
     # grid view
 
     def _canvas_resized(self, e):
+        # Minimising briefly makes the window tiny: don't rebuild every tile for that (slow to come back).
+        if e.width < 100 or self.app.root.state() == "iconic":
+            return
         self.canvas.itemconfigure(self.inner_id, width=e.width)
         cols = max(1, (e.width - 4) // (CARD_W + CARD_GAP))
         if cols != self._cols and self.view == "grid":

@@ -106,7 +106,8 @@ def keep_in_memory():
         import psutil
         rss = psutil.Process().memory_info().rss
         total = psutil.virtual_memory().total
-        floor = int(min(rss, 160 * 2 ** 20, total * 0.06))
+        # all of the app's memory as it is now (+10%), but never more than 15% of the laptop's memory
+        floor = int(min(rss * 1.1, total * 0.15, 700 * 2 ** 20))
         if floor < 32 * 2 ** 20:
             return 0
         k32 = ctypes.windll.kernel32
@@ -115,7 +116,17 @@ def keep_in_memory():
         QUOTA_LIMITS_HARDWS_MIN_ENABLE, QUOTA_LIMITS_HARDWS_MAX_DISABLE = 0x1, 0x8
         ok = k32.SetProcessWorkingSetSizeEx(k32.GetCurrentProcess(), floor, max(floor * 4, 512 * 2 ** 20),
                                             QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE)
-        return floor // 2 ** 20 if ok else 0
+        if not ok:
+            return -k32.GetLastError()
+        return floor // 2 ** 20
+    except Exception:
+        return 0
+
+
+def page_faults():
+    try:
+        import psutil
+        return getattr(psutil.Process().memory_info(), "num_page_faults", 0)
     except Exception:
         return 0
 

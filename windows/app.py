@@ -79,7 +79,7 @@ class App:
             pass
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         # Coming back from minimised: redraw everything at once, before anything else runs.
-        self.root.bind("<Map>", lambda e: self.root.update_idletasks() if e.widget is self.root else None, add="+")
+        self.root.bind("<Map>", self._on_map, add="+")
         self.root.after(200, lambda: winutil.not_see_through(self.root))
         self.hidden = bool(minimized)
         if minimized:
@@ -117,10 +117,33 @@ class App:
             gc.freeze()
         except Exception:
             pass
-        # No black boxes when the window comes back after being minimised (see winutil).
+        self._keep_memory(first=True)
+
+    def _keep_memory(self, first=False):
+        """No black boxes when the window comes back after being minimised (see winutil). Re-done every
+        few minutes, as the app's memory grows."""
         mb = winutil.keep_in_memory()
-        if mb:
-            self.log(f"Keeping {mb} MB of the app in memory so its window redraws instantly.")
+        if first or mb < 0:
+            self.log(f"Keeping {mb} MB of the app in memory so its window redraws instantly." if mb > 0 else
+                     f"Windows didn't allow keeping the app in memory (code {-mb})." if mb < 0 else
+                     "Keeping the app in memory isn't needed here.")
+        self.root.after(180000, self._keep_memory)
+
+    def _on_map(self, e):
+        """Coming back from minimised: redraw at once, and note how long that took (Activity)."""
+        if e.widget is not self.root:
+            return
+        t0, pf0 = time.perf_counter(), winutil.page_faults()
+        self.root.update_idletasks()
+
+        def done():
+            ms = (time.perf_counter() - t0) * 1000
+            pf = winutil.page_faults() - pf0
+            n = getattr(self, "_restores", 0) + 1
+            self._restores = n
+            if n <= 8 or ms > 300:
+                self.log(f"Window came back in {ms:.0f} ms ({pf} pages read back from disk).")
+        self.root.after_idle(lambda: self.root.after(0, done))
 
     # ---- layout --------------------------------------------------------------
 
