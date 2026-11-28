@@ -2408,9 +2408,11 @@ def selftest():
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
+    shots = os.environ.get("SELFTEST_SHOTS")
+    if shots:
+        core.Settings().set("signed_in", "selftest")     # screenshots of the pages, not the sign-in screen
     app = App(False, listener)
     app.root.report_callback_exception = lambda *a: errors.append(a)
-    shots = os.environ.get("SELFTEST_SHOTS")
 
     def shot(name):
         """Saves a picture of the window (only when the build asks for it, to check the look)."""
