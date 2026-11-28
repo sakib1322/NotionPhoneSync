@@ -219,8 +219,15 @@ def html_to_text(s):
     s = re.sub(r"<[^>]+>", "", s)
     s = html.unescape(s).replace("\xa0", " ")
     s = re.sub(r"[ \t]+\n", "\n", s)
-    s = re.sub(r"\n{3,}", "\n\n", s)
-    return s.strip()
+    return tidy(s).strip()
+
+
+def tidy(s):
+    """Cleans imported text for showing: a bullet on its own line joins the line after it."""
+    if not s:
+        return s or ""
+    s = re.sub(r"(^|\n)[ \t]*([•·▪◦\-\*])[ \t]*\n+[ \t]*", r"\1\2 ", s)
+    return re.sub(r"\n{3,}", "\n\n", s)
 
 
 def text_to_html(s):

@@ -312,8 +312,13 @@ class FlashTab:
         mm.add_command(label="Undo last answer   (Ctrl+Z)", command=self.undo)
         mm.add_command(label="Suspend this card   (S)", command=self.suspend_current)
         mm.add_command(label="Delete this card", command=self.delete_current)
+        mm.add_separator()
+        mm.add_command(label="Larger text   (+)", command=lambda: self.text_size(1))
+        mm.add_command(label="Smaller text   (−)", command=lambda: self.text_size(-1))
         more["menu"] = mm
         more.pack(side="right", padx=10)
+        ttk.Button(top, text="A−", width=3, command=lambda: self.text_size(-1)).pack(side="right")
+        ttk.Button(top, text="A+", width=3, command=lambda: self.text_size(1)).pack(side="right", padx=(0, 4))
 
         self.bar = ttk.Frame(f)
         self.bar.pack(side="bottom", fill="x")          # first, so a small screen never hides the buttons
@@ -426,8 +431,33 @@ class FlashTab:
         t.configure(state="disabled")
         self._bar("done")
 
-    def _write(self, question, answer):
+    def _sizes(self, question, answer):
+        """Text size and alignment that suit the card: short cards big and centred, long ones smaller and
+        left-aligned (easier to read), plus your own Larger/Smaller choice."""
+        n = len(F.IMG_RE.sub("", (question or "") + (answer or "")))
+        if n < 120:
+            q, a, align = 20, 18, "center"
+        elif n < 350:
+            q, a, align = 16, 14, "center"
+        else:
+            q, a, align = 13, 12, "left"
+        adj = int(self.app.settings.get("flash_text") or 0)
+        q, a = max(9, q + adj), max(9, a + adj)
         t = self.txt
+        t.tag_configure("c", justify=align, font=(ui.FONT, q, "bold" if n < 120 else "normal"))
+        t.tag_configure("back", justify=align, font=(ui.FONT, a))
+        t.tag_configure("rule", justify=align)
+        t.configure(spacing1=2, spacing3=max(2, a // 3), padx=ui.px(36 if align == "left" else 30))
+
+    def text_size(self, step):
+        v = max(-6, min(10, int(self.app.settings.get("flash_text") or 0) + step))
+        self.app.settings.set("flash_text", v)
+        self._redraw_current()
+
+    def _write(self, question, answer):
+        question, answer = F.tidy(question), (F.tidy(answer) if answer is not None else None)
+        t = self.txt
+        self._sizes(question, answer)
         t.configure(state="normal")
         t.delete("1.0", "end")
         self._imgs = []
@@ -562,6 +592,10 @@ class FlashTab:
             self.suspend_current()
         elif k == "escape":
             self.show_home()
+        elif k in ("plus", "equal", "kp_add"):
+            self.text_size(1)
+        elif k in ("minus", "kp_subtract"):
+            self.text_size(-1)
         else:
             return
         return "break"

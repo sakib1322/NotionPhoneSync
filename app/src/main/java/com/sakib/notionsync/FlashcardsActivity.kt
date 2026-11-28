@@ -320,6 +320,9 @@ class FlashcardsActivity : AppCompatActivity() {
         countsView = text("", 13f)
         titles.addView(countsView)
         top.addView(titles, lp(0, weight = 1f).apply { leftMargin = dp(6) })
+        for ((label, step) in listOf("A−" to -1, "A+" to 1)) top.addView(text(label, 16f, true).apply {
+            setPadding(dp(10), dp(8), dp(10), dp(8)); setOnClickListener { textSize(step) }
+        })
         top.addView(ImageView(this).apply {
             setImageResource(R.drawable.ic_more); setPadding(dp(10), dp(10), dp(10), dp(10))
             setColorFilter(c(com.google.android.material.R.attr.colorOnSurfaceVariant)); setOnClickListener { studyMenu() }
@@ -403,21 +406,38 @@ class FlashcardsActivity : AppCompatActivity() {
         bottom.addView(button("Back to decks", filled = true) { showHome() }, lp(0, weight = 1f))
     }
 
-    private fun render(q: String, a: String?) {
+    private var lastQ = ""
+    private var lastA: String? = null
+
+    /** Short cards big and centred; long ones smaller and left-aligned (easier to read) + your A−/A+ choice. */
+    private fun render(q0: String, a0: String?) {
+        val q = FlashText.tidy(q0); val a = a0?.let { FlashText.tidy(it) }
+        lastQ = q0; lastA = a0
         qView.removeAllViews()
-        rich(q, 22f)
+        val n = FlashText.IMG.replace(q + (a ?: ""), "").length
+        val adj = db.getMeta("text_adj")?.toIntOrNull() ?: 0
+        val (qs, asz, center) = when { n < 120 -> Triple(22f, 19f, true); n < 350 -> Triple(18f, 16f, true); else -> Triple(15f, 14f, false) }
+        rich(q, maxOf(10f, qs + adj), center, bold = n < 120)
         if (a != null) {
             qView.addView(View(this).apply { setBackgroundColor(c(com.google.android.material.R.attr.colorOutlineVariant)) },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { topMargin = dp(20); bottomMargin = dp(20) })
-            rich(a, 20f)
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { topMargin = dp(16); bottomMargin = dp(16) })
+            rich(a, maxOf(10f, asz + adj), center)
         }
     }
 
-    private fun rich(s: String, size: Float) {
+    private fun textSize(step: Int) {
+        val v = ((db.getMeta("text_adj")?.toIntOrNull() ?: 0) + step).coerceIn(-6, 10)
+        db.setMeta("text_adj", v.toString())
+        if (mode == "study" && cardId != null) render(lastQ, lastA)
+    }
+
+    private fun rich(s: String, size: Float, center: Boolean = true, bold: Boolean = false) {
         var pos = 0
         fun addText(t: String) {
             if (t.isBlank()) return
-            qView.addView(text(t.trim('\n'), size).apply { gravity = Gravity.CENTER; setLineSpacing(0f, 1.15f); setTextIsSelectable(false) })
+            qView.addView(text(t.trim('\n'), size, bold).apply {
+                gravity = if (center) Gravity.CENTER else Gravity.START; setLineSpacing(0f, 1.2f); setTextIsSelectable(false)
+            }, lp())
         }
         for (m in FlashText.IMG.findAll(s)) {
             addText(s.substring(pos, m.range.first))

@@ -175,8 +175,7 @@ object FlashText {
         t = Regex("<[^>]+>").replace(t, "")
         t = unescape(t).replace('\u00a0', ' ')
         t = Regex("[ \\t]+\\n").replace(t, "\n")
-        t = Regex("\\n{3,}").replace(t, "\n\n")
-        return t.trim()
+        return tidy(t).trim()
     }
 
     private fun unescape(s: String): String =
@@ -196,6 +195,10 @@ object FlashText {
         sb.append(esc(text.substring(pos)).replace("\n", "<br>"))
         return sb.toString()
     }
+
+    /** Cleans imported text for showing: a bullet on its own line joins the line after it. */
+    fun tidy(s: String): String =
+        Regex("\\n{3,}").replace(Regex("(^|\\n)[ \\t]*([•·▪◦\\-*])[ \\t]*\\n+[ \\t]*").replace(s) { m -> m.groupValues[1] + m.groupValues[2] + " " }, "\n\n")
 
     fun images(s: String?) = IMG.findAll(s ?: "").map { it.groupValues[1] }.toList()
 
