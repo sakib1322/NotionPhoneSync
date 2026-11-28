@@ -2386,7 +2386,41 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def run(self):
+        self._start_watchdog()
         self.root.mainloop()
+
+    def _start_watchdog(self):
+        """Notices when the window stops responding (that's when Windows shows black boxes) and writes
+        what the app was busy with to Activity, so slow spots can be found and fixed."""
+        import sys as _sys
+        import traceback as _tb
+        main_id = threading.get_ident()
+        self._beat = time.monotonic()
+        self.stalls = []
+
+        def beat():
+            self._beat = time.monotonic()
+            self.root.after(250, beat)
+        beat()
+
+        def watch():
+            reported = 0
+            while not self.quitting:
+                time.sleep(0.1)
+                gap = time.monotonic() - self._beat
+                if gap > 0.6:
+                    frame = _sys._current_frames().get(main_id)
+                    where = " < ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}"
+                                       for f in reversed(_tb.extract_stack(frame)[-4:])) if frame else "?"
+                    start = self._beat
+                    while time.monotonic() - self._beat > 0.3 and not self.quitting:
+                        time.sleep(0.05)
+                    took = time.monotonic() - start - 0.25
+                    self.stalls.append((round(took, 2), where))
+                    if reported < 15:
+                        reported += 1
+                        self.log(f"Window was busy for {took:.1f} s (in {where}).")
+        threading.Thread(target=watch, daemon=True).start()
 
 
 def selftest():
@@ -2429,6 +2463,23 @@ def selftest():
             ImageGrab.grab(bbox=(x, y, x + w.winfo_width(), y + w.winfo_height())).save(os.path.join(shots, name + ".png"))
         except Exception as e:
             print("shot failed", name, e)
+
+    def film_restore():
+        """Restores the minimised window and takes a picture every 40 ms for a second."""
+        r = app.root
+        x, y, w, h = r.winfo_rootx(), r.winfo_rooty(), r.winfo_width(), r.winfo_height()
+
+        def grab():
+            if not shots:
+                return
+            from PIL import ImageGrab
+            t0 = time.monotonic()
+            for i in range(25):
+                im = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+                im.save(os.path.join(shots, f"restore_{i:02d}_{int((time.monotonic() - t0) * 1000)}ms.png"))
+                time.sleep(0.04)
+        threading.Thread(target=grab, daemon=True).start()
+        r.deiconify()
 
     steps = [
         lambda: [app.nb.select(i) for i in range(9)],
@@ -2518,6 +2569,13 @@ def selftest():
         lambda: shot_win(app._ed, "flash_add"),
         lambda: app._ed.destroy(),
         lambda: app.flash.export_dialog().destroy(),
+        lambda: app.flash.show_home(),
+        lambda: app.root.iconify(),
+        lambda: None,
+        lambda: None,
+        lambda: film_restore(),
+        lambda: None, lambda: None, lambda: None, lambda: None, lambda: None,
+        lambda: print("STALLS:", app.stalls),
         lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Selftest deck")),
         lambda: app.flash.col.delete_deck(app.flash.col.deck_by_name("Law::Intellectual Property")),
         lambda: app.flash.refresh(),
