@@ -97,9 +97,17 @@ class FlashTab:
         t.bind("<Button-3>", self._deck_menu)
         self.tree = t
 
-    def _sel(self):
+    def _sel(self, need=False):
         s = self.tree.selection()
-        return int(s[0]) if s else None
+        if s:
+            return int(s[0])
+        if need:
+            if self.col.decks():
+                messagebox.showinfo("Flashcards", "Click a deck in the list first.")
+            else:
+                messagebox.showinfo("Flashcards", "You don't have any decks yet.\n\nPress “+ Add cards” to make your "
+                                                  "first card (a deck is made for it), or Import… an Anki deck.")
+        return None
 
     def _deck_menu(self, e):
         row = self.tree.identify_row(e.y)
@@ -191,7 +199,7 @@ class FlashTab:
             self.refresh()
 
     def rename_deck(self):
-        did = self._sel()
+        did = self._sel(need=True)
         if not did:
             return
         d = self.col.deck(did)
@@ -204,7 +212,7 @@ class FlashTab:
             self.refresh()
 
     def delete_deck(self):
-        did = self._sel()
+        did = self._sel(need=True)
         if not did:
             return
         d = self.col.deck(did)
@@ -215,7 +223,7 @@ class FlashTab:
             self.refresh()
 
     def options_dialog(self):
-        did = self._sel()
+        did = self._sel(need=True)
         if not did:
             return
         d = self.col.deck(did)
@@ -307,7 +315,7 @@ class FlashTab:
         ttk.Button(self.done_row, text="Back to decks", style="Accent.TButton", command=self.show_home).pack()
 
     def start_study(self, deck_id=None):
-        did = deck_id or self._sel()
+        did = deck_id or self._sel(need=True)
         if not did:
             return
         self.deck_id = did

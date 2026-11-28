@@ -118,3 +118,23 @@ def keep_in_memory():
         return floor // 2 ** 20 if ok else 0
     except Exception:
         return 0
+
+
+def not_see_through(root):
+    """Makes sure the window isn't a "layered" (see-through) window. Windows draws a layered window's
+    contents black for a moment whenever it's restored or uncovered, until the app repaints it."""
+    if not IS_WINDOWS:
+        return
+    try:
+        u = ctypes.windll.user32
+        hwnd = u.GetParent(root.winfo_id()) or root.winfo_id()
+        GWL_EXSTYLE, WS_EX_LAYERED = -20, 0x80000
+        u.GetWindowLongW.restype = ctypes.c_long
+        ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if ex & WS_EX_LAYERED:
+            u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED)
+            # SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+            u.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x1 | 0x2 | 0x4 | 0x10 | 0x20)
+            u.RedrawWindow(hwnd, None, None, 0x1 | 0x4 | 0x80 | 0x100)   # invalidate, erase, allchildren, updatenow
+    except Exception:
+        pass

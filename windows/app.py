@@ -79,6 +79,7 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         # Coming back from minimised: redraw everything at once, before anything else runs.
         self.root.bind("<Map>", lambda e: self.root.update_idletasks() if e.widget is self.root else None, add="+")
+        self.root.after(200, lambda: winutil.not_see_through(self.root))
         self.hidden = bool(minimized)
         if minimized:
             self.root.withdraw()
@@ -2232,28 +2233,19 @@ class App:
             self.log(f"Tray icon unavailable ({e}). Closing the window will exit the app.")
 
     def show_window(self):
-        """Opens the window fully drawn (no black flash): it's made invisible, drawn, then shown."""
+        """Brings the window back, drawn straight away. (It used to fade in using see-through
+        windows, but on some laptops that left the window drawing black boxes when you switched back
+        to it, so it doesn't any more.)"""
         r = self.root
         was_hidden = self.hidden
         self.hidden = False
         self._idle_pumps = 0
-        try:
-            r.attributes("-alpha", 0.0)
-        except tk.TclError:
-            pass
-        r.deiconify()
-        r.state("normal")
+        if r.state() in ("withdrawn", "iconic"):
+            r.deiconify()
         r.update_idletasks()
         r.lift()
         r.focus_force()
-
-        def reveal():
-            try:
-                r.update_idletasks()
-                r.attributes("-alpha", 1.0)
-            except tk.TclError:
-                pass
-        r.after(40, reveal)
+        winutil.not_see_through(r)
         if was_hidden:
             r.after(60, self._catch_up)
 
